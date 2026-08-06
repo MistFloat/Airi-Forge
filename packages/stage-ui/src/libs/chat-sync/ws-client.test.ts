@@ -157,7 +157,7 @@ describe('createChatWsUrlRef', () => {
   // source intentionally does NOT (so future regressions show up here).
   it('rebuilds url when getToken reads a reactive ref (token rotation)', () => {
     const enabled = ref(true)
-    const tokenRef = ref<string | null>('old-token')
+    const tokenRef = ref<null | string>('old-token')
     const url = createChatWsUrlRef(enabled, () => tokenRef.value, 'https://api.example.com')
 
     expect(url.value).toBe('wss://api.example.com/ws/chat?token=old-token')
@@ -169,7 +169,7 @@ describe('createChatWsUrlRef', () => {
     const enabled = ref(true)
     // Module-local let stands in for `localStorage.getItem` — neither is a
     // Vue reactive dep, so the computed cannot observe mutations.
-    let storage: string | null = 'frozen-token'
+    let storage: null | string = 'frozen-token'
     const url = createChatWsUrlRef(enabled, () => storage, 'https://api.example.com')
 
     expect(url.value).toBe('wss://api.example.com/ws/chat?token=frozen-token')

@@ -2,7 +2,7 @@ import { defineScenario } from '@proj-airi/vishot-runner-electron'
 
 export default defineScenario({
   id: 'demo-hearing-dialog',
-  async run({ capture, controlsIsland, stageWindows, drawers }) {
+  async run({ capture, controlsIsland, drawers, stageWindows }) {
     const mainWindow = await stageWindows.waitFor('main')
 
     const page = await controlsIsland.openHearing(mainWindow.page)

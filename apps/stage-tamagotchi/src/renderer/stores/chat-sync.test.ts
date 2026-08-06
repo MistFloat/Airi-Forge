@@ -16,18 +16,38 @@ interface MockBroadcastMessageEvent<T> {
   data: T
 }
 
-type MockListener = (event: MockBroadcastMessageEvent<unknown>) => void
 interface MockChatMessage {
+  content: string
   id?: string
   role: string
-  content: string
   slices?: unknown[]
   tool_results?: Array<{ id: string, isError?: boolean, result: unknown }>
+}
+type MockListener = (event: MockBroadcastMessageEvent<unknown>) => void
+
+interface MockState {
+  activeSessionId: Ref<string>
+  applyRemoteSnapshot: ReturnType<typeof vi.fn>
+  getSessionMessages: ReturnType<typeof vi.fn>
+  ingest: ReturnType<typeof vi.fn>
+  sessionMessages: Ref<Record<string, MockChatMessage[]>>
+  sessionMetas: Ref<Record<string, unknown>>
+  setSessionMessages: ReturnType<typeof vi.fn>
 }
 
 class MockBroadcastChannel {
   static channels = new Map<string, Set<MockBroadcastChannel>>()
   static messages: unknown[] = []
+
+  readonly name: string
+
+  private readonly listeners = new Set<MockListener>()
+  constructor(name: string) {
+    this.name = name
+    if (!MockBroadcastChannel.channels.has(name))
+      MockBroadcastChannel.channels.set(name, new Set())
+    MockBroadcastChannel.channels.get(name)?.add(this)
+  }
 
   static reset() {
     for (const peers of MockBroadcastChannel.channels.values()) {
@@ -38,22 +58,16 @@ class MockBroadcastChannel {
     MockBroadcastChannel.messages = []
   }
 
-  readonly name: string
-  private readonly listeners = new Set<MockListener>()
-
-  constructor(name: string) {
-    this.name = name
-    if (!MockBroadcastChannel.channels.has(name))
-      MockBroadcastChannel.channels.set(name, new Set())
-    MockBroadcastChannel.channels.get(name)?.add(this)
-  }
-
   addEventListener(_type: 'message', listener: EventListener) {
     this.listeners.add(listener as unknown as MockListener)
   }
 
-  removeEventListener(_type: 'message', listener: EventListener) {
-    this.listeners.delete(listener as unknown as MockListener)
+  close() {
+    const peers = MockBroadcastChannel.channels.get(this.name)
+    peers?.delete(this)
+    this.listeners.clear()
+    if (peers && peers.size === 0)
+      MockBroadcastChannel.channels.delete(this.name)
   }
 
   postMessage(data: unknown) {
@@ -72,17 +86,22 @@ class MockBroadcastChannel {
     }
   }
 
-  close() {
-    const peers = MockBroadcastChannel.channels.get(this.name)
-    peers?.delete(this)
-    this.listeners.clear()
-    if (peers && peers.size === 0)
-      MockBroadcastChannel.channels.delete(this.name)
+  removeEventListener(_type: 'message', listener: EventListener) {
+    this.listeners.delete(listener as unknown as MockListener)
+  }
+}
+
+function assistantMessage(content: string): MockChatMessage {
+  return {
+    content,
+    role: 'assistant',
+    slices: [{ text: content, type: 'text' }],
+    tool_results: [],
   }
 }
 
 function postedMessagesOfType<T extends string>(type: T) {
-  return MockBroadcastChannel.messages.filter((message): message is { type: T } & Record<string, unknown> => {
+  return MockBroadcastChannel.messages.filter((message): message is Record<string, unknown> & { type: T } => {
     return typeof message === 'object'
       && message !== null
       && 'type' in message
@@ -90,53 +109,34 @@ function postedMessagesOfType<T extends string>(type: T) {
   })
 }
 
-function assistantMessage(content: string): MockChatMessage {
-  return {
-    role: 'assistant',
-    content,
-    slices: [{ type: 'text', text: content }],
-    tool_results: [],
-  }
-}
-
-interface MockState {
-  activeSessionId: Ref<string>
-  sessionMessages: Ref<Record<string, MockChatMessage[]>>
-  sessionMetas: Ref<Record<string, unknown>>
-  applyRemoteSnapshot: ReturnType<typeof vi.fn>
-  setSessionMessages: ReturnType<typeof vi.fn>
-  getSessionMessages: ReturnType<typeof vi.fn>
-  ingest: ReturnType<typeof vi.fn>
-}
-
 let mockState: MockState
 
 vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
   useChatSessionStore: () => ({
     activeSessionId: mockState.activeSessionId,
-    sessionMessages: mockState.sessionMessages,
-    sessionMetas: mockState.sessionMetas,
     applyRemoteSnapshot: mockState.applyRemoteSnapshot,
+    getSessionMessages: mockState.getSessionMessages,
     getSnapshot: vi.fn(() => ({
       activeSessionId: mockState.activeSessionId.value,
       sessionMessages: mockState.sessionMessages.value,
       sessionMetas: mockState.sessionMetas.value,
     })),
-    getSessionMessages: mockState.getSessionMessages,
+    sessionMessages: mockState.sessionMessages,
+    sessionMetas: mockState.sessionMetas,
     setSessionMessages: mockState.setSessionMessages,
   }),
 }))
 
 vi.mock('@proj-airi/stage-ui/stores/chat/stream-store', () => ({
   useChatStreamStore: () => ({
-    streamingMessage: ref({ role: 'assistant', content: '', slices: [], tool_results: [] }),
+    streamingMessage: ref({ content: '', role: 'assistant', slices: [], tool_results: [] }),
   }),
 }))
 
 vi.mock('@proj-airi/stage-ui/stores/chat', () => ({
   useChatOrchestratorStore: () => ({
-    sending: ref(false),
     ingest: mockState.ingest,
+    sending: ref(false),
   }),
 }))
 
@@ -154,8 +154,8 @@ vi.mock('@proj-airi/stage-ui/stores/providers', () => ({
 
 vi.mock('@proj-airi/stage-ui/stores/modules/consciousness', () => ({
   useConsciousnessStore: () => ({
-    activeProvider: computed(() => 'provider-id'),
     activeModel: computed(() => 'model-id'),
+    activeProvider: computed(() => 'provider-id'),
   }),
 }))
 
@@ -201,7 +201,7 @@ describe('useChatSyncStore', async () => {
 
     const activeSessionId = ref('session-1')
     const sessionMessages = ref<Record<string, MockChatMessage[]>>({
-      'session-1': [{ role: 'system', content: 'init' }],
+      'session-1': [{ content: 'init', role: 'system' }],
     })
     const sessionMetas = ref<Record<string, unknown>>({})
     const applyRemoteSnapshot = vi.fn((snapshot: {
@@ -235,12 +235,12 @@ describe('useChatSyncStore', async () => {
 
     mockState = {
       activeSessionId,
-      sessionMessages,
-      sessionMetas,
       applyRemoteSnapshot,
-      setSessionMessages,
       getSessionMessages,
       ingest,
+      sessionMessages,
+      sessionMetas,
+      setSessionMessages,
     }
 
     vi.stubGlobal('BroadcastChannel', MockBroadcastChannel)
@@ -258,14 +258,14 @@ describe('useChatSyncStore', async () => {
 
     const peer = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
     peer.postMessage({
-      type: 'command',
-      requestId: 'req-1',
-      senderId: 'peer',
       command: 'ingest',
       payload: {
-        text: 'hello',
         sessionId: 'session-1',
+        text: 'hello',
       },
+      requestId: 'req-1',
+      senderId: 'peer',
+      type: 'command',
     })
 
     await vi.waitFor(() => {
@@ -282,19 +282,19 @@ describe('useChatSyncStore', async () => {
     store.dispose()
   })
 
-  it('rejects follower command timeouts after thirty seconds', async () => {
+  it('rejects follower ingest timeouts after thirty minutes', async () => {
     vi.useFakeTimers()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const store = useChatSyncStore()
     store.initialize('follower')
 
     const pending = store.requestIngest({
-      text: 'hello timeout',
       sessionId: 'session-1',
+      text: 'hello timeout',
     })
     const expectedRejection = expect(pending).rejects.toThrow('Timed out waiting for chat authority response')
 
-    await vi.advanceTimersByTimeAsync(30000)
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
 
     await expectedRejection
 
@@ -304,13 +304,13 @@ describe('useChatSyncStore', async () => {
 
   it('replaces the last failed turn before retrying', async () => {
     mockState.sessionMessages.value['session-1'] = [
-      { role: 'system', content: 'init' },
-      { role: 'user', content: 'hello-1' },
-      { role: 'assistant', content: 'answer-1' },
-      { role: 'user', content: 'hello' },
-      { role: 'error', content: 'Remote sent 400 response' },
-      { role: 'user', content: 'hello-3' },
-      { role: 'assistant', content: 'answer-3' },
+      { content: 'init', role: 'system' },
+      { content: 'hello-1', role: 'user' },
+      { content: 'answer-1', role: 'assistant' },
+      { content: 'hello', role: 'user' },
+      { content: 'Remote sent 400 response', role: 'error' },
+      { content: 'hello-3', role: 'user' },
+      { content: 'answer-3', role: 'assistant' },
     ]
     mockState.ingest.mockResolvedValueOnce(undefined)
 
@@ -319,30 +319,30 @@ describe('useChatSyncStore', async () => {
 
     const peer = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
     peer.postMessage({
-      type: 'command',
-      requestId: 'req-2',
-      senderId: 'peer',
       command: 'retry',
       payload: {
-        sessionId: 'session-1',
         index: 4,
+        sessionId: 'session-1',
       },
+      requestId: 'req-2',
+      senderId: 'peer',
+      type: 'command',
     })
 
     await vi.waitFor(() => {
       expect(mockState.setSessionMessages).toHaveBeenCalledWith('session-1', [
-        { role: 'system', content: 'init' },
-        { role: 'user', content: 'hello-1' },
-        { role: 'assistant', content: 'answer-1' },
+        { content: 'init', role: 'system' },
+        { content: 'hello-1', role: 'user' },
+        { content: 'answer-1', role: 'assistant' },
       ])
       expect(mockState.ingest).toHaveBeenCalledWith('hello', expect.any(Object), 'session-1')
     })
 
     const persistedMessages = mockState.sessionMessages.value['session-1']
     expect(persistedMessages).toEqual([
-      { role: 'system', content: 'init' },
-      { role: 'user', content: 'hello-1' },
-      { role: 'assistant', content: 'answer-1' },
+      { content: 'init', role: 'system' },
+      { content: 'hello-1', role: 'user' },
+      { content: 'answer-1', role: 'assistant' },
     ])
 
     peer.close()
@@ -351,12 +351,12 @@ describe('useChatSyncStore', async () => {
 
   it('rewinds from the source user turn when retry targets an assistant message', async () => {
     mockState.sessionMessages.value['session-1'] = [
-      { role: 'system', content: 'init' },
-      { role: 'user', content: 'hello-1' },
-      { role: 'assistant', content: 'answer-1' },
-      { role: 'user', content: 'hello-2' },
-      { role: 'assistant', content: 'answer-2' },
-      { role: 'user', content: 'hello-3' },
+      { content: 'init', role: 'system' },
+      { content: 'hello-1', role: 'user' },
+      { content: 'answer-1', role: 'assistant' },
+      { content: 'hello-2', role: 'user' },
+      { content: 'answer-2', role: 'assistant' },
+      { content: 'hello-3', role: 'user' },
     ]
     mockState.ingest.mockResolvedValueOnce(undefined)
 
@@ -365,21 +365,21 @@ describe('useChatSyncStore', async () => {
 
     const peer = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
     peer.postMessage({
-      type: 'command',
-      requestId: 'req-3',
-      senderId: 'peer',
       command: 'retry',
       payload: {
-        sessionId: 'session-1',
         index: 4,
+        sessionId: 'session-1',
       },
+      requestId: 'req-3',
+      senderId: 'peer',
+      type: 'command',
     })
 
     await vi.waitFor(() => {
       expect(mockState.setSessionMessages).toHaveBeenCalledWith('session-1', [
-        { role: 'system', content: 'init' },
-        { role: 'user', content: 'hello-1' },
-        { role: 'assistant', content: 'answer-1' },
+        { content: 'init', role: 'system' },
+        { content: 'hello-1', role: 'user' },
+        { content: 'answer-1', role: 'assistant' },
       ])
       expect(mockState.ingest).toHaveBeenCalledWith('hello-2', expect.any(Object), 'session-1')
     })
@@ -391,7 +391,7 @@ describe('useChatSyncStore', async () => {
   it('keeps the follower chat window on its local session while applying remote snapshots', async () => {
     mockState.activeSessionId.value = 'session-2'
     mockState.sessionMessages.value = {
-      'session-2': [{ role: 'system', content: 'chat-window' }],
+      'session-2': [{ content: 'chat-window', role: 'system' }],
     }
 
     const store = useChatSyncStore()
@@ -399,16 +399,16 @@ describe('useChatSyncStore', async () => {
 
     const authority = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
     authority.postMessage({
-      type: 'session-snapshot',
       authorityId: 'authority',
       snapshot: {
         activeSessionId: 'session-1',
         sessionMessages: {
-          'session-1': [{ role: 'system', content: 'main-window' }],
-          'session-2': [{ role: 'system', content: 'chat-window' }, { role: 'user', content: 'retry me' }],
+          'session-1': [{ content: 'main-window', role: 'system' }],
+          'session-2': [{ content: 'chat-window', role: 'system' }, { content: 'retry me', role: 'user' }],
         },
         sessionMetas: {},
       },
+      type: 'session-snapshot',
     })
 
     await vi.waitFor(() => {
@@ -417,8 +417,8 @@ describe('useChatSyncStore', async () => {
 
     expect(mockState.activeSessionId.value).toBe('session-2')
     expect(mockState.sessionMessages.value['session-2']).toEqual([
-      { role: 'system', content: 'chat-window' },
-      { role: 'user', content: 'retry me' },
+      { content: 'chat-window', role: 'system' },
+      { content: 'retry me', role: 'user' },
     ])
 
     authority.close()
@@ -445,21 +445,21 @@ describe('useChatSyncStore', async () => {
     })
     expect(spotlightCommands).toEqual([
       expect.objectContaining({
-        type: 'command',
         command: 'spotlight-ingest',
         payload: {
           text: 'hello spotlight',
         },
+        type: 'command',
       }),
     ])
     expect(responses).toEqual([
       expect.objectContaining({
-        type: 'response',
         ok: true,
         result: {
           sessionId: 'session-1',
           visibleText: 'visible reply',
         },
+        type: 'response',
       }),
     ])
     expect(mockState.ingest).toHaveBeenCalledWith('hello spotlight', expect.objectContaining({
@@ -490,16 +490,16 @@ describe('useChatSyncStore', async () => {
   it('reruns a tool call locally when this window is the authority', async () => {
     const execute = vi.fn<Tool['execute']>(async () => 'fresh result')
     const demoTool: Tool = {
-      type: 'function',
+      execute,
       function: {
-        name: 'demo-tool',
         description: 'Demo tool',
+        name: 'demo-tool',
         parameters: {
-          type: 'object',
           properties: {},
+          type: 'object',
         },
       },
-      execute,
+      type: 'function',
     }
     mockWidgetsTools.mockResolvedValueOnce([demoTool])
     mockResolveLlmTools.mockImplementationOnce(async (options) => {
@@ -509,20 +509,20 @@ describe('useChatSyncStore', async () => {
       return options?.customTools ?? []
     })
     const initialMessages: MockChatMessage[] = [
-      { role: 'user', content: 'run the tool', id: 'user-1' },
+      { content: 'run the tool', id: 'user-1', role: 'user' },
       {
-        role: 'assistant',
         content: '',
         id: 'assistant-1',
+        role: 'assistant',
         slices: [
           {
-            type: 'tool-call',
             toolCall: {
+              args: '{ "value": 1 }',
               toolCallId: 'call-demo',
               toolCallType: 'function',
               toolName: 'demo-tool',
-              args: '{ "value": 1 }',
             },
+            type: 'tool-call',
           },
         ],
         tool_results: [
@@ -539,20 +539,20 @@ describe('useChatSyncStore', async () => {
     store.initialize('authority')
 
     await store.requestToolCallRerun({
-      sessionId: 'session-1',
+      args: '{ "value": 2 }',
       messageId: 'assistant-1',
-      toolset: 'widgets',
+      sessionId: 'session-1',
       toolCallId: 'call-demo',
       toolName: 'demo-tool',
-      args: '{ "value": 2 }',
+      toolset: 'widgets',
     })
 
     expect(mockResolveLlmTools).toHaveBeenCalledWith({ customTools: expect.any(Function) })
     expect(mockWidgetsTools).toHaveBeenCalledTimes(1)
     expect(mockWeatherTools).toHaveBeenCalledTimes(1)
     expect(execute).toHaveBeenCalledWith({ value: 2 }, {
-      toolCallId: 'call-demo',
       messages: initialMessages,
+      toolCallId: 'call-demo',
     })
     expect(mockState.setSessionMessages).toHaveBeenCalledWith('session-1', [
       initialMessages[0],
@@ -575,12 +575,12 @@ describe('useChatSyncStore', async () => {
     store.initialize('follower')
 
     const pending = store.requestToolCallRerun({
-      sessionId: 'session-1',
+      args: '{ "value": 2 }',
       messageId: 'assistant-1',
-      toolset: 'artistry',
+      sessionId: 'session-1',
       toolCallId: 'call-demo',
       toolName: 'demo-tool',
-      args: '{ "value": 2 }',
+      toolset: 'artistry',
     })
     pending.catch(() => {})
 
@@ -589,16 +589,16 @@ describe('useChatSyncStore', async () => {
 
     expect(rerunCommands).toEqual([
       expect.objectContaining({
-        type: 'command',
         command: 'tool-call-rerun',
         payload: {
-          sessionId: 'session-1',
+          args: '{ "value": 2 }',
           messageId: 'assistant-1',
-          toolset: 'artistry',
+          sessionId: 'session-1',
           toolCallId: 'call-demo',
           toolName: 'demo-tool',
-          args: '{ "value": 2 }',
+          toolset: 'artistry',
         },
+        type: 'command',
       }),
     ])
 

@@ -1,0 +1,23 @@
+{
+  "name": "@proj-airi/voice-input-demo",
+  "type": "module",
+  "private": true,
+  "description": "Standalone VAD segmentation and MiMo ASR diagnostics",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@moeru/std": "workspace:^",
+    "@proj-airi/audio": "workspace:^",
+    "@proj-airi/stage-ui": "workspace:^",
+    "vue": "catalog:"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "catalog:",
+    "@vue/tsconfig": "catalog:",
+    "vite": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}

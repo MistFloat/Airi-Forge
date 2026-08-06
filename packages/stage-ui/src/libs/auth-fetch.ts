@@ -21,11 +21,11 @@ export async function authedFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const doFetch = (token: string | null): Promise<Response> => {
+  const doFetch = (token: null | string): Promise<Response> => {
     const headers = new Headers(init?.headers)
     if (token)
       headers.set('Authorization', `Bearer ${token}`)
-    return fetch(input, { ...init, headers, credentials: 'omit' })
+    return fetch(input, { ...init, credentials: 'omit', headers })
   }
 
   const response = await doFetch(getAuthToken())

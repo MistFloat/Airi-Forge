@@ -9,11 +9,16 @@ import { nextTick, ref } from 'vue'
 import { useChatOrchestratorStore } from './chat'
 
 vi.hoisted(() => {
-  ;(globalThis as any).window = {
-    location: {
-      origin: 'http://localhost',
-    },
+  // NOTICE: posthog-js reads `window.location.hash` during toolbar setup
+  // (`_getHashParam`) and also references the bare `location` global. Node has
+  // neither, so the mock must provide both or posthog crashes with
+  // `Cannot read properties of undefined (reading 'match')` / `location is not defined`.
+  const location = {
+    hash: '',
+    origin: 'http://localhost',
   }
+  ;(globalThis as any).window = { location }
+  ;(globalThis as any).location = location
 })
 
 const ioTracerMocks = vi.hoisted(() => {
@@ -21,9 +26,9 @@ const ioTracerMocks = vi.hoisted(() => {
   const spans: any[] = []
   const startSpanMock = vi.fn((name: string) => {
     const span = {
-      name,
       addEvent: vi.fn(),
       end: vi.fn(),
+      name,
       setAttribute: vi.fn(),
     }
     spans.push(span)
@@ -69,9 +74,15 @@ const ensureSessionMock = vi.fn()
 const activeSessionIdRef = ref('session-1')
 const activeProviderRef = ref('mock-provider')
 const activeModelRef = ref('gpt-test')
-const streamingMessageRef = ref<any>({ role: 'assistant', content: '', slices: [], tool_results: [] })
+const streamingMessageRef = ref<any>({ content: '', role: 'assistant', slices: [], tool_results: [] })
 const sessionMessages: Record<string, any[]> = {}
 let currentGeneration = 1
+
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    t: (key: string, fallback?: string) => fallback ?? key,
+  }),
+}))
 
 vi.mock('pinia', async () => {
   const actual = await vi.importActual<typeof import('pinia')>('pinia')
@@ -83,21 +94,21 @@ vi.mock('pinia', async () => {
 
 vi.mock('../composables', () => ({
   useAnalytics: () => ({
-    trackFirstMessage: trackFirstMessageMock,
-    trackChatFailed: redundantChatAnalyticsMocks.trackChatFailed,
-    trackChatStarted: redundantChatAnalyticsMocks.trackChatStarted,
-    trackMessageSendStarted: chatAnalyticsMocks.trackMessageSendStarted,
-    trackMessageSent: chatAnalyticsMocks.trackMessageSent,
-    trackLlmRequestStarted: chatAnalyticsMocks.trackLlmRequestStarted,
-    trackLlmFirstToken: chatAnalyticsMocks.trackLlmFirstToken,
-    trackAssistantResponseRendered: chatAnalyticsMocks.trackAssistantResponseRendered,
     trackAssistantResponseCompleted: redundantChatAnalyticsMocks.trackAssistantResponseCompleted,
-    trackMessageRound: chatAnalyticsMocks.trackMessageRound,
-    trackMessageRoundFailed: chatAnalyticsMocks.trackMessageRoundFailed,
-    trackFeatureUsed: redundantChatAnalyticsMocks.trackFeatureUsed,
+    trackAssistantResponseRendered: chatAnalyticsMocks.trackAssistantResponseRendered,
+    trackChatActivationFailed: chatAnalyticsMocks.trackChatActivationFailed,
     trackChatActivationStarted: chatAnalyticsMocks.trackChatActivationStarted,
     trackChatActivationSucceeded: chatAnalyticsMocks.trackChatActivationSucceeded,
-    trackChatActivationFailed: chatAnalyticsMocks.trackChatActivationFailed,
+    trackChatFailed: redundantChatAnalyticsMocks.trackChatFailed,
+    trackChatStarted: redundantChatAnalyticsMocks.trackChatStarted,
+    trackFeatureUsed: redundantChatAnalyticsMocks.trackFeatureUsed,
+    trackFirstMessage: trackFirstMessageMock,
+    trackLlmFirstToken: chatAnalyticsMocks.trackLlmFirstToken,
+    trackLlmRequestStarted: chatAnalyticsMocks.trackLlmRequestStarted,
+    trackMessageRound: chatAnalyticsMocks.trackMessageRound,
+    trackMessageRoundFailed: chatAnalyticsMocks.trackMessageRoundFailed,
+    trackMessageSendStarted: chatAnalyticsMocks.trackMessageSendStarted,
+    trackMessageSent: chatAnalyticsMocks.trackMessageSent,
     trackSecondTurnStarted: trackSecondTurnStartedMock,
   }),
 }))
@@ -113,30 +124,30 @@ vi.mock('./chat/context-providers', () => ({
 
 vi.mock('./chat/context-store', () => ({
   useChatContextStore: () => ({
-    ingestContextMessage: ingestContextMessageMock,
     getContextsSnapshot: getContextsSnapshotMock,
+    ingestContextMessage: ingestContextMessageMock,
   }),
 }))
 
 vi.mock('./chat/session-store', () => ({
   useChatSessionStore: () => ({
     activeSessionId: activeSessionIdRef,
-    sessionMessages,
-    ensureSession: (sessionId: string) => {
-      ensureSessionMock(sessionId)
-      sessionMessages[sessionId] ??= [{ role: 'system', content: 'system prompt', createdAt: 1, id: 'system' }]
-    },
     appendSessionMessage: (sessionId: string, message: any) => {
       sessionMessages[sessionId] ??= []
       sessionMessages[sessionId].push(message)
     },
+    ensureSession: (sessionId: string) => {
+      ensureSessionMock(sessionId)
+      sessionMessages[sessionId] ??= [{ content: 'system prompt', createdAt: 1, id: 'system', role: 'system' }]
+    },
+    forkSession: forkSessionMock,
+    getSessionGeneration: () => currentGeneration,
     getSessionMessages: (sessionId: string) => sessionMessages[sessionId] ?? [],
     persistSessionMessages: persistSessionMessagesMock,
-    getSessionGeneration: () => currentGeneration,
-    forkSession: forkSessionMock,
     // Cloud sync surface used by `chat.ts performSend`. Mocked as a no-op so
     // the orchestrator contract tests do not need a real WS / cloud mapper.
     pushMessageToCloud: vi.fn().mockResolvedValue(undefined),
+    sessionMessages,
   }),
 }))
 
@@ -205,26 +216,26 @@ describe('chat orchestrator contract', () => {
     ioTracerMocks.startSpanMock.mockClear()
     activeSessionIdRef.value = 'session-1'
     activeProviderRef.value = 'mock-provider'
-    streamingMessageRef.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
+    streamingMessageRef.value = { content: '', role: 'assistant', slices: [], tool_results: [] }
     currentGeneration = 1
 
     for (const key of Object.keys(sessionMessages)) {
       delete sessionMessages[key]
     }
 
-    sessionMessages['session-1'] = [{ role: 'system', content: 'system prompt', createdAt: 1, id: 'system' }]
+    sessionMessages['session-1'] = [{ content: 'system prompt', createdAt: 1, id: 'system', role: 'system' }]
   })
 
   it('forwards one correlation identity across every PostHog chat milestone', async () => {
     llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ type: 'text-delta', text: 'ok' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'ok', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
     await store.ingest('hello', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     const messageProperties = chatAnalyticsMocks.trackMessageSent.mock.calls[0]?.[0]
@@ -251,27 +262,27 @@ describe('chat orchestrator contract', () => {
   it('emits second turn analytics from chat sends', async () => {
     activeProviderRef.value = 'official-provider'
     llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ type: 'text-delta', text: 'ok' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'ok', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
 
     await store.ingest('first turn', {
-      model: 'chat-auto',
       chatProvider: provider,
+      model: 'chat-auto',
     })
     await store.ingest('second turn', {
-      model: 'chat-auto',
       chatProvider: provider,
+      model: 'chat-auto',
     })
 
     expect(trackSecondTurnStartedMock).toHaveBeenCalledTimes(1)
     expect(trackSecondTurnStartedMock).toHaveBeenCalledWith({
       conversation_id: 'session-1',
+      model_id: 'chat-auto',
       provider_id: 'official-provider',
       provider_mode: 'official',
-      model_id: 'chat-auto',
       round_id: expect.any(String),
       source: 'text',
       turn_index: 2,
@@ -285,14 +296,14 @@ describe('chat orchestrator contract', () => {
   // distinct product decision.
   it('does not emit redundant generic chat aliases for a successful send', async () => {
     llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ type: 'text-delta', text: 'ok' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'ok', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
     await store.ingest('hello', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     expect(redundantChatAnalyticsMocks.trackChatStarted).not.toHaveBeenCalled()
@@ -303,19 +314,19 @@ describe('chat orchestrator contract', () => {
 
   it('forwards later-turn failures to the canonical round failure event', async () => {
     llmStreamMock.mockImplementationOnce(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ type: 'text-delta', text: 'ok' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'ok', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
     llmStreamMock.mockRejectedValueOnce(new Error('later turn rejected'))
 
     const store = useChatOrchestratorStore()
     await store.ingest('first turn', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
     await expect(store.ingest('second turn', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })).rejects.toThrow('later turn rejected')
 
     expect(chatAnalyticsMocks.trackChatActivationFailed).not.toHaveBeenCalled()
@@ -335,11 +346,11 @@ describe('chat orchestrator contract', () => {
     const contextsSnapshot = {
       'system:weather': [
         {
-          id: 'weather',
           contextId: 'system:weather',
+          createdAt: 456,
+          id: 'weather',
           source: 'ReplaceSelf',
           text: 'sunny',
-          createdAt: 456,
         },
       ],
     }
@@ -352,8 +363,8 @@ describe('chat orchestrator contract', () => {
       expect(options.waitForTools).toBe(true)
       expect(options.captureToolErrors).toBe(true)
 
-      await options.onStreamEvent({ type: 'text-delta', text: 'hello' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'hello', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
@@ -388,8 +399,8 @@ describe('chat orchestrator contract', () => {
     })
 
     await store.ingest('hello from user', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     expect(store.sending).toBe(false)
@@ -444,7 +455,7 @@ describe('chat orchestrator contract', () => {
   it('emits special tokens for speech timeline handling during chat streaming', async () => {
     getContextsSnapshotMock.mockReturnValue({})
     llmStreamMock.mockImplementationOnce(async (_model, _provider, _messages, options) => {
-      await options.onStreamEvent({ type: 'text-delta', text: '<|CALL ["plugin.action"]|>' })
+      await options.onStreamEvent({ text: '<|CALL ["plugin.action"]|>', type: 'text-delta' })
     })
 
     const store = useChatOrchestratorStore()
@@ -495,8 +506,8 @@ describe('chat orchestrator contract', () => {
 
     const store = useChatOrchestratorStore()
     const send = store.ingest('hold stream', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     await vi.waitFor(() => {
@@ -529,12 +540,12 @@ describe('chat orchestrator contract', () => {
    */
   it('ingests runtime context providers before composing prompt snapshots', async () => {
     const minecraftContext = {
-      id: 'minecraft-context',
       contextId: 'system:minecraft',
-      strategy: 'replace-self',
-      source: 'minecraft',
-      text: 'player is near spawn',
       createdAt: 123,
+      id: 'minecraft-context',
+      source: 'minecraft',
+      strategy: 'replace-self',
+      text: 'player is near spawn',
     }
     let composedMessages: Message[] = []
 
@@ -544,15 +555,15 @@ describe('chat orchestrator contract', () => {
     })
     llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, messages: Message[], options: any) => {
       composedMessages = messages
-      await options.onStreamEvent({ type: 'text-delta', text: 'minecraft reply' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'minecraft reply', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
 
     await store.ingest('where am I?', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     expect(ingestContextMessageMock).toHaveBeenCalledTimes(1)
@@ -578,12 +589,12 @@ describe('chat orchestrator contract', () => {
 
     const store = useChatOrchestratorStore()
     const firstSend = store.ingest('hold queue', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
     const secondSend = store.ingest('cancel me', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     await vi.waitFor(() => {
@@ -615,25 +626,25 @@ describe('chat orchestrator contract', () => {
     const queuedMessage = 'queued-message-'.repeat(12)
     const store = useChatOrchestratorStore()
     const firstSend = store.ingest('hold queue', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
     const secondSend = store.ingest(queuedMessage, {
-      model: 'gpt-test',
-      chatProvider: provider,
       attachments: [
         {
-          type: 'image',
           data: 'aW1hZ2U=',
           mimeType: 'image/png',
+          type: 'image',
         },
       ],
+      chatProvider: provider,
       input: {
-        type: 'input:text',
         data: {
           text: 'queued input',
         },
+        type: 'input:text',
       },
+      model: 'gpt-test',
     })
 
     await vi.waitFor(() => {
@@ -645,12 +656,12 @@ describe('chat orchestrator contract', () => {
 
     expect(store.getPendingQueuedSendSnapshot()).toEqual([
       {
-        sessionId: 'session-1',
-        generation: 1,
         cancelled: false,
-        messagePreview: queuedMessage.slice(0, 120),
+        generation: 1,
         hasAttachments: true,
         inputType: 'input:text',
+        messagePreview: queuedMessage.slice(0, 120),
+        sessionId: 'session-1',
       },
     ])
 
@@ -671,12 +682,12 @@ describe('chat orchestrator contract', () => {
 
     const store = useChatOrchestratorStore()
     const firstSend = store.ingest('hold queue', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
     const secondSend = store.ingest('stale request', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     })
 
     await vi.waitFor(() => {
@@ -697,8 +708,8 @@ describe('chat orchestrator contract', () => {
     getContextsSnapshotMock.mockReturnValue({})
     forkSessionMock.mockResolvedValue('session-forked')
     llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ type: 'text-delta', text: 'fork-reply' })
-      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+      await options.onStreamEvent({ text: 'fork-reply', type: 'text-delta' })
+      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
     })
 
     const store = useChatOrchestratorStore()
@@ -711,20 +722,20 @@ describe('chat orchestrator contract', () => {
     expect(typeof store.emitBeforeSendHooks).toBe('function')
 
     await store.ingestOnFork('fork me', {
-      model: 'gpt-test',
       chatProvider: provider,
+      model: 'gpt-test',
     }, {
-      fromSessionId: 'session-1',
       atIndex: 3,
-      reason: 'retry',
+      fromSessionId: 'session-1',
       hidden: true,
+      reason: 'retry',
     })
 
     expect(forkSessionMock).toHaveBeenCalledWith({
-      fromSessionId: 'session-1',
       atIndex: 3,
-      reason: 'retry',
+      fromSessionId: 'session-1',
       hidden: true,
+      reason: 'retry',
     })
     expect(ensureSessionMock).toHaveBeenCalledWith('session-forked')
   })

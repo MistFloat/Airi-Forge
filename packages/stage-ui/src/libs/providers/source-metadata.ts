@@ -1,30 +1,30 @@
-export type ProviderSourcePricing = 'free' | 'paid'
-export type ProviderSourceDeployment = 'local' | 'cloud'
-
+export type ProviderSourceDeployment = 'cloud' | 'local'
 /**
  * Represents source catalogue tags used by provider filtering UI.
  */
 export interface ProviderSourceMetadata {
-  /** Price bucket shown by the provider source filter. */
-  pricing?: ProviderSourcePricing
-  /** Runtime/deployment bucket shown by the provider source filter. */
-  deployment?: ProviderSourceDeployment
   /** Whether the provider should receive the existing recommended tag. */
   beginnerRecommended?: boolean
+  /** Runtime/deployment bucket shown by the provider source filter. */
+  deployment?: ProviderSourceDeployment
+  /** Price bucket shown by the provider source filter. */
+  pricing?: ProviderSourcePricing
 }
 
 export interface ProviderSourceMetadataInput {
   id?: string
 }
 
+export type ProviderSourcePricing = 'free' | 'paid'
+
 const paidCloud = {
-  pricing: 'paid',
   deployment: 'cloud',
+  pricing: 'paid',
 } satisfies ProviderSourceMetadata
 
 const freeLocal = {
-  pricing: 'free',
   deployment: 'local',
+  pricing: 'free',
 } satisfies ProviderSourceMetadata
 
 const recommendedPaidCloud = {
@@ -61,6 +61,7 @@ const providerSourceMetadataById = {
   'google-generative-ai': paidCloud,
   'groq': paidCloud,
   'index-tts-vllm': freeLocal,
+  'knowlez-tts': paidCloud,
   'kokoro-local': freeLocal,
   'lm-studio': freeLocal,
   'microsoft-speech': paidCloud,
@@ -96,24 +97,7 @@ const providerSourceMetadataById = {
   'volcengine-coding-plan': paidCloud,
   'xai': paidCloud,
   'zai': paidCloud,
-} satisfies Record<string, ProviderSourceMetadata | false>
-
-/**
- * Normalizes provider source metadata by dropping undefined fields.
- *
- * Before:
- * - `{ pricing: "paid", deployment: undefined }`
- *
- * After:
- * - `{ pricing: "paid" }`
- */
-function compactProviderSourceMetadata(metadata: ProviderSourceMetadata): ProviderSourceMetadata {
-  return {
-    ...(metadata.pricing ? { pricing: metadata.pricing } : {}),
-    ...(metadata.deployment ? { deployment: metadata.deployment } : {}),
-    ...(metadata.beginnerRecommended !== undefined ? { beginnerRecommended: metadata.beginnerRecommended } : {}),
-  }
-}
+} satisfies Record<string, false | ProviderSourceMetadata>
 
 /**
  * Resolves the provider source tags used by settings/provider filtering.
@@ -141,4 +125,21 @@ export function resolveProviderSourceMetadata(
     return compactProviderSourceMetadata(sourceMetadata)
 
   return {}
+}
+
+/**
+ * Normalizes provider source metadata by dropping undefined fields.
+ *
+ * Before:
+ * - `{ pricing: "paid", deployment: undefined }`
+ *
+ * After:
+ * - `{ pricing: "paid" }`
+ */
+function compactProviderSourceMetadata(metadata: ProviderSourceMetadata): ProviderSourceMetadata {
+  return {
+    ...(metadata.pricing ? { pricing: metadata.pricing } : {}),
+    ...(metadata.deployment ? { deployment: metadata.deployment } : {}),
+    ...(metadata.beginnerRecommended !== undefined ? { beginnerRecommended: metadata.beginnerRecommended } : {}),
+  }
 }

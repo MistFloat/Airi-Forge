@@ -21,7 +21,7 @@ import {
 export * from './posthog'
 export * from './privacy-policy'
 
-function analyticsSurface(): 'web' | 'desktop' | 'mobile' {
+function analyticsSurface(): 'desktop' | 'mobile' | 'web' {
   return isStageTamagotchi()
     ? 'desktop'
     : isStageCapacitor()
@@ -29,7 +29,7 @@ function analyticsSurface(): 'web' | 'desktop' | 'mobile' {
       : 'web'
 }
 
-function providerMode(providerId: string | undefined): 'official' | 'custom' | 'unknown' {
+function providerMode(providerId: string | undefined): 'custom' | 'official' | 'unknown' {
   if (!providerId)
     return 'unknown'
   return providerId.startsWith('official-provider') ? 'official' : 'custom'
@@ -41,7 +41,7 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
   const { analyticsEnabled } = storeToRefs(settingsAnalytics)
   const isInitialized = ref(false)
 
-  const appStartTime = ref<number | null>(null)
+  const appStartTime = ref<null | number>(null)
   const firstMessageTracked = ref(false)
   // In-memory only, intentionally — matches `firstMessageTracked` semantics
   // (resets on reload). PostHog can compute true "first time across all
@@ -55,11 +55,11 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
 
     if (previousEnabled && !enabled) {
       capturePosthogEvent('settings_changed', {
-        setting_name: 'analytics_enabled',
-        previous_value: previousEnabled,
-        new_value: enabled,
-        source: 'settings',
         app_surface: analyticsSurface(),
+        new_value: enabled,
+        previous_value: previousEnabled,
+        setting_name: 'analytics_enabled',
+        source: 'settings',
       })
     }
 
@@ -67,11 +67,11 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
     if (shouldCapture) {
       if (!previousEnabled && enabled) {
         capturePosthogEvent('settings_changed', {
-          setting_name: 'analytics_enabled',
-          previous_value: previousEnabled,
-          new_value: enabled,
-          source: 'settings',
           app_surface: analyticsSurface(),
+          new_value: enabled,
+          previous_value: previousEnabled,
+          setting_name: 'analytics_enabled',
+          source: 'settings',
         })
       }
 
@@ -145,7 +145,7 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
     // change UI doesn't need to remember to fire analytics.
     const consciousness = useConsciousnessStore()
     watch(
-      () => ({ provider: consciousness.activeProvider, model: consciousness.activeModel }),
+      () => ({ model: consciousness.activeModel, provider: consciousness.activeProvider }),
       (next, prev) => {
         if (!next.provider || !next.model)
           return
@@ -184,27 +184,27 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
         // re-selects) skip the switch event; the next clean A → B will fire.
         if (prev.provider && prev.provider !== next.provider) {
           capturePosthogEvent('provider_switched', {
-            from_provider: prev.provider,
-            to_provider: next.provider,
-            from_provider_type: providerMode(prev.provider),
-            to_provider_type: providerMode(next.provider),
-            reason: 'manual',
             app_surface: analyticsSurface(),
+            from_provider: prev.provider,
+            from_provider_type: providerMode(prev.provider),
+            reason: 'manual',
+            to_provider: next.provider,
+            to_provider_type: providerMode(next.provider),
           })
         }
 
         if (prev.model) {
           capturePosthogEvent('model_switched', {
             from_model: prev.model,
-            to_model: next.model,
             reason: 'manual',
+            to_model: next.model,
           })
           capturePosthogEvent('model_changed', {
+            app_surface: analyticsSurface(),
             from_model: prev.model,
-            to_model: next.model,
             provider: next.provider,
             reason: 'manual',
-            app_surface: analyticsSurface(),
+            to_model: next.model,
           })
         }
       },
@@ -237,8 +237,8 @@ export const useSharedAnalyticsStore = defineStore('analytics-shared', () => {
   }
 
   return {
-    buildInfo,
     appStartTime,
+    buildInfo,
     firstMessageTracked,
     initialize,
     markFirstMessageTracked,

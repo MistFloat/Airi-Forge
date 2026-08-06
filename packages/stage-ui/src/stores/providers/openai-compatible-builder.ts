@@ -8,88 +8,41 @@ import { ProviderValidationCheck } from '../../libs/providers'
 
 type ProviderCreator = (apiKey: string, baseUrl: string) => any
 
-// Lightweight normalization utilities and conditional logging
-function normalizeString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function normalizeBaseUrl(value: unknown): string {
-  let base = normalizeString(value)
-  if (base && !base.endsWith('/'))
-    base += '/'
-  return base
-}
-
-function shouldLog(): boolean {
-  try {
-    // Opt-in via localStorage to minimize I/O in production
-    return typeof localStorage !== 'undefined' && localStorage.getItem('airi:debug') === '1'
-  }
-  catch {
-    return false
-  }
-}
-
-function logWarn(...args: unknown[]) {
-  if (shouldLog())
-    console.warn(...args)
-}
-
-/**
- * Wraps transcription providers so OpenAI audio options like `language` and `prompt` are preserved.
- */
-function withTranscriptionExtraOptions(provider: unknown) {
-  if (!provider || typeof provider !== 'object' || !('transcription' in provider))
-    return provider
-
-  const transcription = (provider as { transcription?: unknown }).transcription
-  if (typeof transcription !== 'function')
-    return provider
-
-  return {
-    ...provider,
-    transcription: (model: string, extraOptions?: Record<string, unknown>) => ({
-      ...transcription(model),
-      ...extraOptions,
-    }),
-  }
-}
-
 export function buildOpenAICompatibleProvider(
   options: Partial<ProviderMetadata> & {
+    additionalHeaders?: Record<string, string>
+    capabilities?: ProviderMetadata['capabilities']
+    category?: 'chat' | 'embed' | 'speech' | 'transcription'
+    creator: ProviderCreator
+    defaultBaseUrl?: string
+    description: string
+    descriptionKey: string
+    icon: string
     id: string
     name: string
-    icon: string
-    description: string
     nameKey: string
-    descriptionKey: string
-    category?: 'chat' | 'embed' | 'speech' | 'transcription'
     tasks?: string[]
-    defaultBaseUrl?: string
-    creator: ProviderCreator
-    capabilities?: ProviderMetadata['capabilities']
-    validators?: ProviderMetadata['validators']
-    validation?: ProviderValidationCheck[]
-    additionalHeaders?: Record<string, string>
     transcriptionFeatures?: ProviderMetadata['transcriptionFeatures']
+    validation?: ProviderValidationCheck[]
+    validators?: ProviderMetadata['validators']
   },
 ): ProviderMetadata {
   const {
+    additionalHeaders,
+    capabilities,
+    category,
+    creator,
+    defaultBaseUrl,
+    description,
+    descriptionKey,
+    icon,
     id,
     name,
-    icon,
-    description,
     nameKey,
-    descriptionKey,
-    category,
     tasks,
-    defaultBaseUrl,
-    creator,
-    capabilities,
-    validators,
-    validation,
-    additionalHeaders,
     transcriptionFeatures,
+    validation,
+    validators,
     ...rest
   } = options
 
@@ -119,12 +72,12 @@ export function buildOpenAICompatibleProvider(
 
       return models.map((model: any) => {
         return {
+          contextLength: model.context_length || 0,
+          deprecated: false,
+          description: model.description || '',
           id: model.id,
           name: model.name || model.display_name || model.id,
           provider: id,
-          description: model.description || '',
-          contextLength: model.context_length || 0,
-          deprecated: false,
         } satisfies ModelInfo
       })
     },
@@ -222,9 +175,9 @@ export function buildOpenAICompatibleProvider(
               apiKey,
               baseURL: baseUrl,
               headers: additionalHeaders,
-              model,
-              messages: message.messages(message.user('ping')),
               max_tokens: 1,
+              messages: message.messages(message.user('ping')),
+              model,
             })
             return null
           }
@@ -276,17 +229,8 @@ export function buildOpenAICompatibleProvider(
   const resolvedCategory = category ?? 'chat'
 
   return {
-    id,
+    capabilities: finalCapabilities,
     category: resolvedCategory,
-    tasks: tasks || ['text-generation'],
-    nameKey,
-    name,
-    descriptionKey,
-    description,
-    icon,
-    defaultOptions: () => ({
-      baseUrl: defaultBaseUrl || '',
-    }),
     createProvider: async (config: { apiKey: string, baseUrl: string }) => {
       const apiKey = normalizeString(config.apiKey)
       const baseUrl = normalizeBaseUrl(config.baseUrl)
@@ -296,17 +240,73 @@ export function buildOpenAICompatibleProvider(
 
       return provider
     },
-    capabilities: finalCapabilities,
+    defaultOptions: () => ({
+      baseUrl: defaultBaseUrl || '',
+    }),
+    description,
+    descriptionKey,
+    icon,
+    id,
+    name,
+    nameKey,
+    tasks: tasks || ['text-generation'],
     validators: finalValidators,
     ...(resolvedCategory === 'transcription'
       ? {
           transcriptionFeatures: transcriptionFeatures ?? {
             supportsGenerate: true,
-            supportsStreamOutput: false,
             supportsStreamInput: false,
+            supportsStreamOutput: false,
           },
         }
       : {}),
     ...rest,
   } as ProviderMetadata
+}
+
+function logWarn(...args: unknown[]) {
+  if (shouldLog())
+    console.warn(...args)
+}
+
+function normalizeBaseUrl(value: unknown): string {
+  let base = normalizeString(value)
+  if (base && !base.endsWith('/'))
+    base += '/'
+  return base
+}
+
+// Lightweight normalization utilities and conditional logging
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function shouldLog(): boolean {
+  try {
+    // Opt-in via localStorage to minimize I/O in production
+    return typeof localStorage !== 'undefined' && localStorage.getItem('airi:debug') === '1'
+  }
+  catch {
+    return false
+  }
+}
+
+/**
+ * Wraps transcription providers so OpenAI audio options like `language` and `prompt` are preserved.
+ */
+function withTranscriptionExtraOptions(provider: unknown) {
+  if (!provider || typeof provider !== 'object' || !('transcription' in provider))
+    return provider
+
+  const transcription = (provider as { transcription?: unknown }).transcription
+  if (typeof transcription !== 'function')
+    return provider
+
+  return {
+    ...provider,
+    transcription: (model: string, extraOptions?: Record<string, unknown>) => ({
+      ...transcription(model),
+      ...extraOptions,
+    }),
+  }
 }

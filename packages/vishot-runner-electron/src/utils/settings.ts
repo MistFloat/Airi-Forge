@@ -1,27 +1,7 @@
 import type { Page } from 'playwright'
 
-function normalizeLabel(label: RegExp | string): string | RegExp {
-  return label
-}
-
-function getSettingsSwitch(settingsPage: Page, label: RegExp | string) {
-  const labelLocator = settingsPage.getByText(normalizeLabel(label)).first()
-  const row = labelLocator.locator('xpath=ancestor::label[1]')
-  const button = row.locator('button[role="switch"]').first()
-
-  return { labelLocator, row, button }
-}
-
-function normalizeHashPath(hash: string): string {
-  const withoutHash = hash.startsWith('#')
-    ? hash.slice(1)
-    : hash
-
-  return withoutHash || '/'
-}
-
-function getCurrentHashPath(settingsPage: Page): string {
-  return normalizeHashPath(new URL(settingsPage.url()).hash)
+export async function goToSettingsConnectionPage(settingsPage: Page): Promise<Page> {
+  return goToSettingsRoute(settingsPage, '/settings/connection')
 }
 
 export async function goToSettingsRoute(settingsPage: Page, routePath: string): Promise<Page> {
@@ -48,12 +28,8 @@ export async function openSettingsConnectionPage(_mainPage: Page, settingsPage: 
   }
 }
 
-export async function goToSettingsConnectionPage(settingsPage: Page): Promise<Page> {
-  return goToSettingsRoute(settingsPage, '/settings/connection')
-}
-
-export async function toggleSettingsSwitchByLabel(settingsPage: Page, label: RegExp | string): Promise<{ before: string, after: string }> {
-  const { labelLocator, row, button } = getSettingsSwitch(settingsPage, label)
+export async function toggleSettingsSwitchByLabel(settingsPage: Page, label: RegExp | string): Promise<{ after: string, before: string }> {
+  const { button, labelLocator, row } = getSettingsSwitch(settingsPage, label)
 
   await labelLocator.waitFor({ state: 'visible', timeout: 15_000 })
   await row.waitFor({ state: 'visible', timeout: 15_000 })
@@ -67,5 +43,29 @@ export async function toggleSettingsSwitchByLabel(settingsPage: Page, label: Reg
     throw new Error(`Custom switch state did not change for label ${String(label)}`)
   }
 
-  return { before, after }
+  return { after, before }
+}
+
+function getCurrentHashPath(settingsPage: Page): string {
+  return normalizeHashPath(new URL(settingsPage.url()).hash)
+}
+
+function getSettingsSwitch(settingsPage: Page, label: RegExp | string) {
+  const labelLocator = settingsPage.getByText(normalizeLabel(label)).first()
+  const row = labelLocator.locator('xpath=ancestor::label[1]')
+  const button = row.locator('button[role="switch"]').first()
+
+  return { button, labelLocator, row }
+}
+
+function normalizeHashPath(hash: string): string {
+  const withoutHash = hash.startsWith('#')
+    ? hash.slice(1)
+    : hash
+
+  return withoutHash || '/'
+}
+
+function normalizeLabel(label: RegExp | string): RegExp | string {
+  return label
 }

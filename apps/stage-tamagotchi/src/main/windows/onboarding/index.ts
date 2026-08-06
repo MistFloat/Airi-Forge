@@ -20,14 +20,14 @@ import { toggleWindowShow } from '../shared'
 import { setupBaseWindowElectronInvokes } from '../shared/window'
 
 export interface OnboardingWindowManager {
-  getWindow: () => Promise<BrowserWindow>
   getAndToggleWindow: () => Promise<BrowserWindow>
+  getWindow: () => Promise<BrowserWindow>
   onClosed: (callback: () => void) => () => void
 }
 
 export function setupOnboardingWindowManager(params: {
-  serverChannel: ServerChannel
   i18n: I18n
+  serverChannel: ServerChannel
   windowAuthManager: WindowAuthManager
 }): OnboardingWindowManager {
   const closeCallbacks = new Set<() => void>()
@@ -41,22 +41,22 @@ export function setupOnboardingWindowManager(params: {
 
   const reusableWindow = createReusableWindow(async () => {
     const newWindow = new BrowserWindow({
-      title: 'Welcome to AIRI',
-      width: 1000,
-      height: 650,
-      minWidth: 400,
-      minHeight: 500,
-      show: false,
-      icon,
-      resizable: true,
+      backgroundColor: '#0f0f0f',
       frame: !isMacOS,
+      height: 650,
+      icon,
+      minHeight: 500,
+      minWidth: 400,
+      resizable: true,
+      show: false,
+      title: 'Welcome to AIRI',
       titleBarStyle: isMacOS ? 'hidden' : undefined,
       transparent: false,
-      backgroundColor: '#0f0f0f',
       webPreferences: {
         preload: join(getElectronMainDirname(), '../preload/index.mjs'),
         sandbox: false,
       },
+      width: 1000,
     })
 
     newWindow.on('ready-to-show', () => newWindow.show())
@@ -76,7 +76,7 @@ export function setupOnboardingWindowManager(params: {
       safeClose(newWindow)
     })
 
-    await setupBaseWindowElectronInvokes({ context, window: newWindow, i18n: params.i18n, serverChannel: params.serverChannel })
+    await setupBaseWindowElectronInvokes({ context, i18n: params.i18n, serverChannel: params.serverChannel, window: newWindow })
     createAuthService({ context, window: newWindow, windowAuthManager: params.windowAuthManager })
 
     await load(newWindow, withHashRoute(baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')), '/onboarding'))
@@ -94,8 +94,8 @@ export function setupOnboardingWindowManager(params: {
   })
 
   return {
-    getWindow: async () => reusableWindow.getWindow(),
     getAndToggleWindow: async () => await getOnboardingWindow(reusableWindow.getWindow),
+    getWindow: async () => reusableWindow.getWindow(),
     onClosed: (callback: () => void) => {
       closeCallbacks.add(callback)
       return () => {

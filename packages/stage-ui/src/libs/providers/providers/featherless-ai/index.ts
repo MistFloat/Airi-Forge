@@ -17,30 +17,30 @@ const featherlessConfigSchema = z.object({
 type FeatherlessConfig = z.input<typeof featherlessConfigSchema>
 
 export const providerFeatherlessAI = defineProvider<FeatherlessConfig>({
-  id: 'featherless-ai',
-  name: 'Featherless.ai',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.featherless.title'),
-  description: 'featherless.ai',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.featherless.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:featherless-color',
-
+  createProvider(config) {
+    return createOpenAI(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => featherlessConfigSchema.extend({
     apiKey: featherlessConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: featherlessConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createOpenAI(config.apiKey, config.baseUrl)
-  },
+  description: 'featherless.ai',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.featherless.description'),
+  icon: 'i-lobe-icons:featherless-color',
+  id: 'featherless-ai',
+  name: 'Featherless.ai',
+
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.featherless.title'),
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

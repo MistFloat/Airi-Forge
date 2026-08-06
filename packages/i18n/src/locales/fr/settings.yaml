@@ -666,6 +666,55 @@ pages:
               Remarque : Si votre fournisseur ne prend pas en charge les réponses verbose_json, ce paramètre n'aura aucun effet.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
+    instructions:
+      description: Paramètres et gestion des instructions permanentes injectées dans chaque requête
+      title: Instructions
+      estimated-tokens: 'Environ {tokens} jetons sont injectés dans chaque requête.'
+      create: Nouvelle instruction
+      empty: Aucune instruction pour le moment. Créez-en une pour injecter des règles fixes dans chaque conversation.
+      edit: Modifier
+      delete: Supprimer
+      confirm-delete: Supprimer cette instruction ?
+      cancel: Annuler
+      priority-value: 'Priorité : {value}'
+      scopes:
+        global: Global
+        chat: Discussion
+        speech: Parole
+        memory: Mémoire
+        vision: Vision
+        artistry: Créativité
+      statuses:
+        active: Active
+        archived: Archivée
+        superseded: Remplacée
+      editor:
+        create-title: Nouvelle instruction
+        edit-title: Modifier l'instruction
+        cancel: Annuler
+        save: Enregistrer
+        fields:
+          title: Titre
+          content: Contenu
+          content-description: Texte injecté tel quel dans chaque requête LLM.
+          instruction-scope: Portée
+          instruction-priority: Priorité
+          instruction-rule-key: Clé de règle
+          instruction-rule-key-description: Clé unique facultative permettant à une nouvelle instruction de remplacer (supersede) celle-ci.
+          status: Statut
+          effective-from: Effective à partir de
+          effective-until: Effective jusqu'à
+        scopes:
+          global: Global
+          chat: Discussion
+          speech: Parole
+          memory: Mémoire
+          vision: Vision
+          artistry: Créativité
+        statuses:
+          active: Active
+          archived: Archivée
+          superseded: Remplacée
     memory-long-term:
       description: Paramètres et gestion de la mémoire à long terme
       title: Mémoire à long terme

@@ -8,46 +8,46 @@ describe('setupAgentSparkNotifyHandler', () => {
   it('captures tracing artifacts for command-only spark runs', async () => {
     const traces: unknown[] = []
     const handler = setupAgentSparkNotifyHandler({
+      getActiveModel: () => 'mock-model',
+      getActiveProvider: () => 'mock-provider',
+      getPending: () => [],
+      getProcessing: () => false,
+      getProviderInstance: async () => ({} as any),
+      getSystemPrompt: () => 'system',
+      onReactionDelta: vi.fn(),
+      onReactionEnd: vi.fn(),
+      onTrace: (event: unknown) => traces.push(event),
+      setPending: vi.fn(),
+      setProcessing: vi.fn(),
       stream: async (_model, _provider, _messages, options) => {
         const commandTool = options.tools?.find((tool: any) => tool.function?.name === 'builtIn_sparkCommand')
         await commandTool?.execute({
           commands: [
             {
+              ack: 'play e5',
               destinations: ['chess'],
+              guidance: null,
+              intent: 'action',
               interrupt: 'false',
               priority: 'high',
-              intent: 'action',
-              ack: 'play e5',
-              guidance: null,
             },
           ],
         })
         await options.onStreamEvent?.({ type: 'finish' } as any)
       },
-      getActiveProvider: () => 'mock-provider',
-      getActiveModel: () => 'mock-model',
-      getProviderInstance: async () => ({} as any),
-      onReactionDelta: vi.fn(),
-      onReactionEnd: vi.fn(),
-      getSystemPrompt: () => 'system',
-      getProcessing: () => false,
-      setProcessing: vi.fn(),
-      getPending: () => [],
-      setPending: vi.fn(),
-      onTrace: (event: unknown) => traces.push(event),
     } as any)
 
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'plugin:airi-plugin-game-chess',
       data: {
-        id: 'spark-1',
+        destinations: ['character'],
         eventId: 'evt-1',
+        headline: 'chess update',
+        id: 'spark-1',
         kind: 'ping',
         urgency: 'immediate',
-        headline: 'chess update',
-        destinations: ['character'],
       },
+      source: 'plugin:airi-plugin-game-chess',
+      type: 'spark:notify',
     }
 
     const result = await handler.handle(event)
@@ -62,42 +62,42 @@ describe('setupAgentSparkNotifyHandler', () => {
     })
 
     const handler = setupAgentSparkNotifyHandler({
-      stream,
-      getActiveProvider: () => 'mock-provider',
       getActiveModel: () => 'mock-model',
+      getActiveProvider: () => 'mock-provider',
+      getPending: () => [],
+      getProcessing: () => false,
       getProviderInstance: async () => ({} as any),
+      getSystemPrompt: () => 'system',
       onReactionDelta: vi.fn(),
       onReactionEnd: vi.fn(),
-      getSystemPrompt: () => 'system',
-      getProcessing: () => false,
-      setProcessing: vi.fn(),
-      getPending: () => [],
       setPending: vi.fn(),
+      setProcessing: vi.fn(),
+      stream,
     })
 
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'plugin:airi-plugin-game-chess',
       data: {
-        id: 'spark-2',
+        destinations: ['character'],
         eventId: 'evt-2',
+        headline: 'command-only update',
+        id: 'spark-2',
         kind: 'ping',
         urgency: 'immediate',
-        headline: 'command-only update',
-        destinations: ['character'],
       },
+      source: 'plugin:airi-plugin-game-chess',
+      type: 'spark:notify',
     }
 
     await handler.handle(event, {
       forceSparkCommandResponse: true,
     } as any)
 
-    const streamOptions = stream.mock.calls[0]?.[3] as { toolChoice?: unknown } | undefined
+    const streamOptions = stream.mock.calls[0]?.[3] as undefined | { toolChoice?: unknown }
     expect(streamOptions?.toolChoice).toEqual({
-      type: 'function',
       function: {
         name: 'builtIn_sparkCommand',
       },
+      type: 'function',
     })
   })
 
@@ -110,30 +110,30 @@ describe('setupAgentSparkNotifyHandler', () => {
     })
 
     const handler = setupAgentSparkNotifyHandler({
-      stream,
-      getActiveProvider: () => 'mock-provider',
       getActiveModel: () => 'mock-model',
+      getActiveProvider: () => 'mock-provider',
+      getPending: () => [],
+      getProcessing: () => false,
       getProviderInstance: async () => ({} as any),
+      getSystemPrompt: () => 'system',
       onReactionDelta: vi.fn(),
       onReactionEnd: vi.fn(),
-      getSystemPrompt: () => 'system',
-      getProcessing: () => false,
-      setProcessing: vi.fn(),
-      getPending: () => [],
       setPending: vi.fn(),
+      setProcessing: vi.fn(),
+      stream,
     })
 
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'plugin:airi-plugin-game-chess',
       data: {
-        id: 'spark-3',
+        destinations: ['character'],
         eventId: 'evt-3',
+        headline: 'override update',
+        id: 'spark-3',
         kind: 'ping',
         urgency: 'immediate',
-        headline: 'override update',
-        destinations: ['character'],
       },
+      source: 'plugin:airi-plugin-game-chess',
+      type: 'spark:notify',
     }
 
     await handler.handle(event, {

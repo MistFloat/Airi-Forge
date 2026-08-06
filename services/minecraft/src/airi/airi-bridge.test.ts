@@ -5,11 +5,11 @@ import { AiriBridge } from './airi-bridge'
 function createBridgeHarness() {
   const handlers = new Map<string, (event: any) => void>()
   const client = {
-    send: vi.fn(),
+    offEvent: vi.fn(),
     onEvent: vi.fn((type: string, handler: (event: any) => void) => {
       handlers.set(type, handler)
     }),
-    offEvent: vi.fn(),
+    send: vi.fn(),
   }
   const eventBus = {
     emit: vi.fn(),
@@ -30,9 +30,6 @@ describe('airiBridge spark command routing', () => {
     commandHandler?.({
       data: {
         commandId: 'spark-1',
-        intent: 'action',
-        interrupt: false,
-        priority: 'normal',
         guidance: {
           options: [
             {
@@ -41,21 +38,24 @@ describe('airiBridge spark command routing', () => {
             },
           ],
         },
+        intent: 'action',
+        interrupt: false,
+        priority: 'normal',
       },
     })
 
     expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'signal:airi_command',
       payload: expect.objectContaining({
-        type: 'airi_command',
         description: 'Directive from AIRI: "collect wood"',
-        sourceId: 'airi',
         metadata: expect.objectContaining({
           message: 'collect wood',
           sparkCommandId: 'spark-1',
           sparkIntent: 'action',
         }),
+        sourceId: 'airi',
+        type: 'airi_command',
       }),
+      type: 'signal:airi_command',
     }))
     expect(eventBus.emit).not.toHaveBeenCalledWith(expect.objectContaining({
       type: 'signal:chat_message',

@@ -35,38 +35,16 @@ let closeLoopback: (() => void) | null = null
 let signingInFlight = false
 
 export interface WindowAuthManager {
-  registerWindow: (params: { context: MainContext, window: BrowserWindow }) => void
   broadcastAuthCallback: (tokens: TokenExchangeResult) => void
   broadcastAuthError: (error: string) => void
+  registerWindow: (params: { context: MainContext, window: BrowserWindow }) => void
 }
 
-export function createWindowAuthManagerService(): WindowAuthManager {
-  const authContexts = new Set<MainContext>()
-
-  function broadcastAuthCallback(tokens: TokenExchangeResult): void {
-    for (const context of authContexts) {
-      context.emit(electronAuthCallback, tokens)
-    }
-  }
-
-  function broadcastAuthError(error: string): void {
-    for (const context of authContexts) {
-      context.emit(electronAuthCallbackError, { error })
-    }
-  }
-
-  return {
-    registerWindow(params) {
-      authContexts.add(params.context)
-
-      params.window.on('closed', () => {
-        authContexts.delete(params.context)
-      })
-    },
-
-    broadcastAuthCallback,
-    broadcastAuthError,
-  }
+interface TokenExchangeResult {
+  accessToken: string
+  expiresIn: number
+  idToken?: string
+  refreshToken?: string
 }
 
 /**
@@ -169,27 +147,49 @@ export function createAuthService(params: {
 
 // --- Internal helpers ---
 
-interface TokenExchangeResult {
-  accessToken: string
-  refreshToken?: string
-  idToken?: string
-  expiresIn: number
+export function createWindowAuthManagerService(): WindowAuthManager {
+  const authContexts = new Set<MainContext>()
+
+  function broadcastAuthCallback(tokens: TokenExchangeResult): void {
+    for (const context of authContexts) {
+      context.emit(electronAuthCallback, tokens)
+    }
+  }
+
+  function broadcastAuthError(error: string): void {
+    for (const context of authContexts) {
+      context.emit(electronAuthCallbackError, { error })
+    }
+  }
+
+  return {
+    broadcastAuthCallback,
+
+    broadcastAuthError,
+    registerWindow(params) {
+      authContexts.add(params.context)
+
+      params.window.on('closed', () => {
+        authContexts.delete(params.context)
+      })
+    },
+  }
 }
 
 async function exchangeCode(code: string, codeVerifier: string, redirectUri: string): Promise<TokenExchangeResult> {
   const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: redirectUri,
     client_id: OIDC_CLIENT_ID,
+    code,
     code_verifier: codeVerifier,
+    grant_type: 'authorization_code',
+    redirect_uri: redirectUri,
     resource: SERVER_URL,
   })
 
   const response = await fetch(new URL(OIDC_TOKEN_PATH, SERVER_URL), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
   })
 
   if (!response.ok) {
@@ -200,8 +200,8 @@ async function exchangeCode(code: string, codeVerifier: string, redirectUri: str
   const data = await response.json() as Record<string, unknown>
   return {
     accessToken: data.access_token as string,
-    refreshToken: data.refresh_token as string | undefined,
-    idToken: data.id_token as string | undefined,
     expiresIn: data.expires_in as number,
+    idToken: data.id_token as string | undefined,
+    refreshToken: data.refresh_token as string | undefined,
   }
 }

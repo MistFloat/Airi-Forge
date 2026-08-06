@@ -12,18 +12,6 @@ import { useRouter } from 'vue-router'
 import { useProvidersStore } from '../stores/providers'
 import { useAnalytics } from './use-analytics'
 
-/**
- * Classifies provider ids into bounded analytics buckets.
- */
-function providerModeForAnalytics(providerId: string): ProviderMode {
-  if (!providerId)
-    return 'unknown'
-
-  return providerId.startsWith('official-provider') || providerId.startsWith('vision-official-provider')
-    ? 'official'
-    : 'custom'
-}
-
 export function useProviderValidation(providerId: string) {
   const { t } = useI18n()
   const router = useRouter()
@@ -118,8 +106,8 @@ export function useProviderValidation(providerId: string) {
         finalValidationMessage = validationResult.reason
         trackProviderConfigFailed({
           ...providerConfigAnalyticsBase('settings_auto_validate'),
-          error_code: 'validation_failed',
           duration_ms: Math.round(performance.now() - startValidationTimestamp),
+          error_code: 'validation_failed',
         })
       }
 
@@ -142,8 +130,8 @@ export function useProviderValidation(providerId: string) {
       })
       trackProviderConfigFailed({
         ...providerConfigAnalyticsBase('settings_auto_validate'),
-        error_code: 'provider_error',
         duration_ms: Math.round(performance.now() - startValidationTimestamp),
+        error_code: 'provider_error',
       })
     }
     finally {
@@ -184,8 +172,8 @@ export function useProviderValidation(providerId: string) {
         manualTestMessage.value = result.reason
         trackProviderConfigFailed({
           ...providerConfigAnalyticsBase('manual_chat_ping'),
-          error_code: 'validation_failed',
           duration_ms: Math.round(performance.now() - startedAt),
+          error_code: 'validation_failed',
         })
       }
     }
@@ -194,8 +182,8 @@ export function useProviderValidation(providerId: string) {
       manualTestMessage.value = errorMessageFrom(error) ?? 'Generic error (e56ae24f)'
       trackProviderConfigFailed({
         ...providerConfigAnalyticsBase('manual_chat_ping'),
-        error_code: 'provider_error',
         duration_ms: Math.round(performance.now() - startedAt),
+        error_code: 'provider_error',
       })
     }
     finally {
@@ -258,22 +246,34 @@ export function useProviderValidation(providerId: string) {
   }
 
   return {
-    t,
-    router,
-    providerMetadata,
+    accountId,
     apiKey,
     baseUrl,
-    accountId,
-    isValidating,
-    isValid,
-    validationMessage,
-    handleResetSettings,
     forceValid,
+    handleResetSettings,
     // Manual test generation
     hasManualValidators,
     isManualTesting,
-    manualTestPassed,
+    isValid,
+    isValidating,
     manualTestMessage,
+    manualTestPassed,
+    providerMetadata,
+    router,
     runManualTest,
+    t,
+    validationMessage,
   }
+}
+
+/**
+ * Classifies provider ids into bounded analytics buckets.
+ */
+function providerModeForAnalytics(providerId: string): ProviderMode {
+  if (!providerId)
+    return 'unknown'
+
+  return providerId.startsWith('official-provider') || providerId.startsWith('vision-official-provider')
+    ? 'official'
+    : 'custom'
 }

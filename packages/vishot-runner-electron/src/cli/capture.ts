@@ -16,7 +16,7 @@ import { createScenarioContext } from '../runtime/context'
 import { loadScenarioModule } from '../runtime/load-scenario'
 import { resolveElectronAppInfo } from '../utils/app-path'
 
-type CaptureFormat = 'png' | 'avif'
+type CaptureFormat = 'avif' | 'png'
 
 /** Max width for AVIF output — anything wider is downscaled proportionally. */
 const DEFAULT_AVIF_MAX_WIDTH = 1920
@@ -32,10 +32,10 @@ interface AvifCaptureOptions {
 }
 
 interface CaptureCliArguments {
-  scenarioPath: string
-  outputDir: string
-  format: CaptureFormat
   avif?: AvifCaptureOptions
+  format: CaptureFormat
+  outputDir: string
+  scenarioPath: string
 }
 
 const captureHelpText = `
@@ -58,8 +58,79 @@ const captureHelpText = `
 
 const captureUsageMessage = 'Usage: capture <scenario.ts> --output-dir <dir>'
 
-function normalizeCliArgv(argv: string[]): string[] {
-  return argv[0] === '--' ? argv.slice(1) : argv
+export function parseCaptureCliArguments(argv: string[]): CaptureCliArguments {
+  const cli = meow(captureHelpText, {
+    argv: normalizeCliArgv(argv),
+    flags: {
+      avifMaxWidth: {
+        type: 'string',
+      },
+      avifQuality: {
+        type: 'string',
+      },
+      avifSpeed: {
+        type: 'string',
+      },
+      format: {
+        type: 'string',
+      },
+      outputDir: {
+        shortFlag: 'o',
+        type: 'string',
+      },
+    },
+    importMeta: import.meta,
+  })
+
+  if (cli.input.length !== 1
+    || typeof cli.flags.outputDir !== 'string'
+    || cli.flags.outputDir.length === 0) {
+    throw new Error(captureUsageMessage)
+  }
+
+  const format = parseCaptureFormat(cli.flags.format)
+
+  return {
+    avif: format === 'avif'
+      ? parseAvifCaptureOptions({
+          avifMaxWidth: cli.flags.avifMaxWidth,
+          avifQuality: cli.flags.avifQuality,
+          avifSpeed: cli.flags.avifSpeed,
+        })
+      : undefined,
+    format,
+    outputDir: cli.flags.outputDir,
+    scenarioPath: cli.input[0],
+  }
+}
+
+function createAvifTransformer(options: AvifCaptureOptions): ArtifactTransformer {
+  return async (artifact) => {
+    const derivedFilePath = artifact.filePath.replace(/\.png$/i, '.avif')
+
+    const transformer = new Transformer(await readFile(artifact.filePath))
+    const metadata = await transformer.metadata()
+
+    // Downscale images wider than maxWidth, keeping aspect ratio.
+    if (metadata.width > options.maxWidth) {
+      const scale = options.maxWidth / metadata.width
+      transformer.resize(options.maxWidth, Math.round(metadata.height * scale))
+    }
+
+    const avifBuffer = await transformer.avif({
+      quality: options.quality,
+      speed: options.speed,
+    })
+
+    await writeFile(derivedFilePath, avifBuffer)
+    await rm(artifact.filePath, { force: true })
+
+    return {
+      ...artifact,
+      filePath: derivedFilePath,
+      format: 'avif',
+    }
+  }
 }
 
 function isDirectExecution(): boolean {
@@ -70,24 +141,45 @@ function isDirectExecution(): boolean {
   return path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 }
 
-function parseCaptureFormat(format: string | undefined): CaptureFormat {
-  if (format === undefined || format.length === 0) {
-    return 'png'
-  }
+async function main(): Promise<void> {
+  const { avif, format, outputDir, scenarioPath } = parseCaptureCliArguments(process.argv.slice(2))
+  const resolvedOutputDir = path.resolve(process.cwd(), outputDir)
 
-  if (format === 'png' || format === 'avif') {
-    return format
-  }
+  await mkdir(resolvedOutputDir, { recursive: true })
 
-  throw new Error(`Unsupported capture format "${format}". Expected "png" or "avif".`)
+  const [appInfo, loadedScenario] = await Promise.all([
+    resolveElectronAppInfo(),
+    loadScenarioModule(scenarioPath),
+  ])
+
+  const electronApp = await electron.launch({
+    args: [appInfo.mainEntrypoint],
+    cwd: appInfo.repoRoot,
+  })
+
+  try {
+    const context = createScenarioContext(
+      electronApp,
+      resolvedOutputDir,
+      format === 'avif'
+        ? {
+            transformers: [createAvifTransformer(avif ?? {
+              maxWidth: DEFAULT_AVIF_MAX_WIDTH,
+              quality: DEFAULT_AVIF_QUALITY,
+              speed: DEFAULT_AVIF_SPEED,
+            })],
+          }
+        : undefined,
+    )
+    await loadedScenario.scenario.run(context)
+  }
+  finally {
+    await electronApp.close()
+  }
 }
 
-function parsePositiveInteger(value: string, description: string): number {
-  if (!/^\d+$/.test(value)) {
-    throw new Error(`Unsupported ${description} "${value}". Expected a whole number.`)
-  }
-
-  return Number(value)
+function normalizeCliArgv(argv: string[]): string[] {
+  return argv[0] === '--' ? argv.slice(1) : argv
 }
 
 function parseAvifCaptureOptions(flags: {
@@ -124,116 +216,24 @@ function parseAvifCaptureOptions(flags: {
   }
 }
 
-function createAvifTransformer(options: AvifCaptureOptions): ArtifactTransformer {
-  return async (artifact) => {
-    const derivedFilePath = artifact.filePath.replace(/\.png$/i, '.avif')
-
-    const transformer = new Transformer(await readFile(artifact.filePath))
-    const metadata = await transformer.metadata()
-
-    // Downscale images wider than maxWidth, keeping aspect ratio.
-    if (metadata.width > options.maxWidth) {
-      const scale = options.maxWidth / metadata.width
-      transformer.resize(options.maxWidth, Math.round(metadata.height * scale))
-    }
-
-    const avifBuffer = await transformer.avif({
-      quality: options.quality,
-      speed: options.speed,
-    })
-
-    await writeFile(derivedFilePath, avifBuffer)
-    await rm(artifact.filePath, { force: true })
-
-    return {
-      ...artifact,
-      filePath: derivedFilePath,
-      format: 'avif',
-    }
+function parseCaptureFormat(format: string | undefined): CaptureFormat {
+  if (format === undefined || format.length === 0) {
+    return 'png'
   }
+
+  if (format === 'png' || format === 'avif') {
+    return format
+  }
+
+  throw new Error(`Unsupported capture format "${format}". Expected "png" or "avif".`)
 }
 
-export function parseCaptureCliArguments(argv: string[]): CaptureCliArguments {
-  const cli = meow(captureHelpText, {
-    argv: normalizeCliArgv(argv),
-    importMeta: import.meta,
-    flags: {
-      outputDir: {
-        shortFlag: 'o',
-        type: 'string',
-      },
-      format: {
-        type: 'string',
-      },
-      avifMaxWidth: {
-        type: 'string',
-      },
-      avifQuality: {
-        type: 'string',
-      },
-      avifSpeed: {
-        type: 'string',
-      },
-    },
-  })
-
-  if (cli.input.length !== 1
-    || typeof cli.flags.outputDir !== 'string'
-    || cli.flags.outputDir.length === 0) {
-    throw new Error(captureUsageMessage)
+function parsePositiveInteger(value: string, description: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Unsupported ${description} "${value}". Expected a whole number.`)
   }
 
-  const format = parseCaptureFormat(cli.flags.format)
-
-  return {
-    scenarioPath: cli.input[0],
-    outputDir: cli.flags.outputDir,
-    format,
-    avif: format === 'avif'
-      ? parseAvifCaptureOptions({
-          avifMaxWidth: cli.flags.avifMaxWidth,
-          avifQuality: cli.flags.avifQuality,
-          avifSpeed: cli.flags.avifSpeed,
-        })
-      : undefined,
-  }
-}
-
-async function main(): Promise<void> {
-  const { scenarioPath, outputDir, format, avif } = parseCaptureCliArguments(process.argv.slice(2))
-  const resolvedOutputDir = path.resolve(process.cwd(), outputDir)
-
-  await mkdir(resolvedOutputDir, { recursive: true })
-
-  const [appInfo, loadedScenario] = await Promise.all([
-    resolveElectronAppInfo(),
-    loadScenarioModule(scenarioPath),
-  ])
-
-  const electronApp = await electron.launch({
-    args: [appInfo.mainEntrypoint],
-    cwd: appInfo.repoRoot,
-  })
-
-  try {
-    const context = createScenarioContext(
-      electronApp,
-      resolvedOutputDir,
-      format === 'avif'
-        ? {
-            transformers: [createAvifTransformer(avif ?? {
-              maxWidth: DEFAULT_AVIF_MAX_WIDTH,
-              quality: DEFAULT_AVIF_QUALITY,
-              speed: DEFAULT_AVIF_SPEED,
-            })],
-          }
-        : undefined,
-    )
-    await loadedScenario.scenario.run(context)
-  }
-  finally {
-    await electronApp.close()
-  }
+  return Number(value)
 }
 
 if (isDirectExecution()) {

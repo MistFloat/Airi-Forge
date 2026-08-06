@@ -1,16 +1,16 @@
 import { readonly, shallowRef } from 'vue'
 
 export type CaptionChannelEvent
-  = | { type: 'caption-speaker', text: string }
-    | { type: 'caption-assistant', text: string }
+  = | { text: string, type: 'caption-assistant' }
+    | { text: string, type: 'caption-speaker' }
 
 export interface CaptionItem {
   /** Stable render key and timer owner for one broadcast caption event. */
   id: number
-  /** Caption source, used for styling and explicit type-level clears. */
-  type: CaptionChannelEvent['type']
   /** Text payload rendered by the overlay. */
   text: string
+  /** Caption source, used for styling and explicit type-level clears. */
+  type: CaptionChannelEvent['type']
 }
 
 export interface UseCaptionItemsOptions {
@@ -76,8 +76,8 @@ export function useCaptionItems(options: UseCaptionItemsOptions = {}) {
 
     const item: CaptionItem = {
       id: nextId++,
-      type: event.type,
       text: event.text,
+      type: event.type,
     }
     items.value = [...items.value, item]
     expiryTimers.set(item.id, setTimeout(() => {
@@ -94,9 +94,9 @@ export function useCaptionItems(options: UseCaptionItemsOptions = {}) {
   }
 
   return {
-    items: readonly(items),
     add,
     clearType,
     dispose,
+    items: readonly(items),
   }
 }

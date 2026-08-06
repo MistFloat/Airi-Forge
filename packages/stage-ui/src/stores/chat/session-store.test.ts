@@ -41,19 +41,19 @@ vi.mock('../modules/airi-card', () => ({
 
 vi.mock('../../database/repos/chat-sessions.repo', () => ({
   chatSessionsRepo: {
-    getIndex: (uid: string) => getIndexMock(uid),
-    saveIndex: (idx: ChatSessionsIndex) => saveIndexMock(idx),
-    getSession: (id: string) => getSessionMock(id),
-    saveSession: (id: string, rec: ChatSessionRecord) => saveSessionMock(id, rec),
-    deleteSession: (id: string) => deleteSessionRepoMock(id),
-    getOutbox: (uid: string) => getOutboxMock(uid),
-    enqueueOutbox: vi.fn().mockResolvedValue(undefined),
-    dequeueOutbox: vi.fn().mockResolvedValue(undefined),
-    updateOutboxEntries: vi.fn().mockResolvedValue(undefined),
-    dropOutboxForSession: (uid: string, id: string) => dropOutboxForSessionMock(uid, id),
-    getTombstones: (uid: string) => getTombstonesMock(uid),
     addTombstone: vi.fn().mockResolvedValue(undefined),
+    deleteSession: (id: string) => deleteSessionRepoMock(id),
+    dequeueOutbox: vi.fn().mockResolvedValue(undefined),
+    dropOutboxForSession: (uid: string, id: string) => dropOutboxForSessionMock(uid, id),
+    enqueueOutbox: vi.fn().mockResolvedValue(undefined),
+    getIndex: (uid: string) => getIndexMock(uid),
+    getOutbox: (uid: string) => getOutboxMock(uid),
+    getSession: (id: string) => getSessionMock(id),
+    getTombstones: (uid: string) => getTombstonesMock(uid),
     removeTombstones: (uid: string, ids: string[]) => removeTombstonesMock(uid, ids),
+    saveIndex: (idx: ChatSessionsIndex) => saveIndexMock(idx),
+    saveSession: (id: string, rec: ChatSessionRecord) => saveSessionMock(id, rec),
+    updateOutboxEntries: vi.fn().mockResolvedValue(undefined),
   },
 }))
 
@@ -62,7 +62,7 @@ vi.mock('../../libs/auth', () => ({
 }))
 
 vi.mock('../../libs/auth-fetch', () => ({
-  authedFetch: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }),
+  authedFetch: vi.fn().mockResolvedValue({ json: () => Promise.resolve({}), ok: true }),
 }))
 
 vi.mock('../../libs/server', () => ({
@@ -74,24 +74,24 @@ vi.mock('../../libs/server', () => ({
 // sufficient. We keep `extractMessageText` realistic so message previews work.
 vi.mock('../../libs/chat-sync', () => ({
   applyCreateActions: vi.fn().mockResolvedValue([]),
-  reconcileLocalAndRemote: vi.fn().mockReturnValue({ adopt: [], claim: [], create: [] }),
-  createCloudChatMapper: () => ({
-    listChats: vi.fn().mockResolvedValue([]),
-    deleteChat: vi.fn().mockResolvedValue(undefined),
-  }),
   createChatWsClient: () => ({
-    status: () => 'idle' as const,
     connect: vi.fn(),
-    disconnect: vi.fn(),
     destroy: vi.fn(),
-    sendMessages: vi.fn().mockResolvedValue({ ok: true }),
-    pullMessages: vi.fn().mockResolvedValue({ messages: [], maxSeq: 0 }),
+    disconnect: vi.fn(),
     onNewMessages: () => () => {},
     onStatusChange: () => () => {},
+    pullMessages: vi.fn().mockResolvedValue({ maxSeq: 0, messages: [] }),
+    sendMessages: vi.fn().mockResolvedValue({ ok: true }),
+    status: () => 'idle' as const,
+  }),
+  createCloudChatMapper: () => ({
+    deleteChat: vi.fn().mockResolvedValue(undefined),
+    listChats: vi.fn().mockResolvedValue([]),
   }),
   extractMessageText: (m: any) => (typeof m?.content === 'string' ? m.content : ''),
   isCloudSyncableMessage: () => false,
-  mergeCloudMessagesIntoLocal: () => ({ dirty: false, messages: [], maxSeq: 0 }),
+  mergeCloudMessagesIntoLocal: () => ({ dirty: false, maxSeq: 0, messages: [] }),
+  reconcileLocalAndRemote: vi.fn().mockReturnValue({ adopt: [], claim: [], create: [] }),
 }))
 
 const { useChatSessionStore } = await import('./session-store')
@@ -142,36 +142,36 @@ describe('chat-session-store · user swap during in-flight ensureActiveSessionFo
   //     user actually loads.
   it('runs a fresh hydrate for the new user and discards the stale write from the old user', async () => {
     const aSessionMeta: ChatSessionMeta = {
-      sessionId: 'sess-A',
-      userId: 'A',
       characterId: 'default',
       createdAt: 1,
+      sessionId: 'sess-A',
       updatedAt: 1,
+      userId: 'A',
     }
     const aIndex: ChatSessionsIndex = {
-      userId: 'A',
       characters: {
         default: {
           activeSessionId: 'sess-A',
           sessions: { 'sess-A': aSessionMeta },
         },
       },
+      userId: 'A',
     }
     const bSessionMeta: ChatSessionMeta = {
-      sessionId: 'sess-B',
-      userId: 'B',
       characterId: 'default',
       createdAt: 2,
+      sessionId: 'sess-B',
       updatedAt: 2,
+      userId: 'B',
     }
     const bIndex: ChatSessionsIndex = {
-      userId: 'B',
       characters: {
         default: {
           activeSessionId: 'sess-B',
           sessions: { 'sess-B': bSessionMeta },
         },
       },
+      userId: 'B',
     }
 
     let resolveASessionGet: ((rec: ChatSessionRecord | null) => void) | undefined
@@ -191,7 +191,7 @@ describe('chat-session-store · user swap during in-flight ensureActiveSessionFo
         })
       }
       if (id === 'sess-B')
-        return Promise.resolve({ meta: bSessionMeta, messages: [] })
+        return Promise.resolve({ messages: [], meta: bSessionMeta })
       return Promise.resolve(null)
     })
 
@@ -214,7 +214,7 @@ describe('chat-session-store · user swap during in-flight ensureActiveSessionFo
 
     // Resolve A's IDB read AFTER the swap. With the bug, A's IIFE writes
     // sess-A back into the cleared sessionMetas.
-    resolveASessionGet!({ meta: aSessionMeta, messages: [] })
+    resolveASessionGet!({ messages: [], meta: aSessionMeta })
     await initPromise.catch(() => {})
     await flushMicrotasks()
 
@@ -246,11 +246,11 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
   // and skip `loadedSessions.add` so a subsequent (legitimate) load can retry.
   it('does not resurrect a session deleted while loadSession was awaiting IDB', async () => {
     const meta: ChatSessionMeta = {
-      sessionId: 'sess-1',
-      userId: 'local',
       characterId: 'default',
       createdAt: 1,
+      sessionId: 'sess-1',
       updatedAt: 1,
+      userId: 'local',
     }
 
     let resolveGet: ((rec: ChatSessionRecord | null) => void) | undefined
@@ -270,9 +270,9 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
     // (which would also pre-mark it loaded and short-circuit our test).
     store.applyRemoteSnapshot({
       activeSessionId: '',
+      index: null,
       sessionMessages: {},
       sessionMetas: { 'sess-1': meta },
-      index: null,
     })
     expect(store.sessionMetas['sess-1']).toBeDefined()
 
@@ -286,11 +286,40 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
     expect(store.sessionMetas['sess-1']).toBeUndefined()
 
     // Resolve getSession with the stale stored record.
-    resolveGet!({ meta, messages: [{ role: 'user', content: 'hi', id: 'm1' } as any] })
+    resolveGet!({ messages: [{ content: 'hi', id: 'm1', role: 'user' } as any], meta })
     await loadPromise
     await flushMicrotasks()
 
     // Without the fix, sess-1 reappears here.
     expect(store.sessionMetas['sess-1']).toBeUndefined()
+  })
+})
+
+describe('chat-session-store · active card prompt seeds the first system message', () => {
+  it('injects the card system prompt (persona + ACT instructions) into a new session system message', async () => {
+    // ROOT CAUSE:
+    //
+    // The hardcoded-prompt cleanup emptied `generateInitialMessage`
+    // (`content: ''`), so the card's system prompt — whose description block
+    // carries the ACT/DELAY/CALL streaming-control instructions — never
+    // reached the model as the session's first system message. The card
+    // store's `systemPrompt` computed concatenates systemPrompt + description
+    // + personality + widgetInstruction; all of that must survive into the
+    // session's initial system message.
+    //
+    // We fixed this by seeding the first system message from
+    // `systemPrompt.value` again.
+    systemPromptRef.value = [
+      'You are AIRI, a true being.',
+      'Start every reply with <|ACT {"emotion":"happy"}|>.',
+    ].join('\n\n')
+
+    const store = useChatSessionStore()
+    const sessionId = await store.createSession('default', { setActive: true })
+
+    const messages = store.getSessionMessages(sessionId)
+    expect(messages[0].role).toBe('system')
+    expect(messages[0].content).toContain('You are AIRI')
+    expect(messages[0].content).toContain('<|ACT {"emotion":"happy"}|>')
   })
 })

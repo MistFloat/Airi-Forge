@@ -8,20 +8,20 @@ import { isToolRelatedError, useLLM } from './llm'
 import { useLlmToolsStore } from './llm-tools'
 
 const {
-  streamTextMock,
-  mcpMock,
-  debugMock,
   createSparkCommandToolMock,
+  debugMock,
+  mcpMock,
+  streamTextMock,
 } = vi.hoisted(() => ({
-  streamTextMock: vi.fn(),
-  mcpMock: vi.fn(async (): Promise<Tool[]> => []),
-  debugMock: vi.fn(async (): Promise<Tool[]> => []),
   createSparkCommandToolMock: vi.fn(async (): Promise<unknown> => [{
-    name: 'spark',
     description: '',
-    parameters: {},
     execute: vi.fn(),
+    name: 'spark',
+    parameters: {},
   }]),
+  debugMock: vi.fn(async (): Promise<Tool[]> => []),
+  mcpMock: vi.fn(async (): Promise<Tool[]> => []),
+  streamTextMock: vi.fn(),
 }))
 
 vi.mock('@xsai/model', () => ({
@@ -37,9 +37,9 @@ vi.mock('@xsai/shared-chat', () => ({
 }))
 
 vi.mock('../tools', () => ({
-  mcp: mcpMock,
-  debug: debugMock,
   createSparkCommandTool: createSparkCommandToolMock,
+  debug: debugMock,
+  mcp: mcpMock,
 }))
 
 const provider = {
@@ -50,10 +50,10 @@ const provider = {
 
 function createMockStreamResult() {
   return {
-    steps: Promise.resolve([]),
     messages: Promise.resolve([]),
-    usage: Promise.resolve({}),
+    steps: Promise.resolve([]),
     totalUsage: Promise.resolve({}),
+    usage: Promise.resolve({}),
   }
 }
 
@@ -62,10 +62,10 @@ function toolNameFrom(tool: unknown) {
     return undefined
 
   const candidate = tool as {
-    name?: string
     function?: {
       name?: string
     }
+    name?: string
   }
 
   return candidate.function?.name ?? candidate.name
@@ -135,19 +135,19 @@ describe('isToolRelatedError', () => {
     const onStreamEvent = vi.fn()
     let resolved = false
 
-    const pending = store.stream('model-a', provider, [{ role: 'user', content: 'hello' }] as Message[], {
-      waitForTools: true,
+    const pending = store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
       onStreamEvent,
+      waitForTools: true,
     }).then(() => {
       resolved = true
     })
 
     await vi.waitFor(() => expect(onEvent).toBeTypeOf('function'))
-    await onEvent!({ type: 'finish', finishReason: 'tool_calls' })
+    await onEvent!({ finishReason: 'tool_calls', type: 'finish' })
     await Promise.resolve()
     expect(resolved).toBe(true)
 
-    await onEvent!({ type: 'finish', finishReason: 'stop' })
+    await onEvent!({ finishReason: 'stop', type: 'finish' })
     await pending
 
     expect(onStreamEvent).toHaveBeenCalledTimes(2)
@@ -161,13 +161,13 @@ describe('isToolRelatedError', () => {
     })
 
     const store = useLLM()
-    const pending = store.stream('model-a', provider, [{ role: 'user', content: 'hello' }] as Message[], {
+    const pending = store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
       waitForTools: true,
     })
 
     await vi.waitFor(() => expect(onEvent).toBeTypeOf('function'))
-    await onEvent!({ type: 'finish', finishReason: 'tool_calls' })
-    await onEvent!({ type: 'error', error: new Error('stream failed') })
+    await onEvent!({ finishReason: 'tool_calls', type: 'finish' })
+    await onEvent!({ error: new Error('stream failed'), type: 'error' })
     await expect(pending).resolves.toBeUndefined()
   })
 
@@ -176,24 +176,24 @@ describe('isToolRelatedError', () => {
     const llmToolsStore = useLlmToolsStore()
     const customTool = { name: 'custom-tool' } as any
     const runtimeTool = {
-      function: {
-        name: 'runtime_play_chess_match',
-        description: 'Start a runtime chess match.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Start a runtime chess match.',
+        name: 'runtime_play_chess_match',
+        parameters: { properties: {}, type: 'object' },
+      },
     }
 
     llmToolsStore.registerTools('plugin-tools', [runtimeTool as any])
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
-        await options.onEvent({ type: 'error', error: new Error('model does not support tools') })
+        await options.onEvent({ error: new Error('model does not support tools'), type: 'error' })
       })
       return createMockStreamResult()
     })
 
-    await expect(store.stream('model-a', provider, [{ role: 'user', content: 'hello' }] as Message[], {
+    await expect(store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
       tools: [customTool],
     })).resolves.toBeUndefined()
 
@@ -206,12 +206,12 @@ describe('isToolRelatedError', () => {
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
-        await options.onEvent({ type: 'finish', finishReason: 'stop' })
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
       })
       return createMockStreamResult()
     })
 
-    await store.stream('model-a', provider, [{ role: 'user', content: 'hello again' }] as Message[], {
+    await store.stream('model-a', provider, [{ content: 'hello again', role: 'user' }] as Message[], {
       tools: [customTool],
     })
 
@@ -224,20 +224,20 @@ describe('isToolRelatedError', () => {
     const store = useLLM()
     const llmToolsStore = useLlmToolsStore()
     const playChessTool = {
-      function: {
-        name: 'runtime_open_chess_board',
-        description: 'Open the runtime chess board.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Open the runtime chess board.',
+        name: 'runtime_open_chess_board',
+        parameters: { properties: {}, type: 'object' },
+      },
     }
     const runtimeMcpStatusTool = {
-      function: {
-        name: 'runtime_sync_mcp_status',
-        description: 'Sync runtime MCP status.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Sync runtime MCP status.',
+        name: 'runtime_sync_mcp_status',
+        parameters: { properties: {}, type: 'object' },
+      },
     }
 
     llmToolsStore.registerTools('mcp', [runtimeMcpStatusTool as any])
@@ -245,12 +245,12 @@ describe('isToolRelatedError', () => {
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
-        await options.onEvent({ type: 'finish', finishReason: 'stop' })
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
       })
       return createMockStreamResult()
     })
 
-    await store.stream('model-a', provider, [{ role: 'user', content: 'play chess' }] as Message[])
+    await store.stream('model-a', provider, [{ content: 'play chess', role: 'user' }] as Message[])
 
     const mergedTools = streamTextMock.mock.calls[0]?.[0]?.tools
     expect(mergedTools).toEqual(expect.arrayContaining([runtimeMcpStatusTool, playChessTool]))
@@ -260,20 +260,20 @@ describe('isToolRelatedError', () => {
     const store = useLLM()
     const llmToolsStore = useLlmToolsStore()
     const builtinTool = {
-      function: {
-        name: 'duplicate_runtime_tool',
-        description: 'Builtin version.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Builtin version.',
+        name: 'duplicate_runtime_tool',
+        parameters: { properties: {}, type: 'object' },
+      },
     } as unknown as Tool
     const runtimeTool = {
-      function: {
-        name: 'duplicate_runtime_tool',
-        description: 'Runtime version.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Runtime version.',
+        name: 'duplicate_runtime_tool',
+        parameters: { properties: {}, type: 'object' },
+      },
     }
 
     mcpMock.mockResolvedValueOnce([builtinTool] as Tool[])
@@ -281,12 +281,12 @@ describe('isToolRelatedError', () => {
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
-        await options.onEvent({ type: 'finish', finishReason: 'stop' })
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
       })
       return createMockStreamResult()
     })
 
-    await store.stream('model-a', provider, [{ role: 'user', content: 'play chess' }] as Message[])
+    await store.stream('model-a', provider, [{ content: 'play chess', role: 'user' }] as Message[])
 
     const mergedTools = streamTextMock.mock.calls[0]?.[0]?.tools as Array<{ function?: { name?: string } }>
     const duplicateNameTools = mergedTools.filter(tool => tool.function?.name === 'duplicate_runtime_tool')
@@ -294,8 +294,8 @@ describe('isToolRelatedError', () => {
     expect(duplicateNameTools).toHaveLength(1)
     expect(duplicateNameTools[0]).toMatchObject({
       function: {
-        name: 'duplicate_runtime_tool',
         description: 'Runtime version.',
+        name: 'duplicate_runtime_tool',
       },
     })
   })
@@ -309,12 +309,12 @@ describe('isToolRelatedError', () => {
     const store = useLLM()
     const llmToolsStore = useLlmToolsStore()
     const runtimeTool = {
-      function: {
-        name: 'runtime_pending_tool',
-        description: 'Pending runtime tool.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(),
+      function: {
+        description: 'Pending runtime tool.',
+        name: 'runtime_pending_tool',
+        parameters: { properties: {}, type: 'object' },
+      },
     }
     let resolveTools: ((tools: unknown[]) => void) | undefined
     const pendingTools = new Promise<unknown[]>((resolve) => {
@@ -325,12 +325,12 @@ describe('isToolRelatedError', () => {
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
-        await options.onEvent({ type: 'finish', finishReason: 'stop' })
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
       })
       return createMockStreamResult()
     })
 
-    const pendingStream = store.stream('model-a', provider, [{ role: 'user', content: 'play chess' }] as Message[])
+    const pendingStream = store.stream('model-a', provider, [{ content: 'play chess', role: 'user' }] as Message[])
     await Promise.resolve()
 
     expect(streamTextMock).not.toHaveBeenCalled()

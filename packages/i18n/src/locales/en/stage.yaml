@@ -15,6 +15,12 @@ chat:
     new-chat-fallback: New chat
     delete: Delete conversation
 message: Say something...
+api-status:
+  running: Running
+  stopped: Stopped
+  queued: 'Queued: {count}'
+  tools: 'Tools: {done}/{total}'
+  model: '{provider} · {model}'
 send-mode:
   title: Send key
   enter: Enter

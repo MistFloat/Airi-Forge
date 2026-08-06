@@ -6,18 +6,18 @@ import { resolveLlmTools, toolNameFrom } from './llm-tool-resolver'
 
 function createTool(name: string, description = `${name} description`): Tool {
   return {
-    type: 'function',
+    execute: vi.fn(),
     function: {
-      name,
       description,
+      name,
       parameters: {
-        type: 'object',
+        additionalProperties: false,
         properties: {},
         required: [],
-        additionalProperties: false,
+        type: 'object',
       },
     },
-    execute: vi.fn(),
+    type: 'function',
   } as Tool
 }
 
@@ -33,10 +33,10 @@ describe('resolveLlmTools', () => {
     const runtimeTool = createTool('duplicate_tool', 'Runtime version.')
 
     const tools = await resolveLlmTools({
+      activeTools: [runtimeTool],
       builtInTools: [builtInTool],
       debugTools: [],
       sparkCommandTools: [],
-      activeTools: [runtimeTool],
     })
 
     expect(tools).toHaveLength(1)
@@ -49,11 +49,11 @@ describe('resolveLlmTools', () => {
     const runtimeTool = createTool('duplicate_tool', 'Runtime version.')
 
     const tools = await resolveLlmTools({
+      activeTools: [runtimeTool],
       builtInTools: [builtInTool],
+      customTools: [customTool],
       debugTools: [],
       sparkCommandTools: [],
-      customTools: [customTool],
-      activeTools: [runtimeTool],
     })
 
     expect(tools).toEqual([builtInTool, runtimeTool])

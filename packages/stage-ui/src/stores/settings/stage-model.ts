@@ -7,7 +7,7 @@ import { computed, watch } from 'vue'
 
 import { DisplayModelFormat, useDisplayModelsStore } from '../display-models'
 
-export type StageModelRenderer = 'live2d' | 'vrm' | 'spine' | 'godot' | 'disabled' | undefined
+export type StageModelRenderer = 'disabled' | 'godot' | 'live2d' | 'spine' | 'vrm' | undefined
 type BuiltInStageModelRenderer = Exclude<StageModelRenderer, 'godot'>
 
 export const useSettingsStageModel = defineStore('settings-stage-model', () => {
@@ -50,10 +50,10 @@ export const useSettingsStageModel = defineStore('settings-stage-model', () => {
     switch (model.format) {
       case DisplayModelFormat.Live2dZip:
         return 'live2d'
-      case DisplayModelFormat.VRM:
-        return 'vrm'
       case DisplayModelFormat.SpineZip:
         return 'spine'
+      case DisplayModelFormat.VRM:
+        return 'vrm'
       default:
         return 'disabled'
     }
@@ -140,16 +140,16 @@ export const useSettingsStageModel = defineStore('settings-stage-model', () => {
   }
 
   return {
-    stageModelRenderer,
-    stageModelSelected,
-    stageModelSelectedUrl,
-    stageModelSelectedDisplayModel,
-    stageViewControlsEnabled,
-
     initializeStageModel,
+    resetState,
     restoreBuiltInStageModelRenderer,
     setStageModelRenderer,
+    stageModelRenderer,
+
+    stageModelSelected,
+    stageModelSelectedDisplayModel,
+    stageModelSelectedUrl,
+    stageViewControlsEnabled,
     updateStageModel,
-    resetState,
   }
 })

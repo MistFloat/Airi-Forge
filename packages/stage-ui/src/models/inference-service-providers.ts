@@ -5,17 +5,27 @@ import { storage } from '../database/storage'
 const STORAGE_KEY = 'local:providers'
 
 /**
+ * Runtime dependencies required to create the inference service provider persistence model.
+ */
+export interface CreateInferenceServiceProvidersModelParams {
+  /**
+   * Unstorage-compatible backend used for the existing local provider snapshot.
+   */
+  storage: Storage<StorageValue>
+}
+
+/**
  * Persisted inference service provider configuration.
  */
 export interface InferenceServiceProvider {
-  /** Stable provider instance id. */
-  id: string
-  /** Provider definition id from the built-in provider registry. */
-  definitionId: string
-  /** Display name copied from the definition or server response. */
-  name: string
   /** Provider-specific configuration values. */
   config: Record<string, unknown>
+  /** Provider definition id from the built-in provider registry. */
+  definitionId: string
+  /** Stable provider instance id. */
+  id: string
+  /** Display name copied from the definition or server response. */
+  name: string
   /** Whether the provider config has passed validation. */
   validated: boolean
   /** Whether validation was intentionally bypassed by the user. */
@@ -43,6 +53,10 @@ export interface InferenceServiceProvidersModel {
    */
   list: (options?: InferenceServiceProviderModelOptions) => Promise<InferenceServiceProviders>
   /**
+   * Removes one locally persisted inference service provider by `id`.
+   */
+  remove: (id: string, options?: InferenceServiceProviderModelOptions) => Promise<void>
+  /**
    * Replaces the locally persisted inference service provider snapshot.
    */
   saveAll: (providers: InferenceServiceProviders, options?: InferenceServiceProviderModelOptions) => Promise<void>
@@ -50,20 +64,6 @@ export interface InferenceServiceProvidersModel {
    * Inserts or replaces one locally persisted inference service provider by `id`.
    */
   upsert: (provider: InferenceServiceProvider, options?: InferenceServiceProviderModelOptions) => Promise<void>
-  /**
-   * Removes one locally persisted inference service provider by `id`.
-   */
-  remove: (id: string, options?: InferenceServiceProviderModelOptions) => Promise<void>
-}
-
-/**
- * Runtime dependencies required to create the inference service provider persistence model.
- */
-export interface CreateInferenceServiceProvidersModelParams {
-  /**
-   * Unstorage-compatible backend used for the existing local provider snapshot.
-   */
-  storage: Storage<StorageValue>
 }
 
 /**
@@ -113,9 +113,9 @@ export function createInferenceServiceProvidersModel(params: CreateInferenceServ
 
   return {
     list,
+    remove,
     saveAll,
     upsert,
-    remove,
   }
 }
 

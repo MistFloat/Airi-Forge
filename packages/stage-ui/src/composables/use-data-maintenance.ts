@@ -111,13 +111,13 @@ export function useDataMaintenance() {
   }
 
   return {
-    deleteAllModels,
-    resetProvidersSettings,
-    resetModulesSettings,
     deleteAllChatSessions,
+    deleteAllData,
+    deleteAllModels,
     exportChatSessions,
     importChatSessions,
-    deleteAllData,
     resetDesktopApplicationState,
+    resetModulesSettings,
+    resetProvidersSettings,
   }
 }

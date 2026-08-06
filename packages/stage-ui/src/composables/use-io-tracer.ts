@@ -13,40 +13,20 @@ const TRACER_NAME = 'ai.moeru.airi.io-tracer'
 const BROADCAST_CHANNEL = 'io-tracer-channel' // TODO: Use simple BroadcastChannel for now
 
 export interface SerializedSpan {
-  traceId: string
-  spanId: string
-  parentSpanId: string
-  name: string
-  kind: number
-  startTimeNano: string
-  endTimeNano: string
   attributes: Record<string, unknown>
-  events: { name: string, timeNano: string, attributes: Record<string, unknown> }[]
-  status: { code: number, message: string }
   ended: boolean
+  endTimeNano: string
+  events: { attributes: Record<string, unknown>, name: string, timeNano: string }[]
+  kind: number
+  name: string
+  parentSpanId: string
+  spanId: string
+  startTimeNano: string
+  status: { code: number, message: string }
+  traceId: string
 }
 
-function serializeSpan(span: ReadableSpan): SerializedSpan {
-  const ctx = span.spanContext()
-  const parentCtx = span.parentSpanContext
-  return {
-    traceId: ctx.traceId,
-    spanId: ctx.spanId,
-    parentSpanId: parentCtx?.spanId ?? '',
-    name: span.name,
-    kind: span.kind,
-    startTimeNano: String(hrTimeToNanoseconds(span.startTime)),
-    endTimeNano: span.ended ? String(hrTimeToNanoseconds(span.endTime)) : '0',
-    attributes: { ...span.attributes },
-    events: span.events.map((e: TimedEvent) => ({
-      name: e.name,
-      timeNano: String(hrTimeToNanoseconds(e.time)),
-      attributes: { ...e.attributes },
-    })),
-    status: { code: span.status.code, message: span.status.message ?? '' },
-    ended: span.ended,
-  }
-}
+type SpanCallback = (span: ReadableSpan) => void
 
 export function deserializeSpan(s: SerializedSpan): ReadableSpan {
   const nanoToHr = (nano: string): [number, number] => {
@@ -54,42 +34,62 @@ export function deserializeSpan(s: SerializedSpan): ReadableSpan {
     return [Math.floor(n / 1e9), n % 1e9]
   }
   const spanCtx: SpanContext = {
-    traceId: s.traceId,
+    isRemote: false,
     spanId: s.spanId,
     traceFlags: 1,
-    isRemote: false,
+    traceId: s.traceId,
   }
   const parentCtx: SpanContext | undefined = s.parentSpanId
-    ? { traceId: s.traceId, spanId: s.parentSpanId, traceFlags: 1, isRemote: false }
+    ? { isRemote: false, spanId: s.parentSpanId, traceFlags: 1, traceId: s.traceId }
     : undefined
 
   return {
-    name: s.name,
-    kind: s.kind,
-    spanContext: () => spanCtx,
-    parentSpanContext: parentCtx,
-    startTime: nanoToHr(s.startTimeNano),
-    endTime: nanoToHr(s.endTimeNano),
-    status: { code: s.status.code as SpanStatusCode, message: s.status.message },
-    attributes: s.attributes as Record<string, string | number | boolean>,
-    links: [],
-    events: s.events.map(e => ({
-      name: e.name,
-      time: nanoToHr(e.timeNano),
-      attributes: e.attributes as Record<string, string | number | boolean>,
-      droppedAttributesCount: 0,
-    })),
-    duration: nanoToHr(String(Number(s.endTimeNano) - Number(s.startTimeNano))),
-    ended: s.ended,
-    resource: { attributes: {}, merge: () => ({ attributes: {} }) } as any,
-    instrumentationScope: { name: TRACER_NAME },
+    attributes: s.attributes as Record<string, boolean | number | string>,
     droppedAttributesCount: 0,
     droppedEventsCount: 0,
     droppedLinksCount: 0,
+    duration: nanoToHr(String(Number(s.endTimeNano) - Number(s.startTimeNano))),
+    ended: s.ended,
+    endTime: nanoToHr(s.endTimeNano),
+    events: s.events.map(e => ({
+      attributes: e.attributes as Record<string, boolean | number | string>,
+      droppedAttributesCount: 0,
+      name: e.name,
+      time: nanoToHr(e.timeNano),
+    })),
+    instrumentationScope: { name: TRACER_NAME },
+    kind: s.kind,
+    links: [],
+    name: s.name,
+    parentSpanContext: parentCtx,
+    resource: { attributes: {}, merge: () => ({ attributes: {} }) } as any,
+    spanContext: () => spanCtx,
+    startTime: nanoToHr(s.startTimeNano),
+    status: { code: s.status.code as SpanStatusCode, message: s.status.message },
   }
 }
 
-type SpanCallback = (span: ReadableSpan) => void
+function serializeSpan(span: ReadableSpan): SerializedSpan {
+  const ctx = span.spanContext()
+  const parentCtx = span.parentSpanContext
+  return {
+    attributes: { ...span.attributes },
+    ended: span.ended,
+    endTimeNano: span.ended ? String(hrTimeToNanoseconds(span.endTime)) : '0',
+    events: span.events.map((e: TimedEvent) => ({
+      attributes: { ...e.attributes },
+      name: e.name,
+      timeNano: String(hrTimeToNanoseconds(e.time)),
+    })),
+    kind: span.kind,
+    name: span.name,
+    parentSpanId: parentCtx?.spanId ?? '',
+    spanId: ctx.spanId,
+    startTimeNano: String(hrTimeToNanoseconds(span.startTime)),
+    status: { code: span.status.code, message: span.status.message ?? '' },
+    traceId: ctx.traceId,
+  }
+}
 
 let provider: BasicTracerProvider | undefined
 let spanCallback: SpanCallback | undefined
@@ -102,15 +102,21 @@ export function createCallbackSpanExporter(): SpanExporter {
         spanCallback?.(span)
 
         broadcastChannel?.postMessage({
-          type: 'span',
           span: serializeSpan(span),
+          type: 'span',
         })
       }
       resultCallback({ code: 0 /* SUCCESS */ })
     },
-    shutdown: () => Promise.resolve(),
     forceFlush: () => Promise.resolve(),
+    shutdown: () => Promise.resolve(),
   }
+}
+
+export function getIOTracer() {
+  if (provider)
+    return provider.getTracer(TRACER_NAME)
+  return trace.getTracer(TRACER_NAME)
 }
 
 export function initIOTracer() {
@@ -124,12 +130,6 @@ export function initIOTracer() {
     spanProcessors: [new SimpleSpanProcessor(createCallbackSpanExporter())],
   })
   trace.setGlobalTracerProvider(provider)
-}
-
-export function getIOTracer() {
-  if (provider)
-    return provider.getTracer(TRACER_NAME)
-  return trace.getTracer(TRACER_NAME)
 }
 
 export function onIOSpan(cb: SpanCallback | undefined) {
@@ -150,7 +150,7 @@ export function onRemoteIOSpan(cb: SpanCallback): () => void {
   }
 }
 
-export function startSpan(name: string, parent?: Span, attrs?: Record<string, string | number | boolean>): Span {
+export function startSpan(name: string, parent?: Span, attrs?: Record<string, boolean | number | string>): Span {
   initIOTracer()
 
   const tracer = getIOTracer()

@@ -17,10 +17,13 @@ lerna-debug.log*
 .idea
 .temp
 **/temp/
+.tmp-memory-gateway-diagnostic/
 
 # AI Agents
 .claude/worktrees/
 .superpowers/
+.trae/
+seethrough_output*.psd
 
 # Anything .local, especially for .env.local
 *.local

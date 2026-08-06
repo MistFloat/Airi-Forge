@@ -8,33 +8,33 @@ import type {
 
 import { errorMessageFrom } from '@moeru/std'
 
-export type OverflowPolicy = 'queue' | 'reject' | 'steal-oldest' | 'steal-lowest-priority'
+export type OverflowPolicy = 'queue' | 'reject' | 'steal-lowest-priority' | 'steal-oldest'
 
 export type OwnerOverflowPolicy = 'reject' | 'steal-oldest'
 
-interface ActivePlayback<TAudio> {
-  item: PlaybackItem<TAudio>
-  controller: AbortController
-  startedAt: number
-}
-
-interface WaitingPlayback<TAudio> {
-  item: PlaybackItem<TAudio>
-  enqueuedAt: number
-}
-
-type Listener<T> = (event: T) => void
-
 export interface PlaybackManagerOptions<TAudio> {
+  maxVoices?: number
+
+  maxVoicesPerOwner?: number
+  overflowPolicy?: OverflowPolicy
+  ownerOverflowPolicy?: OwnerOverflowPolicy
   play: (
     item: PlaybackItem<TAudio>,
     signal: AbortSignal,
   ) => Promise<void>
+}
 
-  maxVoices?: number
-  maxVoicesPerOwner?: number
-  overflowPolicy?: OverflowPolicy
-  ownerOverflowPolicy?: OwnerOverflowPolicy
+interface ActivePlayback<TAudio> {
+  controller: AbortController
+  item: PlaybackItem<TAudio>
+  startedAt: number
+}
+
+type Listener<T> = (event: T) => void
+
+interface WaitingPlayback<TAudio> {
+  enqueuedAt: number
+  item: PlaybackItem<TAudio>
 }
 
 export function createPlaybackManager<TAudio>(
@@ -49,10 +49,10 @@ export function createPlaybackManager<TAudio>(
   const active = new Map<string, ActivePlayback<TAudio>>()
   const waiting: WaitingPlayback<TAudio>[] = []
   const listeners = {
-    start: new Set<Listener<PlaybackStartEvent<TAudio>>>(),
     end: new Set<Listener<PlaybackEndEvent<TAudio>>>(),
     interrupt: new Set<Listener<PlaybackInterruptEvent<TAudio>>>(),
     reject: new Set<Listener<PlaybackRejectEvent<TAudio>>>(),
+    start: new Set<Listener<PlaybackStartEvent<TAudio>>>(),
   }
 
   function subscribe<T>(bucket: Set<Listener<T>>, listener: Listener<T>) {
@@ -64,7 +64,8 @@ export function createPlaybackManager<TAudio>(
   }
 
   function emit<T>(bucket: Set<Listener<T>>, event: T) {
-    for (const listener of [...bucket])
+    // snapshot prevents mutation during iteration
+    for (const listener of Array.from(bucket))
       listener(event)
   }
 
@@ -146,9 +147,9 @@ export function createPlaybackManager<TAudio>(
       emit(
         listeners.interrupt,
         {
+          interruptedAt: Date.now(),
           item: entry.item,
           reason: interrupted,
-          interruptedAt: Date.now(),
         },
       )
     }
@@ -156,8 +157,8 @@ export function createPlaybackManager<TAudio>(
       emit(
         listeners.end,
         {
-          item: entry.item,
           endedAt: Date.now(),
+          item: entry.item,
         },
       )
     }
@@ -170,8 +171,8 @@ export function createPlaybackManager<TAudio>(
   function start(item: PlaybackItem<TAudio>) {
     const entry: ActivePlayback<TAudio>
       = {
-        item,
         controller: new AbortController(),
+        item,
         startedAt: Date.now(),
       }
 
@@ -208,8 +209,8 @@ export function createPlaybackManager<TAudio>(
   function enqueue(item: PlaybackItem<TAudio>) {
     const queued: WaitingPlayback<TAudio>
       = {
-        item,
         enqueuedAt: Date.now(),
+        item,
       }
 
     let index = waiting.findIndex(x => x.item.priority < item.priority)
@@ -267,11 +268,11 @@ export function createPlaybackManager<TAudio>(
         case 'reject':
           reject(next.item, blocked)
           break
-        case 'steal-oldest':
-          stealOldest(next.item, blocked)
-          break
         case 'steal-lowest-priority':
           stealLowestPriority(next.item)
+          break
+        case 'steal-oldest':
+          stealOldest(next.item, blocked)
           break
       }
     }
@@ -368,7 +369,7 @@ export function createPlaybackManager<TAudio>(
         waiting.splice(i, 1)
     }
 
-    for (const entry of [...active.values()]) {
+    for (const entry of Array.from(active.values())) {
       if (entry.item.intentId === intentId)
         interrupt(entry, reason, { allowStartWaiting: false })
     }
@@ -382,7 +383,7 @@ export function createPlaybackManager<TAudio>(
         waiting.splice(i, 1)
     }
 
-    for (const entry of [...active.values()]) {
+    for (const entry of Array.from(active.values())) {
       if (entry.item.ownerId === ownerId)
         interrupt(entry, reason, { allowStartWaiting: false })
     }
@@ -391,19 +392,6 @@ export function createPlaybackManager<TAudio>(
   }
 
   return {
-    schedule,
-    stopAll(reason = 'stop-all') {
-      waiting.length = 0
-
-      for (const x of [...active.values()]) {
-        interrupt(x, reason, { allowStartWaiting: false })
-      }
-    },
-    stopByIntent,
-    stopByOwner,
-    onStart: (
-      f: Listener<PlaybackStartEvent<TAudio>>,
-    ) => subscribe(listeners.start, f),
     onEnd: (
       f: Listener<PlaybackEndEvent<TAudio>>,
     ) => subscribe(listeners.end, f),
@@ -413,5 +401,18 @@ export function createPlaybackManager<TAudio>(
     onReject: (
       f: Listener<PlaybackRejectEvent<TAudio>>,
     ) => subscribe(listeners.reject, f),
+    onStart: (
+      f: Listener<PlaybackStartEvent<TAudio>>,
+    ) => subscribe(listeners.start, f),
+    schedule,
+    stopAll(reason = 'stop-all') {
+      waiting.length = 0
+
+      for (const x of Array.from(active.values())) {
+        interrupt(x, reason, { allowStartWaiting: false })
+      }
+    },
+    stopByIntent,
+    stopByOwner,
   }
 }

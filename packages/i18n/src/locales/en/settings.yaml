@@ -699,12 +699,244 @@ pages:
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence
               filtering had no effect on the last transcription.
+    instructions:
+      description: Persistent instructions injected into every request
+      title: Instructions
+      estimated-tokens: 'Approximately {tokens} tokens are injected into every request.'
+      create: New instruction
+      empty: No instructions yet. Create one to inject fixed rules into every conversation.
+      edit: Edit
+      delete: Delete
+      confirm-delete: Delete this instruction?
+      cancel: Cancel
+      priority-value: 'Priority: {value}'
+      scopes:
+        global: Global
+        chat: Chat
+        speech: Speech
+        memory: Memory
+        vision: Vision
+        artistry: Artistry
+      statuses:
+        active: Active
+        archived: Archived
+        superseded: Superseded
+      editor:
+        create-title: New instruction
+        edit-title: Edit instruction
+        cancel: Cancel
+        save: Save
+        fields:
+          title: Title
+          content: Content
+          content-description: Text injected verbatim into every LLM request.
+          instruction-scope: Scope
+          instruction-priority: Priority
+          instruction-rule-key: Rule key
+          instruction-rule-key-description: Optional unique key so a newer instruction can replace (supersede) this one.
+          status: Status
+          effective-from: Effective from
+          effective-until: Effective until
+        scopes:
+          global: Global
+          chat: Chat
+          speech: Speech
+          memory: Memory
+          vision: Vision
+          artistry: Artistry
+        statuses:
+          active: Active
+          archived: Archived
+          superseded: Superseded
     memory-long-term:
       description: Long-term memory specific settings and management
       title: Long-Term Memory
+      page:
+        description: >-
+          Long-term memory stores conversation embeddings in a PostgreSQL database
+          with pgvector extension. Configure the connection and embedding model below.
+      enable: Enable Long-Term Memory
+      enable-description: Store and retrieve conversation history using vector similarity search
+      connection-string: PostgreSQL Connection String
+      connection-string-description: Connection string for the pgvector-enabled PostgreSQL database
+      namespace: Memory Namespace
+      namespace-description: Conversations with the same namespace share long-term memories
+      embedding-source: Embedding Source
+      embedding-sources:
+        airi-provider: Configured AIRI provider
+        jina-api: Jina API (API key)
+      embedding-provider: Embedding Provider
+      embedding-provider-description: The LLM provider used to generate text embeddings
+      embedding-provider-placeholder: e.g. openai
+      embedding-model: Embedding Model
+      embedding-model-description: The model used to generate embeddings (e.g. text-embedding-3-small)
+      embedding-model-placeholder: e.g. text-embedding-3-small
+      jina-api-key: Jina API Key
+      jina-api-key-description: Used only for direct requests to api.jina.ai and stored in this local app profile.
+      jina-dimensions: Jina Vector Dimensions
+      jina-dimensions-description: Matryoshka output size from 32 to 1024. Keep this unchanged after memories are written.
+      similarity-threshold: Similarity Threshold
+      similarity-threshold-description: Minimum cosine similarity score for memory retrieval (0-1)
+      max-results: Max Results
+      max-results-description: Maximum number of memories to retrieve per query
+      instruction-token-budget: Persistent instruction token budget
+      instruction-token-budget-description: Maximum estimated tokens reserved for deterministic, always-present user instructions on every LLM request.
+      extractor-provider: Candidate extractor LLM provider
+      extractor-provider-description: AIRI provider ID used when API Key is empty. Ignored when a dedicated API Key is supplied.
+      extractor-api-key: Candidate extractor API Key
+      extractor-api-key-description: Used by the dedicated OpenAI-compatible extraction endpoint and stored only in this local app profile. Takes precedence over the AIRI provider.
+      extractor-base-url: Candidate extractor Base URL
+      extractor-base-url-description: OpenAI-compatible API endpoint, for example https://api.openai.com/v1/.
+      extractor-model: Low-cost candidate extractor model
+      extractor-model-description: Uses a cheap text model to propose structured Fact/Preference candidates. Leave blank to retain Evidence without automatic extraction.
+      configured: Long-term pgvector memory is configured. The database connection is checked on first recall or write.
+      health:
+        database-success: PostgreSQL connected · pgvector {version} · {count} memories
+        embedding-success: Embedding succeeded · {dimensions} dimensions
+        extractor-success: 'Candidate extractor succeeded · {count} claims · sample: {sample}'
+        failed: Connection test failed
+        test-database: Test database
+        test-embedding: Test embedding
+        test-extractor: Test candidate LLM
+      lab:
+        title: Long-term memory retrieval lab
+        description: Import positive golden targets into an isolated evaluation namespace without using the candidate extractor, then inspect the ten nearest Embedding matches without contaminating real chat recall.
+        dataset-file: Long-term memory evaluation JSON
+        dataset-file-description: Accepts longttermmemorytest.json. Imports should_recall_memory_ids and parseable must_not_recall_memory_ids (tagged forbidden) to measure both recall and leakage.
+        inspect: Inspect file
+        import: Import and embed {count}
+        import-progress: 'Writing memories and generating Embeddings: {completed}/{total}'
+        dataset-ready: Valid dataset with {count} manual memories. Each memory makes one Embedding request; repeated imports update stable IDs.
+        dataset-invalid: Invalid memory evaluation dataset
+        import-success: Imported and embedded {count} manual memories.
+        import-failed: Dataset import failed
+        query: Test query
+        query-scope: Memory space to query
+        query-scopes:
+          memory: Real long-term memory
+          evaluation: Isolated evaluation memory
+        query-description: Encodes this text with the active Embedding model and shows the nearest memories. The lab uses a zero threshold independently of the chat threshold.
+        query-placeholder: 'For example: Which music service do I use?'
+        search: Find nearest memories
+        search-failed: Vector retrieval test failed
+        no-results: No vector memory is available in namespace {namespace}. Re-import the dataset first when querying isolated evaluation memory.
+        evaluate-title: Short-query recall evaluation
+        evaluate-description: Runs short-term and full-sentence recall against {count} cases and compares the results with the golden truth to quantify recall and leakage.
+        evaluate-run: Run evaluation
+        evaluate-progress: 'Evaluating: {completed}/{total}'
+        evaluate-failed: Evaluation failed
+        evaluate-metric: Metric
+        evaluate-terms: Short-term recall
+        evaluate-original: Full-sentence recall
+        evaluate-recall: Recall@K
+        evaluate-forbidden: Forbidden-hit rate
+        evaluate-fully-recalled: Fully-recalled rate
+        evaluate-clean: Leak-free rate
+      governance:
+        activate: Switch to Active atomically
+        accept-candidate: Accept candidate
+        archive-evidence: Archive evidence older than 90 days
+        archive-fallback: Archive old Fallback
+        changes: Audit changes
+        claims: Candidate claims
+        conflicts: Conflict quarantine
+        create-schema: Create current embedding schema
+        description: Inspect immutable evidence, candidate claims, governance jobs, conflicts, and vector versions.
+        dismiss: Dismiss
+        embeddings: Embedding schemas and migration
+        evidence: Raw evidence
+        jobs: Background jobs
+        keep-left: Keep existing memory
+        keep-right: Keep right memory
+        process-jobs: Process current-model jobs
+        scan-conflicts: Scan semantic conflicts
+        promote: Validate and promote
+        rollback: Roll back transaction
+        title: Memory evidence and governance
+      manager:
+        cancel: Cancel
+        confidence-value: Confidence {value}
+        confirm-delete: Confirm delete
+        create: Create memory
+        create-title: Create knowledge memory
+        delete: Delete
+        description: Browse and maintain {count} memories in the current namespace.
+        edit: Edit
+        edit-title: Edit knowledge memory
+        feedback:
+          outdated: Outdated
+          useful: Useful
+          wrong: Wrong
+        empty: No memories match the current filter.
+        embedding-required: Configure an embedding model before saving semantic memories. Instructions can be saved without embeddings.
+        fields:
+          confidence: Confidence
+          content: Knowledge content
+          content-description: Write the durable fact, preference, instruction, or summary the agent should recall.
+          importance: Importance
+          instruction-priority: Instruction priority
+          instruction-rule-key: Rule key
+          instruction-rule-key-description: Instructions with the same key conflict; only the highest-priority, newest active rule is injected.
+          instruction-scope: Instruction scope
+          effective-from: Effective from
+          effective-until: Effective until
+          kind: Memory kind
+          status: Status
+          supersedes: Superseded memory ID
+          supersedes-description: Optional ID of an older memory this record replaces.
+          tags: Tags
+          tags-description: Separate tags with commas.
+          title: Title
+        importance-value: Importance {value}
+        instruction-help: Instructions bypass embedding search and are deterministically injected into every matching LLM request. Use scopes and rule keys to keep them precise.
+        priority-value: Priority {value}
+        scope-value: Scope {scope}
+        kinds:
+          conversation: Conversation
+          fact: Fact
+          instruction: Instruction
+          preference: Preference
+          summary: Summary
+        scopes:
+          artistry: Artistry
+          chat: Chat
+          global: Global
+          memory: Memory
+          speech: Speech
+          vision: Vision
+        next: Next
+        page: Page {page} of {pages}
+        previous: Previous
+        refresh: Search
+        save-memory: Save memory
+        search: Search memories
+        search-placeholder: Search titles, content, and tags
+        statuses:
+          active: Active
+          all: All
+          archived: Archived
+          disputed: Disputed
+          expired: Expired
+          quarantined: Quarantined
+          stale: Stale
+          superseded: Superseded
+        title: Knowledge memory manager
     memory-short-term:
       description: Short-term memory specific settings and management
       title: Short-Term Memory
+      page:
+        description: >-
+          Short-term memory stores recent conversation turns and context in a
+          browser-local DuckDB WASM database for fast, private recall.
+      enable: Enable Short-Term Memory
+      enable-description: Keep recent conversation context cached in the browser
+      max-items: Max Memory Items
+      max-items-description: Maximum number of conversation turns to retain in short-term memory
+      context-items: Context Turns
+      context-items-description: Maximum recent turns injected into each LLM request
+      context-character-budget: Context Character Budget
+      context-character-budget-description: Maximum short-term memory characters injected into one prompt
+      configured: Short-term memory is active in the browser-local DuckDB database.
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
@@ -1321,6 +1553,14 @@ pages:
         title: MiniMax Speech
       mimo:
         description: api.xiaomimimo.com
+        fields:
+          language:
+            description: Use automatic detection for mixed Chinese and English, or provide a language hint for short recordings.
+            label: Recognition language
+            options:
+              auto: Auto detect
+              en: English
+              zh: Chinese
         title: Xiaomi MiMo
       mistral:
         description: mistral.ai
@@ -1376,6 +1616,9 @@ pages:
       featherless:
         description: featherless.ai
         title: Featherless AI
+      knowlez-tts:
+        description: api-tts.knowlez.com
+        title: Knowlez TTS
       lm-studio:
         description: lmstudio.ai
         title: LM Studio

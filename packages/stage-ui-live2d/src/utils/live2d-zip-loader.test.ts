@@ -2,25 +2,10 @@ import JSZip from 'jszip'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-function blobFromBytes(data: Uint8Array): Blob {
-  const buffer = new ArrayBuffer(data.byteLength)
-  new Uint8Array(buffer).set(data)
-  return new Blob([buffer])
-}
-
-function fileWithRelativePath(content: Blob | string | Uint8Array, name: string, webkitRelativePath: string): File {
-  const fileContent = content instanceof Uint8Array ? blobFromBytes(content) : content
-  const file = new File([fileContent], name)
-  Object.defineProperty(file, 'webkitRelativePath', {
-    value: webkitRelativePath,
-  })
-  return file
-}
-
 class TestFileReader {
-  result: string | null = null
-  onload: (() => void) | null = null
   onerror: ((error: unknown) => void) | null = null
+  onload: (() => void) | null = null
+  result: null | string = null
 
   readAsText(file: File): void {
     void file.text()
@@ -32,32 +17,47 @@ class TestFileReader {
   }
 }
 
-function createShisihangshiSettingsText(): string {
-  return JSON.stringify({
-    Version: 3,
-    FileReferences: {
-      Moc: '302301_shisihangshi.moc3',
-      Textures: ['textures/302301_shisihangshi_00.png'],
-      Physics: null,
-      Motions: {
-        '': [{ File: 'motions/t_idle.motion3.json' }],
-      },
-    },
-    Groups: [],
-  })
+function blobFromBytes(data: Uint8Array): Blob {
+  const buffer = new ArrayBuffer(data.byteLength)
+  new Uint8Array(buffer).set(data)
+  return new Blob([buffer])
 }
 
 function createNonAsciiSettingsText(): string {
   return JSON.stringify({
-    Version: 3,
     FileReferences: {
-      Moc: '模型文件.moc3',
-      Textures: ['模型贴图.4096/texture_00.png'],
-      Physics: '模型文件.physics3.json',
       DisplayInfo: '模型文件.cdi3.json',
+      Moc: '模型文件.moc3',
+      Physics: '模型文件.physics3.json',
+      Textures: ['模型贴图.4096/texture_00.png'],
     },
     Groups: [],
+    Version: 3,
   })
+}
+
+function createShisihangshiSettingsText(): string {
+  return JSON.stringify({
+    FileReferences: {
+      Moc: '302301_shisihangshi.moc3',
+      Motions: {
+        '': [{ File: 'motions/t_idle.motion3.json' }],
+      },
+      Physics: null,
+      Textures: ['textures/302301_shisihangshi_00.png'],
+    },
+    Groups: [],
+    Version: 3,
+  })
+}
+
+function fileWithRelativePath(content: Blob | string | Uint8Array, name: string, webkitRelativePath: string): File {
+  const fileContent = content instanceof Uint8Array ? blobFromBytes(content) : content
+  const file = new File([fileContent], name)
+  Object.defineProperty(file, 'webkitRelativePath', {
+    value: webkitRelativePath,
+  })
+  return file
 }
 
 const appleDoubleHeader = new Uint8Array([0, 5, 22, 7, 0, 2, 0, 0, 77, 97, 99, 32, 79, 83, 32, 88])
@@ -203,12 +203,12 @@ describe('live2d zip loader settings sanitization', () => {
     const files = [
       fileWithRelativePath(
         JSON.stringify({
-          Version: 3,
           FileReferences: {
             Moc: '%E6%A8%A1%E5%9E%8B%E6%96%87%E4%BB%B6.moc3',
             Textures: ['%E6%A8%A1%E5%9E%8B%E8%B4%B4%E5%9B%BE.4096/texture_00.png'],
           },
           Groups: [],
+          Version: 3,
         }),
         '模型文件.model3.json',
         '非ASCII模型26045/模型文件.model3.json',

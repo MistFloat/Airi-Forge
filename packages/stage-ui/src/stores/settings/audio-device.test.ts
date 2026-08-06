@@ -8,11 +8,11 @@ const storageMock = vi.hoisted(() => ({
 }))
 
 const audioDeviceMock = vi.hoisted(() => ({
+  askPermission: vi.fn(),
   audioInputs: { value: [] as MediaDeviceInfo[] },
   selectedAudioInput: { value: '' },
   startStream: vi.fn(),
   stopStream: vi.fn(),
-  askPermission: vi.fn(),
 }))
 
 vi.mock('@proj-airi/stage-shared/composables', async () => {
@@ -41,13 +41,13 @@ vi.mock('../../composables/audio', async () => {
 
   return {
     useAudioDevice: () => ({
+      askPermission: audioDeviceMock.askPermission,
       audioInputs: audioDeviceMock.audioInputs,
       deviceConstraints: vue.computed(() => ({ audio: true })),
       selectedAudioInput: audioDeviceMock.selectedAudioInput,
       startStream: audioDeviceMock.startStream,
       stopStream: audioDeviceMock.stopStream,
       stream: vue.shallowRef<MediaStream>(),
-      askPermission: audioDeviceMock.askPermission,
     }),
   }
 })

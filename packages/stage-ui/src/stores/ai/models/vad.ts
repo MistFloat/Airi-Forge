@@ -9,17 +9,19 @@ import { ref, toRef, watch } from 'vue'
 import { createVAD, createVADStates } from '../../../workers/vad'
 
 interface UseVADOptions {
-  threshold?: MaybeRefOrGetter<number>
   minSilenceDurationMs?: MaybeRefOrGetter<number>
-  speechPadMs?: MaybeRefOrGetter<number>
   minSpeechDurationMs?: MaybeRefOrGetter<number>
+  onSpeechEnd?: () => void
+  onSpeechReady?: (event: { buffer: Float32Array, duration: number, voicedDurationMs: number, voicedRatio: number }) => void
 
   onSpeechStart?: () => void
-  onSpeechEnd?: () => void
-  onSpeechReady?: (event: { buffer: Float32Array, duration: number }) => void
+  speechPadMs?: MaybeRefOrGetter<number>
+  threshold?: MaybeRefOrGetter<number>
 }
 
-const DEFAULT_VAD_THRESHOLD = 0.52
+// A lower probability threshold favors capturing quiet and conversational speech.
+// False positives still pass through ASR, which is safer than silently losing speech.
+const DEFAULT_VAD_THRESHOLD = 0.35
 const DEFAULT_VAD_MIN_SILENCE_DURATION_MS = 1200
 const DEFAULT_VAD_SPEECH_PAD_MS = 360
 const DEFAULT_VAD_MIN_SPEECH_DURATION_MS = 300
@@ -29,24 +31,24 @@ export function resolveVADConfig(
   minSilenceDurationMs?: number,
   speechPadMs?: number,
   minSpeechDurationMs?: number,
-): Pick<BaseVADConfig, 'speechThreshold' | 'exitThreshold' | 'minSilenceDurationMs' | 'speechPadMs' | 'minSpeechDurationMs'> {
+): Pick<BaseVADConfig, 'exitThreshold' | 'minSilenceDurationMs' | 'minSpeechDurationMs' | 'speechPadMs' | 'speechThreshold'> {
   const resolvedThreshold = threshold ?? DEFAULT_VAD_THRESHOLD
 
   return {
-    speechThreshold: resolvedThreshold,
     exitThreshold: resolvedThreshold * 0.3,
     minSilenceDurationMs: minSilenceDurationMs ?? DEFAULT_VAD_MIN_SILENCE_DURATION_MS,
-    speechPadMs: speechPadMs ?? DEFAULT_VAD_SPEECH_PAD_MS,
     minSpeechDurationMs: minSpeechDurationMs ?? DEFAULT_VAD_MIN_SPEECH_DURATION_MS,
+    speechPadMs: speechPadMs ?? DEFAULT_VAD_SPEECH_PAD_MS,
+    speechThreshold: resolvedThreshold,
   }
 }
 
 export function useVAD(workerUrl: string, options?: UseVADOptions) {
   const defaultOptions: UseVADOptions = {
-    threshold: ref(DEFAULT_VAD_THRESHOLD),
     minSilenceDurationMs: ref(DEFAULT_VAD_MIN_SILENCE_DURATION_MS),
-    speechPadMs: ref(DEFAULT_VAD_SPEECH_PAD_MS),
     minSpeechDurationMs: ref(DEFAULT_VAD_MIN_SPEECH_DURATION_MS),
+    speechPadMs: ref(DEFAULT_VAD_SPEECH_PAD_MS),
+    threshold: ref(DEFAULT_VAD_THRESHOLD),
   }
 
   options = merge(defaultOptions, options)
@@ -115,7 +117,7 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
         }
       })
 
-      vad.value.on('status', ({ type, message }) => {
+      vad.value.on('status', ({ message, type }) => {
         if (type === 'error') {
           inferenceError.value = message
         }
@@ -123,13 +125,13 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
 
       // Create and initialize audio manager
       const m = createVADStates(vad.value, workerUrl, {
-        minChunkSize: 512,
         // NOTICE: VAD will have it's own audio context since
         // it needs special sample rate and latency settings
         audioContextOptions: {
-          sampleRate: 16000,
           latencyHint: 'interactive',
+          sampleRate: 16000,
         },
+        minChunkSize: 512,
       })
 
       await m.initialize()
@@ -164,7 +166,7 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
 
   watch(threshold, (newVal) => {
     if (vad.value && newVal !== undefined) {
-      vad.value.updateConfig({ speechThreshold: newVal, exitThreshold: newVal * 0.3 })
+      vad.value.updateConfig({ exitThreshold: newVal * 0.3, speechThreshold: newVal })
     }
   })
 
@@ -187,19 +189,19 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
   })
 
   return {
+    dispose,
+    inferenceError,
+    init,
     isSpeech,
-    isSpeechProb,
     isSpeechHistory,
+    isSpeechProb,
     loaded,
     loading,
-    inferenceError,
-    threshold,
     minSilenceDurationMs,
-    speechPadMs,
     minSpeechDurationMs,
 
-    init,
+    speechPadMs,
     start,
-    dispose,
+    threshold,
   }
 }

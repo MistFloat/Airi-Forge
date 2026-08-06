@@ -17,6 +17,11 @@
       "@types/audioworklet",
       "@webgpu/types"
     ],
+    // NOTICE: workspace packages export raw TS source (e.g. @proj-airi/memory-pgvector)
+    // whose internal relative imports keep explicit .ts extensions because Node ESM
+    // (type stripping) loads them directly at runtime (see nodeEsmImport.test.ts).
+    // This project typechecks that source, so it must opt into .ts specifiers.
+    "allowImportingTsExtensions": true,
     "allowJs": true,
     "strict": true,
     "strictNullChecks": true,

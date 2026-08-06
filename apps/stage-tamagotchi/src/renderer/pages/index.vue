@@ -23,11 +23,12 @@ import {
 import { WidgetStage } from '@proj-airi/stage-ui/components/scenes'
 import { useVoiceInputSession } from '@proj-airi/stage-ui/composables'
 import { useCanvasPixelIsTransparentAtPoint } from '@proj-airi/stage-ui/composables/canvas-alpha'
+import { useVisionInference } from '@proj-airi/stage-ui/composables/vision'
 import { useSpeakingStore } from '@proj-airi/stage-ui/stores/audio'
 import { useHearingSpeechInputPipeline, useHearingStore } from '@proj-airi/stage-ui/stores/modules/hearing'
 import { useOnboardingStore } from '@proj-airi/stage-ui/stores/onboarding'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
-import { refDebounced, useBroadcastChannel } from '@vueuse/core'
+import { refDebounced, useBroadcastChannel, useEventListener } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, onUnmounted, ref, shallowRef, toRef, watch } from 'vue'
 import { toast } from 'vue-sonner'
@@ -41,6 +42,7 @@ import { modelSettingsRuntimeSnapshotChannelName } from '../../shared/model-sett
 import { useChatSyncStore } from '../stores/chat-sync'
 import { useControlsIslandStore } from '../stores/controls-island'
 import { useStageWindowLifecycleStore } from '../stores/stage-window-lifecycle'
+import { buildChatFileContext, disposePendingChatFiles, prepareChatFiles } from '../utils/chat-file-ingestion'
 import { shouldSampleStageTransparency } from '../utils/stage-three-transparency'
 import { createVoiceInputInteractionLifecycle } from '../utils/voice-input-lifecycle'
 import {
@@ -258,6 +260,9 @@ const hearingPipeline = useHearingSpeechInputPipeline()
 const { transcribeForMediaStream, stopStreamingTranscription } = hearingPipeline
 const { error: transcriptionError, supportsStreamInput } = storeToRefs(hearingPipeline)
 const chatSyncStore = useChatSyncStore()
+const { runVisionInference } = useVisionInference()
+const isFileDragActive = shallowRef(false)
+let fileDragDepth = 0
 const streamingTranscriptionUnavailable = ref(false)
 const shouldUseStreamInput = computed(() => supportsStreamInput.value && !!stream.value && !streamingTranscriptionUnavailable.value)
 const voiceTranscriptBuffer = createTranscriptBuffer({
@@ -443,6 +448,80 @@ async function sendVoiceInputTextToChat(text: string) {
     reportVoiceInputFailure('send to chat', err)
   }
 }
+
+function hasDraggedFiles(event: DragEvent) {
+  return event.dataTransfer?.types.includes('Files') ?? false
+}
+
+function handleStageDragEnter(event: DragEvent) {
+  if (!hasDraggedFiles(event))
+    return
+
+  event.preventDefault()
+  fileDragDepth += 1
+  isFileDragActive.value = true
+  setIgnoreMouseEvents([false, { forward: true }])
+}
+
+function handleStageDragOver(event: DragEvent) {
+  if (!hasDraggedFiles(event))
+    return
+
+  event.preventDefault()
+  if (event.dataTransfer)
+    event.dataTransfer.dropEffect = 'copy'
+}
+
+function handleStageDragLeave(event: DragEvent) {
+  if (!hasDraggedFiles(event))
+    return
+
+  fileDragDepth = Math.max(0, fileDragDepth - 1)
+  if (fileDragDepth === 0)
+    isFileDragActive.value = false
+}
+
+/** Routes files dropped on the character through the normal chat and memory lifecycle. */
+async function handleStageDrop(event: DragEvent) {
+  if (!hasDraggedFiles(event))
+    return
+
+  event.preventDefault()
+  fileDragDepth = 0
+  isFileDragActive.value = false
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  if (files.length === 0)
+    return
+
+  let pendingFiles: ReturnType<typeof prepareChatFiles> | undefined
+
+  try {
+    pendingFiles = prepareChatFiles(files)
+    const fileContext = await buildChatFileContext(pendingFiles, {
+      analyzeImage: (imageDataUrl, promptOverride) => runVisionInference({
+        imageDataUrl,
+        workloadId: 'screen:understand',
+        promptOverride,
+      }),
+    })
+    await chatSyncStore.requestIngest({
+      text: ['The user dropped files onto the character for you to inspect.', fileContext].join('\n\n'),
+    })
+    toast.success(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'} to AI`)
+  }
+  catch (error) {
+    toast.error(errorMessageFrom(error) ?? 'Failed to upload dropped files')
+  }
+  finally {
+    if (pendingFiles)
+      disposePendingChatFiles(pendingFiles)
+  }
+}
+
+useEventListener(window, 'dragenter', handleStageDragEnter)
+useEventListener(window, 'dragover', handleStageDragOver)
+useEventListener(window, 'dragleave', handleStageDragLeave)
+useEventListener(window, 'drop', handleStageDrop)
 
 /** Sends completed streaming-ASR sentences to captions and chat. */
 function handleStreamingSentenceEnd(delta: string) {
@@ -651,6 +730,18 @@ const cursorPosition = computed(() => ({
     relative z-2 h-full overflow-hidden rounded-xl
     transition="opacity duration-500 ease-in-out"
   >
+    <div
+      v-if="isFileDragActive"
+      :class="[
+        'pointer-events-none absolute inset-3 z-9999 rounded-2xl',
+        'flex flex-col items-center justify-center gap-3',
+        'border-2 border-primary-400 border-dashed bg-primary-100/85 backdrop-blur-sm',
+        'text-primary-700 dark:bg-primary-950/85 dark:text-primary-200',
+      ]"
+    >
+      <div class="i-solar:cloud-upload-bold-duotone text-5xl" />
+      <span class="text-sm font-semibold">拖放文档、图片或视频</span>
+    </div>
     <!-- Stage is always in DOM so TresCanvas can measure dimensions -->
     <div
       :class="[

@@ -666,6 +666,55 @@ pages:
               注意：プロバイダーが verbose_json レスポンスをサポートしていない場合、この設定は無効になります。
             verbose-json-unsupported: >-
               プロバイダーから verbose_json セグメントが返されませんでした。信頼度フィルタリングは最後の文字起こしに影響を及ぼしませんでした。
+    instructions:
+      description: 毎回のリクエストに注入される常駐指示の設定と管理
+      title: 指示
+      estimated-tokens: '毎回のリクエストに約 {tokens} トークンが注入されます。'
+      create: 新しい指示
+      empty: 指示はまだありません。作成すると毎回の会話に固定ルールを注入できます。
+      edit: 編集
+      delete: 削除
+      confirm-delete: この指示を削除しますか？
+      cancel: キャンセル
+      priority-value: '優先度：{value}'
+      scopes:
+        global: グローバル
+        chat: チャット
+        speech: 音声
+        memory: メモリ
+        vision: ビジョン
+        artistry: 創作
+      statuses:
+        active: 有効
+        archived: アーカイブ済み
+        superseded: 置き換え済み
+      editor:
+        create-title: 新しい指示
+        edit-title: 指示を編集
+        cancel: キャンセル
+        save: 保存
+        fields:
+          title: タイトル
+          content: 内容
+          content-description: 毎回の LLM リクエストにそのまま注入されるテキスト。
+          instruction-scope: スコープ
+          instruction-priority: 優先度
+          instruction-rule-key: ルールキー
+          instruction-rule-key-description: 新しい指示がこれを置き換え（supersede）できるようにするための任意の一意キー。
+          status: ステータス
+          effective-from: 有効開始日時
+          effective-until: 有効終了日時
+        scopes:
+          global: グローバル
+          chat: チャット
+          speech: 音声
+          memory: メモリ
+          vision: ビジョン
+          artistry: 創作
+        statuses:
+          active: 有効
+          archived: アーカイブ済み
+          superseded: 置き換え済み
     memory-long-term:
       description: 長期記憶固有の設定と管理
       title: 長期記憶

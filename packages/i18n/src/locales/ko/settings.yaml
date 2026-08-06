@@ -666,6 +666,55 @@ pages:
               Note: If your provider does not support verbose_json responses, this setting will have no effect.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
+    instructions:
+      description: 모든 요청에 주입되는 상시 지시사항 설정 및 관리
+      title: 지시사항
+      estimated-tokens: '매 요청마다 약 {tokens} 토큰이 주입됩니다.'
+      create: 새 지시사항
+      empty: 아직 지시사항이 없습니다. 생성하면 매 대화에 고정 규칙을 주입할 수 있습니다.
+      edit: 편집
+      delete: 삭제
+      confirm-delete: 이 지시사항을 삭제할까요?
+      cancel: 취소
+      priority-value: '우선순위: {value}'
+      scopes:
+        global: 전역
+        chat: 채팅
+        speech: 음성
+        memory: 메모리
+        vision: 비전
+        artistry: 창작
+      statuses:
+        active: 활성
+        archived: 보관됨
+        superseded: 대체됨
+      editor:
+        create-title: 새 지시사항
+        edit-title: 지시사항 편집
+        cancel: 취소
+        save: 저장
+        fields:
+          title: 제목
+          content: 내용
+          content-description: 매 LLM 요청에 그대로 주입되는 텍스트입니다.
+          instruction-scope: 범위
+          instruction-priority: 우선순위
+          instruction-rule-key: 규칙 키
+          instruction-rule-key-description: 새 지시사항이 이를 대체(supersede)할 수 있도록 하는 선택적 고유 키입니다.
+          status: 상태
+          effective-from: 시작일
+          effective-until: 종료일
+        scopes:
+          global: 전역
+          chat: 채팅
+          speech: 음성
+          memory: 메모리
+          vision: 비전
+          artistry: 창작
+        statuses:
+          active: 활성
+          archived: 보관됨
+          superseded: 대체됨
     memory-long-term:
       description: 장기 메모리 관련 설정 및 관리
       title: 장기 메모리

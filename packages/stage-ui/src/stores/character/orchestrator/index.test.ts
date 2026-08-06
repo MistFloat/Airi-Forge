@@ -28,29 +28,15 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 
-function mockedStore<TStoreDef extends () => unknown>(
-  useStore: TStoreDef,
-): TStoreDef extends StoreDefinition<
-  infer Id,
-  infer State,
-  infer Getters,
-  infer Actions
->
-  ? Store<
-    Id,
-    State,
-    Record<string, never>,
-    {
-      [K in keyof Actions]: Actions[K] extends (...args: any[]) => any
-        ? // 👇 depends on your testing framework
-        Mock<Actions[K]>
-        : Actions[K]
-    }
-  > & {
-    [K in keyof Getters]: UnwrapRef<Getters[K]>
-  }
-  : ReturnType<TStoreDef> {
-  return useStore() as any
+function getArraySchema(schema?: Record<string, any>) {
+  if (!schema)
+    return undefined
+
+  if (schema.type === 'array')
+    return schema
+
+  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])]
+  return candidates.find((candidate: Record<string, any>) => candidate?.type === 'array')
 }
 
 function getObjectSchema(schema?: Record<string, any>) {
@@ -64,24 +50,38 @@ function getObjectSchema(schema?: Record<string, any>) {
   return candidates.find((candidate: Record<string, any>) => candidate?.type === 'object')
 }
 
-function getArraySchema(schema?: Record<string, any>) {
-  if (!schema)
-    return undefined
-
-  if (schema.type === 'array')
-    return schema
-
-  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])]
-  return candidates.find((candidate: Record<string, any>) => candidate?.type === 'array')
+function mockedStore<TStoreDef extends () => unknown>(
+  useStore: TStoreDef,
+): TStoreDef extends StoreDefinition<
+  infer Id,
+  infer State,
+  infer Getters,
+  infer Actions
+>
+  ? {
+    [K in keyof Getters]: UnwrapRef<Getters[K]>
+  } & Store<
+    Id,
+    State,
+    Record<string, never>,
+    {
+      [K in keyof Actions]: Actions[K] extends (...args: any[]) => any
+        ? // 👇 depends on your testing framework
+        Mock<Actions[K]>
+        : Actions[K]
+    }
+  >
+  : ReturnType<TStoreDef> {
+  return useStore() as any
 }
 
 describe('sparkNotifyCommandSchema', () => {
   it('emits strict objects in the json schema', async () => {
     const sparkTool = await tool({
-      name: 'builtIn_sparkCommand',
       description: 'test',
-      parameters: sparkNotifyCommandSchema,
       execute: async () => undefined,
+      name: 'builtIn_sparkCommand',
+      parameters: sparkNotifyCommandSchema,
     })
 
     const schema = sparkTool.function.parameters as Record<string, any>
@@ -119,28 +119,28 @@ describe('store character-orchestrator', () => {
     airiCardStore.systemPrompt = 'You are a brave adventurer in Minecraft.'
     // @ts-expect-error - testing purpose
     airiCardStore.activeCard = {
-      name: 'Hero',
-      version: '1.0',
       extensions: {
         airi: {
           agents: {},
           modules: {
             consciousness: {
-              provider: 'mock-provider',
               model: 'mock-model',
-            },
-            vision: {
-              provider: 'mock-vision-provider',
-              model: 'mock-vision-model',
+              provider: 'mock-provider',
             },
             speech: {
-              provider: 'mock-speech-provider',
               model: 'mock-speech-model',
+              provider: 'mock-speech-provider',
               voice_id: 'alloy',
+            },
+            vision: {
+              model: 'mock-vision-model',
+              provider: 'mock-vision-provider',
             },
           },
         },
       },
+      name: 'Hero',
+      version: '1.0',
     } satisfies AiriCard
   })
 
@@ -150,16 +150,16 @@ describe('store character-orchestrator', () => {
     mockedStore(useLLM).stream.mockImplementation(async (_model: string, _provider: unknown, _messages: unknown, options: any) => {
       if (options?.tools?.length) {
         await options.tools[1].execute({ commands: [{
-          destinations: ['minecraft'],
-          intent: 'action',
-          priority: 'critical',
-          interrupt: 'false',
           ack: 'ok',
+          destinations: ['minecraft'],
           guidance: null,
+          intent: 'action',
+          interrupt: 'false',
+          priority: 'critical',
         }] } satisfies z.infer<typeof sparkNotifyCommandSchema>)
       }
 
-      await options?.onStreamEvent?.({ type: 'text-delta', text: 'Ahhh, got hit by zombie!' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ text: 'Ahhh, got hit by zombie!', type: 'text-delta' } satisfies StreamEvent)
       await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
     })
 
@@ -170,16 +170,16 @@ describe('store character-orchestrator', () => {
 
     const store = useCharacterOrchestratorStore()
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'minecraft',
       data: {
-        id: nanoid(),
+        destinations: ['character'],
         eventId: nanoid(),
+        headline: 'Hit by zombie',
+        id: nanoid(),
         kind: 'alarm',
         urgency: 'immediate',
-        headline: 'Hit by zombie',
-        destinations: ['character'],
       },
+      source: 'minecraft',
+      type: 'spark:notify',
     }
 
     const result = await store.handleSparkNotify(event)
@@ -205,7 +205,7 @@ describe('store character-orchestrator', () => {
     const mockStream = vi.fn()
     mockedStore(useLLM).stream = mockStream
     mockedStore(useLLM).stream.mockImplementation(async (_model: string, _provider: unknown, _messages: unknown, options: any) => {
-      await options?.onStreamEvent?.({ type: 'text-delta', text: 'I choose d5 to pressure the center.' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ text: 'I choose d5 to pressure the center.', type: 'text-delta' } satisfies StreamEvent)
       await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
     })
 
@@ -216,16 +216,16 @@ describe('store character-orchestrator', () => {
 
     const store = useCharacterOrchestratorStore()
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'plugin:airi-plugin-game-chess',
       data: {
-        id: nanoid(),
+        destinations: ['character'],
         eventId: nanoid(),
+        headline: 'AIRI played d5',
+        id: nanoid(),
         kind: 'ping',
         urgency: 'immediate',
-        headline: 'AIRI played d5',
-        destinations: ['character'],
       },
+      source: 'plugin:airi-plugin-game-chess',
+      type: 'spark:notify',
     }
 
     await store.handleSparkNotifyWithReaction(event, {
@@ -248,15 +248,15 @@ describe('store character-orchestrator', () => {
       const sparkCommandTool = options?.tools?.find((tool: any) => tool.function?.name === 'builtIn_sparkCommand')
       await sparkCommandTool.execute({
         commands: [{
-          destinations: ['minecraft'],
-          intent: 'action',
-          priority: 'high',
-          interrupt: 'false',
           ack: 'go',
+          destinations: ['minecraft'],
           guidance: null,
+          intent: 'action',
+          interrupt: 'false',
+          priority: 'high',
         }],
       } satisfies z.infer<typeof sparkNotifyCommandSchema>)
-      await options?.onStreamEvent?.({ type: 'text-delta', text: 'This should be ignored.' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ text: 'This should be ignored.', type: 'text-delta' } satisfies StreamEvent)
       await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
     })
 
@@ -267,16 +267,16 @@ describe('store character-orchestrator', () => {
 
     const store = useCharacterOrchestratorStore()
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'minecraft',
       data: {
-        id: nanoid(),
+        destinations: ['character'],
         eventId: nanoid(),
+        headline: 'Take cover',
+        id: nanoid(),
         kind: 'alarm',
         urgency: 'immediate',
-        headline: 'Take cover',
-        destinations: ['character'],
       },
+      source: 'minecraft',
+      type: 'spark:notify',
     }
 
     const result = await store.handleSparkNotify(event, {
@@ -287,8 +287,8 @@ describe('store character-orchestrator', () => {
     expect(streamOptions.supportsTools).toBe(true)
     expect(streamOptions.waitForTools).toBe(true)
     expect(streamOptions.toolChoice).toEqual({
-      type: 'function',
       function: { name: 'builtIn_sparkCommand' },
+      type: 'function',
     })
     expect(result?.commands?.length).toBe(1)
     expect(onDelta).not.toHaveBeenCalled()
@@ -299,22 +299,22 @@ describe('store character-orchestrator', () => {
     const mockStream = vi.fn()
     mockedStore(useLLM).stream = mockStream
     mockedStore(useLLM).stream.mockImplementation(async (_model: string, _provider: unknown, _messages: unknown, options: any) => {
-      await options?.onStreamEvent?.({ type: 'text-delta', text: 'legacy-safe text' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ text: 'legacy-safe text', type: 'text-delta' } satisfies StreamEvent)
       await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
     })
 
     const store = useCharacterOrchestratorStore()
     const event: WebSocketEventOf<'spark:notify'> = {
-      type: 'spark:notify',
-      source: 'plugin:airi-plugin-game-chess',
       data: {
-        id: nanoid(),
+        destinations: ['character'],
         eventId: nanoid(),
+        headline: 'Legacy rendering',
+        id: nanoid(),
         kind: 'ping',
         urgency: 'immediate',
-        headline: 'Legacy rendering',
-        destinations: ['character'],
       },
+      source: 'plugin:airi-plugin-game-chess',
+      type: 'spark:notify',
     }
 
     await store.handleSparkNotify(event, {
@@ -325,7 +325,7 @@ describe('store character-orchestrator', () => {
       },
     })
 
-    const renderedMessages = mockStream.mock.calls[0]?.[2] as Array<{ role: string, content: string }> | undefined
+    const renderedMessages = mockStream.mock.calls[0]?.[2] as Array<{ content: string, role: string }> | undefined
     expect(String(renderedMessages?.[0]?.content)).toContain('Plugin-specific hint')
     expect(String(renderedMessages?.[1]?.content)).toContain('Rendered board snapshot')
   })

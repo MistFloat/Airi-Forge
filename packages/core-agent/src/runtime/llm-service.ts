@@ -8,6 +8,10 @@ import { streamText } from '@xsai/stream-text'
 
 import { errorMessageFromValue } from '../utils/error-message'
 
+export function modelKey(model: string, chatProvider: ChatProvider): string {
+  return `${chatProvider.chat(model).baseURL}-${model}`
+}
+
 /**
  * Normalize chat messages so they match the wire format the active provider
  * actually accepts, flattening content-part arrays back to plain strings when
@@ -37,8 +41,8 @@ export function sanitizeMessages(messages: unknown[], supportsContentArray: bool
   return messages.map((message: any) => {
     if (message && message.role === 'error') {
       return {
-        role: 'user',
         content: `User encountered error: ${String(message.content ?? '')}`,
+        role: 'user',
       } as Message
     }
 
@@ -56,7 +60,7 @@ export function sanitizeMessages(messages: unknown[], supportsContentArray: bool
     // arrays uniformly (no longer realistic for the OpenAI-compatible
     // ecosystem, so this is effectively load-bearing).
     if (message && Array.isArray(message.content)) {
-      const contentParts = message.content as { type?: string, text?: string }[]
+      const contentParts = message.content as { text?: string, type?: string }[]
       const hasNonTextPart = contentParts.some(part => part?.type && part.type !== 'text')
       // When the provider supports arrays, only flatten pure-text arrays so we
       // never silently drop image / audio / file parts on a vision-capable
@@ -71,103 +75,12 @@ export function sanitizeMessages(messages: unknown[], supportsContentArray: bool
   })
 }
 
-export function modelKey(model: string, chatProvider: ChatProvider): string {
-  return `${chatProvider.chat(model).baseURL}-${model}`
-}
-
-export function streamOptionsToolsCompatibilityOk(model: string, chatProvider: ChatProvider, options?: StreamOptions): boolean {
-  if (options?.supportsTools !== undefined)
-    return options.supportsTools
-  const key = modelKey(model, chatProvider)
-  return options?.toolsCompatibility?.get(key) !== false
-}
-
-/**
- * Resolve whether the active model+provider currently supports content-part
- * arrays. Defaults to `true` so first-time calls keep multimodal payloads;
- * flips to `false` once {@link isContentArrayRelatedError} has fired on this
- * model key and the caller has cached the degrade in
- * {@link StreamOptions.contentArrayCompatibility}.
- */
-export function streamOptionsContentArrayCompatibilityOk(model: string, chatProvider: ChatProvider, options?: StreamOptions): boolean {
-  if (options?.supportsContentArray !== undefined)
-    return options.supportsContentArray
-  const key = modelKey(model, chatProvider)
-  return options?.contentArrayCompatibility?.get(key) !== false
-}
-
-async function resolveTools(options?: StreamOptions) {
-  const tools = typeof options?.tools === 'function'
-    ? await options.tools()
-    : options?.tools
-  return tools ?? []
-}
-
-function isAbortError(error: unknown): boolean {
-  return typeof error === 'object'
-    && error !== null
-    && (error as { name?: unknown }).name === 'AbortError'
-}
-
-function createCapturedToolErrorResult(toolName: string, error: unknown): string {
-  return `Tool call error for "${toolName}": ${errorMessageFromValue(error)}`
-}
-
-function withCapturedToolErrors(
-  tools: Tool[],
-  capturedToolErrorByCallId: Map<string, string>,
-): Tool[] {
-  return tools.map(tool => ({
-    ...tool,
-    execute: async (input, executeOptions) => {
-      try {
-        return await tool.execute(input, executeOptions)
-      }
-      catch (error) {
-        if (isAbortError(error))
-          throw error
-
-        const result = createCapturedToolErrorResult(tool.function.name, error)
-        capturedToolErrorByCallId.set(executeOptions.toolCallId, result)
-        return result
-      }
-    },
-  }))
-}
-
-function resolveCapturedToolErrorEvent(
-  event: unknown,
-  capturedToolErrorByCallId: Map<string, string>,
-) {
-  if (
-    typeof event !== 'object'
-    || event === null
-    || (event as { type?: unknown }).type !== 'tool-result'
-    || typeof (event as { toolCallId?: unknown }).toolCallId !== 'string'
-  ) {
-    return event
-  }
-
-  const toolCallId = (event as { toolCallId: string }).toolCallId
-  const result = capturedToolErrorByCallId.get(toolCallId)
-  if (result == null)
-    return event
-
-  capturedToolErrorByCallId.delete(toolCallId)
-  return {
-    ...event,
-    type: 'tool-error',
-    isError: true,
-    result,
-  }
-}
-
 export async function streamFrom({
-  model,
+  builtinToolsResolver,
   chatProvider,
   messages,
+  model,
   options,
-  builtinToolsResolver,
 }: StreamFromOptions) {
   const chatConfig = chatProvider.chat(model)
   const supportsContentArray = streamOptionsContentArrayCompatibilityOk(model, chatProvider, options)
@@ -206,6 +119,18 @@ export async function streamFrom({
         await options?.onStreamEvent?.(streamEvent as any)
         if (event && (event as any).type === 'finish') {
           const finishReason = (event as any).finishReason
+          // NOTICE:
+          // `finish_reason: 'length'` means the model hit its max_tokens cap
+          // mid-response. xsai resolves the stream normally (no error), so
+          // without this warning the truncation is invisible — the status bar
+          // just flips to "stopped". Surface it so users can raise maxTokens
+          // or switch models instead of mistaking this for a crash.
+          if (finishReason === 'length') {
+            console.warn(
+              `[llm] Stream ended with finish_reason: 'length' — response was truncated at the max_tokens cap (${options?.maxTokens ?? 16384}).`
+              + ' Raise StreamOptions.maxTokens or use a model with a higher output limit.',
+            )
+          }
           const waitingForToolRound = finishReason === 'tool_calls' || finishReason === 'tool-calls'
           if (!waitingForToolRound || !options?.waitForTools)
             resolveOnce()
@@ -223,16 +148,26 @@ export async function streamFrom({
       const streamResult = streamText({
         ...chatConfig,
         abortSignal: options?.abortSignal,
-        messages: sanitized,
         headers: options?.headers,
-        stopWhen: stepCountAtLeast(10),
+        // NOTICE:
+        // Default to 16384 output tokens. Many OpenAI-compatible providers
+        // default to a low value (e.g. 4096) when `max_tokens` is unset,
+        // silently truncating long responses with `finish_reason: 'length'`.
+        // xsai's requestBody() runs objCamelToSnake() so `maxTokens` reaches
+        // the provider wire as `max_tokens`. 16384 matches the production
+        // default across Aider, Cursor and Continue.dev.
+        maxTokens: options?.maxTokens ?? 16384,
+        messages: sanitized,
+        onEvent,
+        // Default 50 agent-loop steps: 10 was too low, silently truncating
+        // tasks that legitimately need 11+ tool calls.
+        stopWhen: stepCountAtLeast(options?.maxSteps ?? 50),
         // NOTICE:
         // Do not pass xsAI's `captureToolErrors` option here. In the installed
         // @xsai/stream-text version, stream options are spread into the provider
         // chat body, so unknown runtime-only fields can be rejected upstream.
         // AIRI captures tool failures by wrapping local tool executors instead.
         tools: streamTools,
-        onEvent,
       })
 
       // NOTICE: Consume underlying promises to prevent unhandled rejections from
@@ -261,6 +196,93 @@ export async function streamFrom({
       rejectOnce(error)
     }
   })
+}
+
+/**
+ * Resolve whether the active model+provider currently supports content-part
+ * arrays. Defaults to `true` so first-time calls keep multimodal payloads;
+ * flips to `false` once {@link isContentArrayRelatedError} has fired on this
+ * model key and the caller has cached the degrade in
+ * {@link StreamOptions.contentArrayCompatibility}.
+ */
+export function streamOptionsContentArrayCompatibilityOk(model: string, chatProvider: ChatProvider, options?: StreamOptions): boolean {
+  if (options?.supportsContentArray !== undefined)
+    return options.supportsContentArray
+  const key = modelKey(model, chatProvider)
+  return options?.contentArrayCompatibility?.get(key) !== false
+}
+
+export function streamOptionsToolsCompatibilityOk(model: string, chatProvider: ChatProvider, options?: StreamOptions): boolean {
+  if (options?.supportsTools !== undefined)
+    return options.supportsTools
+  const key = modelKey(model, chatProvider)
+  return options?.toolsCompatibility?.get(key) !== false
+}
+
+function createCapturedToolErrorResult(toolName: string, error: unknown): string {
+  return `Tool call error for "${toolName}": ${errorMessageFromValue(error)}`
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as { name?: unknown }).name === 'AbortError'
+}
+
+function resolveCapturedToolErrorEvent(
+  event: unknown,
+  capturedToolErrorByCallId: Map<string, string>,
+) {
+  if (
+    typeof event !== 'object'
+    || event === null
+    || (event as { type?: unknown }).type !== 'tool-result'
+    || typeof (event as { toolCallId?: unknown }).toolCallId !== 'string'
+  ) {
+    return event
+  }
+
+  const toolCallId = (event as { toolCallId: string }).toolCallId
+  const result = capturedToolErrorByCallId.get(toolCallId)
+  if (result == null)
+    return event
+
+  capturedToolErrorByCallId.delete(toolCallId)
+  return {
+    ...event,
+    isError: true,
+    result,
+    type: 'tool-error',
+  }
+}
+
+async function resolveTools(options?: StreamOptions) {
+  const tools = typeof options?.tools === 'function'
+    ? await options.tools()
+    : options?.tools
+  return tools ?? []
+}
+
+function withCapturedToolErrors(
+  tools: Tool[],
+  capturedToolErrorByCallId: Map<string, string>,
+): Tool[] {
+  return tools.map(tool => ({
+    ...tool,
+    execute: async (input, executeOptions) => {
+      try {
+        return await tool.execute(input, executeOptions)
+      }
+      catch (error) {
+        if (isAbortError(error))
+          throw error
+
+        const result = createCapturedToolErrorResult(tool.function.name, error)
+        capturedToolErrorByCallId.set(executeOptions.toolCallId, result)
+        return result
+      }
+    },
+  }))
 }
 
 // Runtime auto-degrade: patterns that indicate the model/provider does not support tool calling.

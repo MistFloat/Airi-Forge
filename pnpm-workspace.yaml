@@ -1,4 +1,4 @@
-﻿catalogMode: prefer
+catalogMode: prefer
 shellEmulator: true
 packages:
   - packages/**
@@ -17,10 +17,10 @@ overrides:
   onnxruntime-web: npm:onnxruntime-web@^1.24.3
   safe-buffer: npm:@nolyfill/safe-buffer@^1.0.44
   safer-buffer: npm:@nolyfill/safer-buffer@^1.0.44
-  side-channel: npm:@nolyfill/side-channel@^1.0.44
-  string.prototype.matchall: npm:@nolyfill/string.prototype.matchall@^1.0.44
   sharp: ^0.34.5
 
+  side-channel: npm:@nolyfill/side-channel@^1.0.44
+  string.prototype.matchall: npm:@nolyfill/string.prototype.matchall@^1.0.44
 patchedDependencies:
   '@xsai/generate-text@0.5.0-beta.2': patches/@xsai__generate-text@0.5.0-beta.2.patch
   '@xsai/shared-chat@0.5.0-beta.2': patches/@xsai__shared-chat@0.5.0-beta.2.patch
@@ -109,6 +109,7 @@ catalog:
   '@moeru/std': 0.1.0-beta.17
   '@napi-rs/image': ^1.12.0
   '@nekopaw/tempora': 0.4.0-alpha.1
+  '@node-rs/jieba': ^2.0.1
   '@opentelemetry/api': ^1.9.1
   '@opentelemetry/api-logs': ^0.215.0
   '@opentelemetry/auto-instrumentations-node': ^0.73.0

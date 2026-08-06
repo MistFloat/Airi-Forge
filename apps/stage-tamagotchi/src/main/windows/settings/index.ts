@@ -28,18 +28,18 @@ export interface SettingsWindowManager {
 }
 
 export function setupSettingsWindowReusableFunc(params: {
-  widgetsManager: WidgetsWindowManager
   autoUpdater: AutoUpdater
   devtoolsWindow: DevtoolsWindowManager
   getMainWindow?: () => BrowserWindow | undefined
+  globalShortcut: GlobalShortcutService
+  godotStageManager: GodotStageManager
+  i18n: I18n
+  mcpStdioManager: McpStdioManager
   onWindowCreated?: (window: BrowserWindow) => void
   serverChannel: ServerChannel
-  godotStageManager: GodotStageManager
-  mcpStdioManager: McpStdioManager
-  i18n: I18n
-  windowAuthManager: WindowAuthManager
-  globalShortcut: GlobalShortcutService
   spotlightWindow: SpotlightWindowManager
+  widgetsManager: WidgetsWindowManager
+  windowAuthManager: WindowAuthManager
 }): SettingsWindowManager {
   const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
   const defaultRoute = '/settings'
@@ -48,15 +48,15 @@ export function setupSettingsWindowReusableFunc(params: {
 
   const reusable = createReusableWindow(async () => {
     const window = new BrowserWindow({
-      title: 'Settings',
-      width: 600.0,
       height: 800.0,
-      show: false,
       icon,
+      show: false,
+      title: 'Settings',
       webPreferences: {
         preload: join(getElectronMainDirname(), '../preload/index.mjs'),
         sandbox: false,
       },
+      width: 600.0,
     })
 
     if (params.onWindowCreated) {
@@ -70,18 +70,18 @@ export function setupSettingsWindowReusableFunc(params: {
     })
 
     settingsContext = await setupSettingsWindowInvokes({
-      settingsWindow: window,
-      widgetsManager: params.widgetsManager,
       autoUpdater: params.autoUpdater,
       devtoolsWindow: params.devtoolsWindow,
       getMainWindow: params.getMainWindow,
-      serverChannel: params.serverChannel,
-      godotStageManager: params.godotStageManager,
-      mcpStdioManager: params.mcpStdioManager,
-      i18n: params.i18n,
-      windowAuthManager: params.windowAuthManager,
       globalShortcut: params.globalShortcut,
+      godotStageManager: params.godotStageManager,
+      i18n: params.i18n,
+      mcpStdioManager: params.mcpStdioManager,
+      serverChannel: params.serverChannel,
+      settingsWindow: window,
       spotlightWindow: params.spotlightWindow,
+      widgetsManager: params.widgetsManager,
+      windowAuthManager: params.windowAuthManager,
     })
 
     await load(window, withHashRoute(rendererBase, currentRoute))

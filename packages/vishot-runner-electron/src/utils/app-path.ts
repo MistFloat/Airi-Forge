@@ -3,8 +3,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export interface ElectronAppInfo {
-  repoRoot: string
   mainEntrypoint: string
+  repoRoot: string
 }
 
 export async function resolveElectronAppInfo(): Promise<ElectronAppInfo> {
@@ -18,7 +18,7 @@ export async function resolveElectronAppInfo(): Promise<ElectronAppInfo> {
   })
 
   return {
-    repoRoot,
     mainEntrypoint,
+    repoRoot,
   }
 }

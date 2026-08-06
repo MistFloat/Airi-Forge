@@ -35,7 +35,7 @@ ZipLoader.createSettings = async (reader: JSZip) => {
   try {
     const metadataSettings = settings as ModelSettings & {
       _cdiData?: unknown
-      _expFiles?: Array<{ name: string, fileName: string, data: unknown }>
+      _expFiles?: Array<{ data: unknown, fileName: string, name: string }>
     }
 
     // Find and parse CDI file
@@ -49,14 +49,14 @@ ZipLoader.createSettings = async (reader: JSZip) => {
     // Find and collect expression files
     const expPaths = filePaths.filter(f => f.toLowerCase().endsWith('.exp3.json'))
     if (expPaths.length > 0) {
-      const expFiles: Array<{ name: string, fileName: string, data: unknown }> = []
+      const expFiles: Array<{ data: unknown, fileName: string, name: string }> = []
       for (const expPath of expPaths) {
         const expText = await reader.file(expPath)!.async('text')
         const baseName = expPath.split('/').pop()?.replace('.exp3.json', '') || expPath
         expFiles.push({
-          name: baseName,
-          fileName: expPath,
           data: JSON.parse(expText),
+          fileName: expPath,
+          name: baseName,
         })
       }
       metadataSettings._expFiles = expFiles
@@ -70,30 +70,66 @@ ZipLoader.createSettings = async (reader: JSZip) => {
   return settings
 }
 
-/**
- * Normalizes Live2D model settings JSON before upstream path resolution.
- *
- * Before:
- * - `{ "FileReferences": { "Physics": null } }`
- *
- * After:
- * - `{ "FileReferences": {} }`
- */
-function sanitizeModelSettingsText(text: string): string {
-  const json = JSON.parse(text) as Record<string, unknown>
-  const refs = json.FileReferences
+export function basename(path: string): string {
+  // https://stackoverflow.com/a/15270931
+  return path.split(/[\\/]/).pop()!
+}
 
-  if (refs && typeof refs === 'object') {
-    const fileReferences = refs as Record<string, unknown>
-    if (fileReferences.Physics === null)
-      delete fileReferences.Physics
-    if (fileReferences.Pose === null)
-      delete fileReferences.Pose
-    if (fileReferences.DisplayInfo === null)
-      delete fileReferences.DisplayInfo
+export function isMocFile(file: string) {
+  return file.endsWith('.moc3')
+}
+
+export function isSettingsFile(file: string) {
+  return !shouldIgnoreLive2DArchiveEntry(file)
+    && !file.endsWith('items_pinned_to_model.json')
+    && (file.endsWith('.model3.json') || file.endsWith('.model.json'))
+}
+
+// copy and modified from https://github.com/guansss/live2d-viewer-web/blob/f6060b2ce52c2e26b6b61fa903c837fe343f72d1/src/app/upload.ts#L81-L142
+function createFakeSettings(files: string[]): ModelSettings {
+  const mocFiles = files.filter(file => isMocFile(file))
+
+  if (mocFiles.length !== 1) {
+    const fileList = mocFiles.length ? `(${mocFiles.map(f => `"${f}"`).join(',')})` : ''
+
+    throw new Error(`Expected exactly one moc file, got ${mocFiles.length} ${fileList}`)
   }
 
-  return JSON.stringify(json)
+  const mocFile = mocFiles[0]
+  const modelName = basename(mocFile).replace(/\.moc3?/, '')
+
+  const textures = files.filter(f => f.endsWith('.png'))
+
+  if (!textures.length) {
+    throw new Error('Textures not found')
+  }
+
+  const motions = files.filter(f => f.endsWith('.mtn') || f.endsWith('.motion3.json'))
+  const physics = files.find(f => f.includes('physics'))
+  const pose = files.find(f => f.includes('pose'))
+
+  const settings = new Cubism4ModelSettings({
+    FileReferences: {
+      Moc: mocFile,
+      Motions: motions.length
+        ? {
+            '': motions.map(motion => ({ File: motion })),
+          }
+        : undefined,
+      Physics: physics,
+      Pose: pose,
+      Textures: textures,
+    },
+    url: `${modelName}.model3.json`,
+    Version: 3,
+  })
+
+  settings.name = modelName
+
+  // provide this property for FileLoader
+  Object.assign(settings, { _objectURL: `example://${settings.url}` })
+
+  return settings
 }
 
 function createModelSettings(text: string, url: string): ModelSettings {
@@ -127,66 +163,30 @@ function createModelSettings(text: string, url: string): ModelSettings {
   return settings
 }
 
-export function isSettingsFile(file: string) {
-  return !shouldIgnoreLive2DArchiveEntry(file)
-    && !file.endsWith('items_pinned_to_model.json')
-    && (file.endsWith('.model3.json') || file.endsWith('.model.json'))
-}
+/**
+ * Normalizes Live2D model settings JSON before upstream path resolution.
+ *
+ * Before:
+ * - `{ "FileReferences": { "Physics": null } }`
+ *
+ * After:
+ * - `{ "FileReferences": {} }`
+ */
+function sanitizeModelSettingsText(text: string): string {
+  const json = JSON.parse(text) as Record<string, unknown>
+  const refs = json.FileReferences
 
-export function isMocFile(file: string) {
-  return file.endsWith('.moc3')
-}
-
-export function basename(path: string): string {
-  // https://stackoverflow.com/a/15270931
-  return path.split(/[\\/]/).pop()!
-}
-
-// copy and modified from https://github.com/guansss/live2d-viewer-web/blob/f6060b2ce52c2e26b6b61fa903c837fe343f72d1/src/app/upload.ts#L81-L142
-function createFakeSettings(files: string[]): ModelSettings {
-  const mocFiles = files.filter(file => isMocFile(file))
-
-  if (mocFiles.length !== 1) {
-    const fileList = mocFiles.length ? `(${mocFiles.map(f => `"${f}"`).join(',')})` : ''
-
-    throw new Error(`Expected exactly one moc file, got ${mocFiles.length} ${fileList}`)
+  if (refs && typeof refs === 'object') {
+    const fileReferences = refs as Record<string, unknown>
+    if (fileReferences.Physics === null)
+      delete fileReferences.Physics
+    if (fileReferences.Pose === null)
+      delete fileReferences.Pose
+    if (fileReferences.DisplayInfo === null)
+      delete fileReferences.DisplayInfo
   }
 
-  const mocFile = mocFiles[0]
-  const modelName = basename(mocFile).replace(/\.moc3?/, '')
-
-  const textures = files.filter(f => f.endsWith('.png'))
-
-  if (!textures.length) {
-    throw new Error('Textures not found')
-  }
-
-  const motions = files.filter(f => f.endsWith('.mtn') || f.endsWith('.motion3.json'))
-  const physics = files.find(f => f.includes('physics'))
-  const pose = files.find(f => f.includes('pose'))
-
-  const settings = new Cubism4ModelSettings({
-    url: `${modelName}.model3.json`,
-    Version: 3,
-    FileReferences: {
-      Moc: mocFile,
-      Textures: textures,
-      Physics: physics,
-      Pose: pose,
-      Motions: motions.length
-        ? {
-            '': motions.map(motion => ({ File: motion })),
-          }
-        : undefined,
-    },
-  })
-
-  settings.name = modelName
-
-  // provide this property for FileLoader
-  Object.assign(settings, { _objectURL: `example://${settings.url}` })
-
-  return settings
+  return JSON.stringify(json)
 }
 
 ZipLoader.readText = async (jsZip: JSZip, path: string) => {

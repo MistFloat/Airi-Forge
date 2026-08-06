@@ -18,45 +18,20 @@ vi.mock('../../../markdown', () => ({
     name: 'MarkdownRendererStub',
     props: {
       content: {
-        type: String,
         default: '',
+        type: String,
       },
     },
     template: '<div>{{ content }}</div>',
   }),
 }))
 
-function createTestI18n() {
-  return createI18n({
-    legacy: false,
-    locale: 'en',
-    messages: {
-      en: {
-        stage: {
-          chat: {
-            actions: {
-              retry: 'Retry',
-            },
-            message: {
-              'character-name': {
-                'airi': 'AIRI',
-                'core-system': 'System',
-                'you': 'You',
-              },
-            },
-          },
-        },
-      },
-    },
-  })
-}
-
 function createHarness(messages: ChatHistoryItem[]) {
   return defineComponent({
-    name: 'ChatHistoryRetryHarness',
     components: {
       ChatHistory,
     },
+    name: 'ChatHistoryRetryHarness',
     setup() {
       const lastRetryIndex = shallowRef('none')
       const lastToolCallRerunPayload = shallowRef('')
@@ -93,6 +68,31 @@ function createHarness(messages: ChatHistoryItem[]) {
   })
 }
 
+function createTestI18n() {
+  return createI18n({
+    legacy: false,
+    locale: 'en',
+    messages: {
+      en: {
+        stage: {
+          chat: {
+            actions: {
+              retry: 'Retry',
+            },
+            message: {
+              'character-name': {
+                'airi': 'AIRI',
+                'core-system': 'System',
+                'you': 'You',
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+}
+
 /**
  * @example
  * describe('ChatHistory retry actions', () => {
@@ -110,8 +110,8 @@ describe('chatHistory retry actions', () => {
    */
   it('emits retry-message when the retry button is clicked for an error after a user message', async () => {
     const messages: ChatHistoryItem[] = [
-      { role: 'user', content: 'hello' },
-      { role: 'error', content: 'Remote sent 400 response' },
+      { content: 'hello', role: 'user' },
+      { content: 'Remote sent 400 response', role: 'error' },
     ]
 
     const screen = await render(createHarness(messages), {
@@ -134,8 +134,8 @@ describe('chatHistory retry actions', () => {
    */
   it('does not render the retry button when the error is not preceded by a user message', async () => {
     const messages: ChatHistoryItem[] = [
-      { role: 'assistant', content: 'hello', slices: [], tool_results: [] },
-      { role: 'error', content: 'Remote sent 400 response' },
+      { content: 'hello', role: 'assistant', slices: [], tool_results: [] },
+      { content: 'Remote sent 400 response', role: 'error' },
     ]
 
     await render(createHarness(messages), {
@@ -150,24 +150,24 @@ describe('chatHistory retry actions', () => {
   it('emits tool-call-rerun with message context when a tool call rerun button is clicked', async () => {
     const args = JSON.stringify({ location: 'Tokyo' })
     const assistantMessage: ChatHistoryItem = {
-      role: 'assistant',
       content: '',
+      createdAt: 1710000000000,
+      role: 'assistant',
       slices: [
         {
-          type: 'tool-call',
           toolCall: {
+            args,
             toolCallId: 'call-weather',
             toolCallType: 'function',
             toolName: 'weather',
-            args,
           },
+          type: 'tool-call',
         },
       ],
       tool_results: [],
-      createdAt: 1710000000000,
     }
     const messages: ChatHistoryItem[] = [
-      { role: 'user', content: 'weather in Tokyo' },
+      { content: 'weather in Tokyo', role: 'user' },
       assistantMessage,
     ]
 
@@ -180,12 +180,12 @@ describe('chatHistory retry actions', () => {
     await screen.getByLabelText('Re-run tool call').click()
 
     await expect.element(screen.getByLabelText('tool-call-rerun')).toHaveTextContent(JSON.stringify({
-      message: assistantMessage,
+      args,
       index: 1,
       key: getChatHistoryItemKey(assistantMessage, 1),
+      message: assistantMessage,
       toolCallId: 'call-weather',
       toolName: 'weather',
-      args,
     }))
   })
 })

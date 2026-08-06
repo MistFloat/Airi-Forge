@@ -8,10 +8,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createInferenceServiceProvidersModel } from './inference-service-providers'
 
 const provider = {
-  id: 'provider-1',
-  definitionId: 'openai-compatible',
-  name: 'OpenAI Compatible',
   config: { apiKey: 'sk-test' },
+  definitionId: 'openai-compatible',
+  id: 'provider-1',
+  name: 'OpenAI Compatible',
   validated: true,
   validationBypassed: false,
 } satisfies InferenceServiceProvider

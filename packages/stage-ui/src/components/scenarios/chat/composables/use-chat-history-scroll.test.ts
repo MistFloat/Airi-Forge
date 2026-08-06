@@ -9,29 +9,49 @@ import { useChatHistoryScroll } from './use-chat-history-scroll'
 
 function createAssistantMessage(id: string, content: string, createdAt: number): ChatHistoryItem {
   return {
-    id,
-    role: 'assistant',
     content,
     createdAt,
-    slices: [{ type: 'text', text: content }],
+    id,
+    role: 'assistant',
+    slices: [{ text: content, type: 'text' }],
     tool_results: [],
+  }
+}
+
+function createRequestAnimationFrameController() {
+  const callbacks: FrameRequestCallback[] = []
+
+  const stub = vi
+    .spyOn(window, 'requestAnimationFrame')
+    .mockImplementation((callback: FrameRequestCallback) => {
+      callbacks.push(callback)
+      return callbacks.length
+    })
+
+  function runNextFrame() {
+    const callback = callbacks.shift()
+    callback?.(performance.now())
+  }
+
+  function runAllFrames() {
+    while (callbacks.length > 0)
+      runNextFrame()
+  }
+
+  return {
+    runAllFrames,
+    runNextFrame,
+    stub,
   }
 }
 
 function createUserMessage(id: string, content: string, createdAt: number): ChatHistoryItem {
   return {
-    id,
-    role: 'user',
     content,
     createdAt,
+    id,
+    role: 'user',
   }
-}
-
-function setContainerScrollTo(container: HTMLElement, handler: (options?: ScrollToOptions) => void) {
-  Object.defineProperty(container, 'scrollTo', {
-    configurable: true,
-    value: handler as HTMLElement['scrollTo'],
-  })
 }
 
 function defineScrollMetrics(element: HTMLElement, metrics: {
@@ -65,33 +85,6 @@ async function flushDom() {
   await Promise.resolve()
 }
 
-function createRequestAnimationFrameController() {
-  const callbacks: FrameRequestCallback[] = []
-
-  const stub = vi
-    .spyOn(window, 'requestAnimationFrame')
-    .mockImplementation((callback: FrameRequestCallback) => {
-      callbacks.push(callback)
-      return callbacks.length
-    })
-
-  function runNextFrame() {
-    const callback = callbacks.shift()
-    callback?.(performance.now())
-  }
-
-  function runAllFrames() {
-    while (callbacks.length > 0)
-      runNextFrame()
-  }
-
-  return {
-    stub,
-    runNextFrame,
-    runAllFrames,
-  }
-}
-
 function renderMessages(container: HTMLElement, messages: ChatHistoryItem[]) {
   container.replaceChildren()
 
@@ -103,6 +96,13 @@ function renderMessages(container: HTMLElement, messages: ChatHistoryItem[]) {
     node.tabIndex = 0
     container.appendChild(node)
   }
+}
+
+function setContainerScrollTo(container: HTMLElement, handler: (options?: ScrollToOptions) => void) {
+  Object.defineProperty(container, 'scrollTo', {
+    configurable: true,
+    value: handler as HTMLElement['scrollTo'],
+  })
 }
 
 afterEach(() => {
@@ -142,8 +142,8 @@ describe('useChatHistoryScroll', () => {
     scope.run(() => {
       useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 
@@ -196,8 +196,8 @@ describe('useChatHistoryScroll', () => {
     scope.run(() => {
       useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 
@@ -242,8 +242,8 @@ describe('useChatHistoryScroll', () => {
     const state = scope.run(() => {
       return useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 
@@ -297,8 +297,8 @@ describe('useChatHistoryScroll', () => {
     scope.run(() => {
       useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 
@@ -357,8 +357,8 @@ describe('useChatHistoryScroll', () => {
     scope.run(() => {
       useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 
@@ -406,8 +406,8 @@ describe('useChatHistoryScroll', () => {
     scope.run(() => {
       useChatHistoryScroll({
         containerRef: ref(container),
-        messages: messageList,
         getKey: message => message.id!,
+        messages: messageList,
       })
     })
 

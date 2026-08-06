@@ -7,33 +7,71 @@ import { OIDC_CLIENT_ID, OIDC_REDIRECT_URI } from './auth-config'
 import { buildAuthorizationURL, persistFlowState } from './auth-oidc'
 import { SERVER_URL } from './server'
 
-export type OAuthProvider = 'google' | 'github'
+export type OAuthProvider = 'github' | 'google'
 
 // NOTICE: reads the same localStorage key ('auth/v1/token') that useAuthStore's
 // `token` ref writes via useLocalStorage. We bypass the store here because
 // authClient is initialized at module scope, before Pinia is active — calling
 // useAuthStore() at this point would throw. The two stay in sync because
 // useLocalStorage and raw localStorage share the same underlying storage entry.
-export function getAuthToken(): string | null {
+export function getAuthToken(): null | string {
   return localStorage.getItem('auth/v1/token')
 }
 
 export const authClient = createAuthClient({
   baseURL: SERVER_URL,
   fetchOptions: {
+    auth: {
+      token: () => getAuthToken() ?? '',
+      type: 'Bearer',
+    },
     // NOTICE: better-auth's client hardcodes `credentials: "include"` by default
     // (config.mjs L40), which causes cookies to be sent alongside the Authorization
     // header. We override with "omit" so only the Bearer token is used for auth.
     // This works because restOfFetchOptions is spread AFTER the default (L47).
     credentials: 'omit',
-    auth: {
-      type: 'Bearer',
-      token: () => getAuthToken() ?? '',
-    },
   },
 })
 
 let initialized = false
+
+/**
+ * Persist OIDC tokens locally and schedule refresh.
+ */
+export async function applyOIDCTokens(tokens: TokenResponse, clientId: string): Promise<void> {
+  const authStore = useAuthStore()
+  authStore.token = tokens.access_token
+  if (tokens.refresh_token)
+    authStore.refreshToken = tokens.refresh_token
+  // Persist the ID token so signOut() can drive RP-Initiated Logout via
+  // `id_token_hint`. Token rotation does not refresh the ID token, so the
+  // value captured here at sign-in time is the one we use for the lifetime
+  // of the local session.
+  if (tokens.id_token)
+    authStore.idToken = tokens.id_token
+
+  // Persist client info for refresh after page reload
+  authStore.oidcClientId = clientId
+  if (tokens.expires_in)
+    authStore.tokenExpiry = Date.now() + tokens.expires_in * 1000
+
+  authStore.scheduleTokenRefresh(tokens.expires_in)
+}
+
+export async function fetchSession() {
+  const { data } = await authClient.getSession()
+  const authStore = useAuthStore()
+
+  if (data) {
+    authStore.user = data.user
+    authStore.session = data.session
+    return true
+  }
+
+  // Session expired or invalid — clear stale auth state from localStorage
+  authStore.clearAllAuthState()
+  return false
+}
 
 export async function initializeAuth() {
   if (initialized)
@@ -77,46 +115,28 @@ export async function initializeAuth() {
   await fetchSession().catch(() => {})
 }
 
-/**
- * Persist OIDC tokens locally and schedule refresh.
- */
-export async function applyOIDCTokens(tokens: TokenResponse, clientId: string): Promise<void> {
-  const authStore = useAuthStore()
-  authStore.token = tokens.access_token
-  if (tokens.refresh_token)
-    authStore.refreshToken = tokens.refresh_token
-  // Persist the ID token so signOut() can drive RP-Initiated Logout via
-  // `id_token_hint`. Token rotation does not refresh the ID token, so the
-  // value captured here at sign-in time is the one we use for the lifetime
-  // of the local session.
-  if (tokens.id_token)
-    authStore.idToken = tokens.id_token
-
-  // Persist client info for refresh after page reload
-  authStore.oidcClientId = clientId
-  if (tokens.expires_in)
-    authStore.tokenExpiry = Date.now() + tokens.expires_in * 1000
-
-  authStore.scheduleTokenRefresh(tokens.expires_in)
-}
-
-export async function fetchSession() {
-  const { data } = await authClient.getSession()
-  const authStore = useAuthStore()
-
-  if (data) {
-    authStore.user = data.user
-    authStore.session = data.session
-    return true
-  }
-
-  // Session expired or invalid — clear stale auth state from localStorage
-  authStore.clearAllAuthState()
-  return false
-}
-
 export async function listSessions() {
   return await authClient.listSessions()
+}
+
+/**
+ * Initiate OIDC Authorization Code + PKCE sign-in flow.
+ * Builds the authorization URL, persists PKCE state, and navigates.
+ */
+export async function signInOIDC(params: OIDCFlowParams) {
+  const { provider, ...oidcParams } = params
+  const { flowState, url } = await buildAuthorizationURL(oidcParams)
+  persistFlowState(flowState, params)
+
+  if (!provider) {
+    window.location.href = url
+    return
+  }
+
+  await authClient.signIn.social({
+    callbackURL: url.toString(),
+    provider,
+  })
 }
 
 export async function signOut() {
@@ -164,8 +184,8 @@ export async function signOut() {
     else if (bearerToken) {
       const url = new URL('/api/auth/sign-out', SERVER_URL)
       await fetch(url.toString(), {
-        method: 'POST',
         headers: { Authorization: `Bearer ${bearerToken}` },
+        method: 'POST',
       })
     }
   }
@@ -176,26 +196,6 @@ export async function signOut() {
   }
 
   authStore.clearAllAuthState()
-}
-
-/**
- * Initiate OIDC Authorization Code + PKCE sign-in flow.
- * Builds the authorization URL, persists PKCE state, and navigates.
- */
-export async function signInOIDC(params: OIDCFlowParams) {
-  const { provider, ...oidcParams } = params
-  const { url, flowState } = await buildAuthorizationURL(oidcParams)
-  persistFlowState(flowState, params)
-
-  if (!provider) {
-    window.location.href = url
-    return
-  }
-
-  await authClient.signIn.social({
-    provider,
-    callbackURL: url.toString(),
-  })
 }
 
 /**

@@ -5,26 +5,6 @@ import { tool } from '@xsai/tool'
 import { z } from 'zod'
 
 /**
- * Describes an MCP tool that can be exposed to the shared LLM runtime.
- *
- * Use when:
- * - A runtime needs to list available MCP tools before exposing them to models
- *
- * Expects:
- * - `name` is the fully-qualified tool name used for invocation
- *
- * Returns:
- * - The MCP tool descriptor metadata reported by the runtime
- */
-export interface McpToolDescriptor {
-  serverName: string
-  name: string
-  toolName: string
-  description?: string
-  inputSchema: Record<string, unknown>
-}
-
-/**
  * Payload for invoking an MCP tool through a runtime-specific transport.
  *
  * Use when:
@@ -38,8 +18,8 @@ export interface McpToolDescriptor {
  * - The MCP tool call input envelope
  */
 export interface McpCallToolPayload {
-  name: string
   arguments?: Record<string, unknown>
+  name: string
 }
 
 /**
@@ -56,9 +36,29 @@ export interface McpCallToolPayload {
  */
 export interface McpCallToolResult {
   content?: Array<Record<string, unknown>>
+  isError?: boolean
   structuredContent?: Record<string, unknown>
   toolResult?: unknown
-  isError?: boolean
+}
+
+/**
+ * Describes an MCP tool that can be exposed to the shared LLM runtime.
+ *
+ * Use when:
+ * - A runtime needs to list available MCP tools before exposing them to models
+ *
+ * Expects:
+ * - `name` is the fully-qualified tool name used for invocation
+ *
+ * Returns:
+ * - The MCP tool descriptor metadata reported by the runtime
+ */
+export interface McpToolDescriptor {
+  description?: string
+  inputSchema: Record<string, unknown>
+  name: string
+  serverName: string
+  toolName: string
 }
 
 /**
@@ -74,8 +74,52 @@ export interface McpCallToolResult {
  * - An object that can back `createMcpTools`
  */
 export interface McpToolRuntime {
-  listTools: () => Promise<McpToolDescriptor[]>
   callTool: (payload: McpCallToolPayload) => Promise<McpCallToolResult>
+  listTools: () => Promise<McpToolDescriptor[]>
+}
+
+/**
+ * Separator used in MCP qualified tool names (`serverName::toolName`).
+ * Internal only — provider-facing names use `sanitizeMcpToolName` to replace
+ * it with `__` because providers like DeepSeek/OpenAI require
+ * `^[a-zA-Z0-9_-]+$` and reject colons.
+ */
+const MCP_TOOL_NAME_SEPARATOR = '::'
+const PROVIDER_SAFE_SEPARATOR = '__'
+
+/**
+ * Creates direct xsai tool definitions for every MCP tool reported by the runtime.
+ *
+ * Each MCP tool becomes a first-class tool the model can call by its
+ * provider-safe name (e.g. `coding-agent__git_status`), instead of forcing
+ * the model through the two-step `builtIn_mcpListTools` →
+ * `builtIn_mcpCallTool` indirection.
+ *
+ * The `function.name` is sanitized (`::` → `__`) to satisfy provider naming
+ * patterns, but the `execute` callback preserves the original qualified name
+ * for MCP dispatch.
+ *
+ * Use when:
+ * - A runtime wants MCP tools directly callable by the model
+ *
+ * Expects:
+ * - The runtime implements the `McpToolRuntime` contract
+ *
+ * Returns:
+ * - xsai tool definitions mirroring the MCP server's tool list, or an empty
+ *   array when the runtime cannot list tools
+ */
+export async function createMcpDirectTools(runtime: McpToolRuntime): Promise<Tool[]> {
+  let descriptors: McpToolDescriptor[]
+  try {
+    descriptors = await runtime.listTools()
+  }
+  catch (error) {
+    console.warn('[createMcpDirectTools] failed to list MCP tools:', error)
+    return []
+  }
+
+  return descriptors.map(descriptor => createDirectMcpTool(descriptor, runtime))
 }
 
 /**
@@ -93,7 +137,6 @@ export interface McpToolRuntime {
 export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
   return [
     tool({
-      name: 'builtIn_mcpListTools',
       description: 'List all available MCP tools. Call this first to discover tool names before calling builtIn_mcpCallTool.',
       execute: async () => {
         try {
@@ -104,42 +147,57 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
           return ''
         }
       },
+      name: 'builtIn_mcpListTools',
       parameters: z.object({}).strict(),
     }),
     tool({
-      name: 'builtIn_mcpCallTool',
-      description: 'Call an MCP tool by name. Use builtIn_mcpListTools first to get available tool names.',
-      execute: async ({ name, arguments: argsJson }) => {
+      description: 'Call an MCP tool by name. Use builtIn_mcpListTools first to get available tool names. Accepts both "server::tool" and "server__tool" name formats.',
+      execute: async ({ arguments: argsJson, name }) => {
         try {
           const args = argsJson ? JSON.parse(argsJson) : {}
-          return await runtime.callTool({ name, arguments: args })
+          // Accept both "::" (from builtIn_mcpListTools) and "__" (from direct
+          // tool names) so the model can use either form interchangeably.
+          const qualifiedName = name.includes(MCP_TOOL_NAME_SEPARATOR)
+            ? name
+            : desanitizeMcpToolName(name)
+          return await runtime.callTool({ arguments: args, name: qualifiedName })
         }
         catch (error) {
           return {
+            content: [{ text: errorMessageFromValue(error), type: 'text' }],
             isError: true,
-            content: [{ type: 'text', text: errorMessageFromValue(error) }],
           }
         }
       },
+      name: 'builtIn_mcpCallTool',
       // NOTICE: `arguments` is z.string() (JSON) because z.unknown() produces `{}` (no `type` key)
       // and z.record() emits `propertyNames`, both rejected by OpenAI.
       parameters: z.object({
-        name: z.string().describe('Tool name in "<serverName>::<toolName>" format'),
         arguments: z.string().describe('JSON object of tool arguments, e.g. {"query":"hello","limit":10}'),
+        name: z.string().describe('Tool name in "serverName::toolName" or "serverName__toolName" format'),
       }).strict(),
     }),
   ]
 }
 
-function createUnavailableMcpToolRuntime(): McpToolRuntime {
-  return {
-    async listTools() {
-      throw new Error('MCP tools are not available in this runtime.')
-    },
-    async callTool() {
-      throw new Error('MCP tools are not available in this runtime.')
-    },
-  }
+/**
+ * Reverses {@link sanitizeMcpToolName}: converts a provider-safe name back to
+ * the MCP qualified format. Used by `builtIn_mcpCallTool` so the meta-tool
+ * accepts both `::` (from `builtIn_mcpListTools`) and `__` (from direct tool
+ * names) formats.
+ *
+ * Before: `coding-agent__git_status`
+ * After:  `coding-agent::git_status`
+ */
+export function desanitizeMcpToolName(providerSafeName: string): string {
+  // Only replace the FIRST `__` to avoid corrupting tool names that
+  // legitimately contain double underscores after the server prefix.
+  const idx = providerSafeName.indexOf(PROVIDER_SAFE_SEPARATOR)
+  if (idx <= 0 || idx === providerSafeName.length - PROVIDER_SAFE_SEPARATOR.length)
+    return providerSafeName
+  return providerSafeName.slice(0, idx)
+    + MCP_TOOL_NAME_SEPARATOR
+    + providerSafeName.slice(idx + PROVIDER_SAFE_SEPARATOR.length)
 }
 
 /**
@@ -156,4 +214,81 @@ function createUnavailableMcpToolRuntime(): McpToolRuntime {
  */
 export async function mcp(): Promise<Tool[]> {
   return await Promise.all(createMcpTools(createUnavailableMcpToolRuntime()))
+}
+
+/**
+ * Converts an MCP qualified tool name to a provider-safe function name.
+ *
+ * Providers like DeepSeek/OpenAI require `function.name` to match
+ * `^[a-zA-Z0-9_-]+$`. The MCP qualified name format `serverName::toolName`
+ * contains colons which are invalid. Replaces `::` with `__` so the model
+ * can call the tool directly.
+ *
+ * Before: `coding-agent::git_status`
+ * After:  `coding-agent__git_status`
+ */
+export function sanitizeMcpToolName(qualifiedName: string): string {
+  return qualifiedName.split(MCP_TOOL_NAME_SEPARATOR).join(PROVIDER_SAFE_SEPARATOR)
+}
+
+function createDirectMcpTool(descriptor: McpToolDescriptor, runtime: McpToolRuntime): Tool {
+  return {
+    execute: async (input: unknown) => {
+      // NOTICE: xsai parses the model's tool-call arguments string via
+      // JSON.parse before passing the result as `input`. For MCP tools the
+      // arguments object is forwarded as-is to the MCP server's callTool.
+      const args = isPlainObject(input) ? input : undefined
+      try {
+        // Use the original qualified name (with "::") for MCP dispatch —
+        // the main process splits on "::" to find the server + tool.
+        return await runtime.callTool({ arguments: args, name: descriptor.name })
+      }
+      catch (error) {
+        // Return an MCP-style error result instead of throwing so the model
+        // receives structured feedback rather than killing the stream.
+        return {
+          content: [{ text: errorMessageFromValue(error), type: 'text' }],
+          isError: true,
+        }
+      }
+    },
+    function: {
+      description: descriptor.description ?? `MCP tool ${descriptor.name}`,
+      // Provider-facing name: "::" → "__" to satisfy ^[a-zA-Z0-9_-]+$
+      name: sanitizeMcpToolName(descriptor.name),
+      parameters: normalizeMcpInputSchema(descriptor.inputSchema),
+    },
+    type: 'function',
+  }
+}
+
+function createUnavailableMcpToolRuntime(): McpToolRuntime {
+  return {
+    async callTool() {
+      throw new Error('MCP tools are not available in this runtime.')
+    },
+    async listTools() {
+      throw new Error('MCP tools are not available in this runtime.')
+    },
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Ensures a JSON Schema from an MCP `inputSchema` is provider-compatible.
+ *
+ * MCP spec requires `inputSchema` to be a JSON Schema of `type: 'object'`,
+ * but some servers omit the `type` field for parameterless tools. OpenAI-
+ * compatible providers reject tool schemas without a `type` field, so we
+ * default to `'object'` when missing.
+ */
+function normalizeMcpInputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema))
+    return { type: 'object' }
+  if (!('type' in schema))
+    return { ...schema, type: 'object' }
+  return schema
 }

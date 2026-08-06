@@ -17,32 +17,32 @@ const googleGenerativeConfigSchema = z.object({
 type GoogleGenerativeConfig = z.input<typeof googleGenerativeConfigSchema>
 
 export const providerGoogleGenerativeAI = defineProvider<GoogleGenerativeConfig>({
-  id: 'google-generative-ai',
-  order: 8,
-  name: 'Google Gemini',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.google-generative-ai.title'),
-  description: 'ai.google.dev',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.google-generative-ai.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:gemini',
-  iconColor: 'i-lobe-icons:gemini-color',
-
+  createProvider(config) {
+    return createGoogleGenerativeAI(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => googleGenerativeConfigSchema.extend({
     apiKey: googleGenerativeConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: googleGenerativeConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createGoogleGenerativeAI(config.apiKey, config.baseUrl)
-  },
+  description: 'ai.google.dev',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.google-generative-ai.description'),
+  icon: 'i-lobe-icons:gemini',
+  iconColor: 'i-lobe-icons:gemini-color',
+  id: 'google-generative-ai',
+  name: 'Google Gemini',
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.google-generative-ai.title'),
+
+  order: 8,
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

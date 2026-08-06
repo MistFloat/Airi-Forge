@@ -1,4 +1,5 @@
 export * from './agents'
+export * from './frame-change'
 export * from './orchestrator'
 export * from './processing-store'
 export * from './store'

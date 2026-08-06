@@ -9,88 +9,20 @@ import { resolveProviderSourceMetadata } from '../../libs/providers/source-metad
 import { CHAT_COMPLETIONS_VALIDATOR_ID, isModelProvider } from '../../libs/providers/types'
 import { getValidatorsOfProvider, validateProvider } from '../../libs/providers/validators/run'
 
-function getCategoryFromTasks(tasks: string[]): ProviderMetadata['category'] {
-  if (tasks.some(task => ['vision', 'image-understanding', 'image-to-text', 'multimodal'].includes(task.toLowerCase()))) {
-    return 'vision'
-  }
-  if (tasks.some(task => ['speech-to-text', 'automatic-speech-recognition', 'asr', 'stt'].includes(task.toLowerCase()))) {
-    return 'transcription'
-  }
-  if (tasks.some(task => ['text-to-speech', 'speech', 'tts'].includes(task.toLowerCase()))) {
-    return 'speech'
-  }
-  if (tasks.some(task => ['embed', 'embedding'].includes(task.toLowerCase()))) {
-    return 'embed'
-  }
+export function convertProviderDefinitionsToMetadata(
+  definitions: ProviderDefinition<any>[],
+  t: ComposerTranslation,
+  currentMetadata: Record<string, ProviderMetadata>,
+) {
+  const translated: Record<string, ProviderMetadata> = {}
 
-  return 'chat'
-}
-
-function extractSchemaDefaults(definition: ProviderDefinition<any>, t: ComposerTranslation) {
-  const defaults: Record<string, unknown> = {}
-
-  try {
-    const schema = definition.createProviderConfig({ t }) as any
-    const shape = schema?.shape
-
-    // Zod object-level parsing fails when required fields (for example apiKey) are missing.
-    // Extract each field default individually to preserve default base URLs.
-    if (shape && typeof shape === 'object') {
-      for (const [key, fieldSchema] of Object.entries(shape)) {
-        const parsedField = (fieldSchema as any)?.safeParse?.(undefined)
-        if (parsedField?.success) {
-          defaults[key] = parsedField.data
-        }
-      }
-    }
-
-    const parsed = schema?.safeParse?.({})
-    if (parsed?.success && typeof parsed.data === 'object' && parsed.data !== null) {
-      Object.assign(defaults, parsed.data as Record<string, unknown>)
-    }
-  }
-  catch {
+  for (const definition of definitions) {
+    translated[definition.id] = convertProviderDefinitionToMetadata(definition, t, {
+      fallbackDefaultOptions: currentMetadata[definition.id]?.defaultOptions,
+    })
   }
 
-  return defaults
-}
-
-function buildConfigValidationResult(plan: ProviderValidationPlan) {
-  const invalidSteps = plan.steps.filter(step => step.kind === 'config' && step.status === 'invalid')
-  if (invalidSteps.length === 0) {
-    return {
-      errors: [],
-      reason: '',
-      valid: true,
-    }
-  }
-
-  const reasons = invalidSteps.map(step => step.reason).filter(Boolean)
-  return {
-    errors: invalidSteps.map(step => new Error(step.reason || `${step.id} is invalid`)),
-    reason: reasons.join('; '),
-    valid: false,
-  }
-}
-
-function mapModelsToMetadataModels(providerId: string, models: any[]) {
-  return models.map((model: any) => {
-    return {
-      id: model.id,
-      name: model.name || model.display_name || model.id,
-      provider: providerId,
-      description: model.description || '',
-      contextLength: model.context_length || 0,
-      deprecated: false,
-    }
-  })
-}
-
-function appendUniqueReason(reasons: string[], next: string) {
-  if (!next)
-    return
-  if (!reasons.includes(next))
-    reasons.push(next)
+  return translated
 }
 
 export function convertProviderDefinitionToMetadata(
@@ -105,29 +37,18 @@ export function convertProviderDefinitionToMetadata(
   const schemaDefaults = extractSchemaDefaults(definition, t)
   const providerSourceMetadata = resolveProviderSourceMetadata(definition)
   return {
-    id: definition.id,
-    order: definition.order,
     category,
-    tasks: definition.tasks,
-    nameKey: definition.nameLocalize({ t: keyExtractor }),
-    name: definition.name,
-    descriptionKey: definition.descriptionLocalize({ t: keyExtractor }),
     description: definition.description,
+    descriptionKey: definition.descriptionLocalize({ t: keyExtractor }),
     icon: definition.icon,
     iconColor: definition.iconColor,
     iconImage: definition.iconImage,
+    id: definition.id,
+    name: definition.name,
+    nameKey: definition.nameLocalize({ t: keyExtractor }),
+    order: definition.order,
+    tasks: definition.tasks,
     ...providerSourceMetadata,
-    isAvailableBy: definition.isAvailableBy,
-    requiresCredentials: definition.requiresCredentials,
-    onboardingFields: definition.onboardingFields?.({ t }),
-    defaultOptions: () => {
-      if (Object.keys(schemaDefaults).length > 0) {
-        return { ...schemaDefaults }
-      }
-
-      return options.fallbackDefaultOptions?.() || {}
-    },
-    createProvider: async config => await definition.createProvider(config as any) as any,
     capabilities: {
       listModels: definition.extraMethods?.listModels
         ? async (config) => {
@@ -189,6 +110,24 @@ export function convertProviderDefinitionToMetadata(
         }
         : undefined,
     },
+    createProvider: async config => await definition.createProvider(config as any) as any,
+    defaultOptions: () => {
+      if (Object.keys(schemaDefaults).length > 0) {
+        return { ...schemaDefaults }
+      }
+
+      return options.fallbackDefaultOptions?.() || {}
+    },
+    isAvailableBy: definition.isAvailableBy,
+    onboardingFields: definition.onboardingFields?.({ t }),
+    requiresCredentials: definition.requiresCredentials,
+    transcriptionFeatures: definition.capabilities?.transcription
+      ? {
+          supportsGenerate: definition.capabilities.transcription.generateOutput,
+          supportsStreamInput: definition.capabilities.transcription.streamInput,
+          supportsStreamOutput: definition.capabilities.transcription.streamOutput,
+        }
+      : undefined,
     validators: {
       chatPingCheckAvailable: !definition.disableChatPingCheckUI
         && (definition.validators?.validateProvider || [])
@@ -198,10 +137,10 @@ export function convertProviderDefinitionToMetadata(
         // Used by the manual "Test Generation" button on settings pages.
         if (options?.onlyChatPingCheck) {
           const plan = getValidatorsOfProvider({
-            definition,
             config,
-            schemaDefaults,
             contextOptions: { t },
+            definition,
+            schemaDefaults,
           })
           plan.configValidators = []
           plan.providerValidators = plan.providerValidators.filter(v => v.id.includes(CHAT_COMPLETIONS_VALIDATOR_ID))
@@ -221,10 +160,10 @@ export function convertProviderDefinitionToMetadata(
         }
 
         const plan = getValidatorsOfProvider({
-          definition,
           config,
-          schemaDefaults,
           contextOptions: { t },
+          definition,
+          schemaDefaults,
         })
 
         if (options?.skipChatPingCheck) {
@@ -271,28 +210,89 @@ export function convertProviderDefinitionToMetadata(
         return buildConfigValidationResult(plan)
       },
     },
-    transcriptionFeatures: definition.capabilities?.transcription
-      ? {
-          supportsGenerate: definition.capabilities.transcription.generateOutput,
-          supportsStreamOutput: definition.capabilities.transcription.streamOutput,
-          supportsStreamInput: definition.capabilities.transcription.streamInput,
-        }
-      : undefined,
   }
 }
 
-export function convertProviderDefinitionsToMetadata(
-  definitions: ProviderDefinition<any>[],
-  t: ComposerTranslation,
-  currentMetadata: Record<string, ProviderMetadata>,
-) {
-  const translated: Record<string, ProviderMetadata> = {}
+function appendUniqueReason(reasons: string[], next: string) {
+  if (!next)
+    return
+  if (!reasons.includes(next))
+    reasons.push(next)
+}
 
-  for (const definition of definitions) {
-    translated[definition.id] = convertProviderDefinitionToMetadata(definition, t, {
-      fallbackDefaultOptions: currentMetadata[definition.id]?.defaultOptions,
-    })
+function buildConfigValidationResult(plan: ProviderValidationPlan) {
+  const invalidSteps = plan.steps.filter(step => step.kind === 'config' && step.status === 'invalid')
+  if (invalidSteps.length === 0) {
+    return {
+      errors: [],
+      reason: '',
+      valid: true,
+    }
   }
 
-  return translated
+  const reasons = invalidSteps.map(step => step.reason).filter(Boolean)
+  return {
+    errors: invalidSteps.map(step => new Error(step.reason || `${step.id} is invalid`)),
+    reason: reasons.join('; '),
+    valid: false,
+  }
+}
+
+function extractSchemaDefaults(definition: ProviderDefinition<any>, t: ComposerTranslation) {
+  const defaults: Record<string, unknown> = {}
+
+  try {
+    const schema = definition.createProviderConfig({ t }) as any
+    const shape = schema?.shape
+
+    // Zod object-level parsing fails when required fields (for example apiKey) are missing.
+    // Extract each field default individually to preserve default base URLs.
+    if (shape && typeof shape === 'object') {
+      for (const [key, fieldSchema] of Object.entries(shape)) {
+        const parsedField = (fieldSchema as any)?.safeParse?.(undefined)
+        if (parsedField?.success) {
+          defaults[key] = parsedField.data
+        }
+      }
+    }
+
+    const parsed = schema?.safeParse?.({})
+    if (parsed?.success && typeof parsed.data === 'object' && parsed.data !== null) {
+      Object.assign(defaults, parsed.data as Record<string, unknown>)
+    }
+  }
+  catch {
+  }
+
+  return defaults
+}
+
+function getCategoryFromTasks(tasks: string[]): ProviderMetadata['category'] {
+  if (tasks.some(task => ['image-to-text', 'image-understanding', 'multimodal', 'vision'].includes(task.toLowerCase()))) {
+    return 'vision'
+  }
+  if (tasks.some(task => ['asr', 'automatic-speech-recognition', 'speech-to-text', 'stt'].includes(task.toLowerCase()))) {
+    return 'transcription'
+  }
+  if (tasks.some(task => ['speech', 'text-to-speech', 'tts'].includes(task.toLowerCase()))) {
+    return 'speech'
+  }
+  if (tasks.some(task => ['embed', 'embedding'].includes(task.toLowerCase()))) {
+    return 'embed'
+  }
+
+  return 'chat'
+}
+
+function mapModelsToMetadataModels(providerId: string, models: any[]) {
+  return models.map((model: any) => {
+    return {
+      contextLength: model.context_length || 0,
+      deprecated: false,
+      description: model.description || '',
+      id: model.id,
+      name: model.name || model.display_name || model.id,
+      provider: providerId,
+    }
+  })
 }

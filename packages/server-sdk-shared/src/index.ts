@@ -1,30 +1,17 @@
 import { defineInvokeEventa, defineOutboundEventa } from '@moeru/eventa'
 
-export interface WireMessage {
-  id: string
-  chatId: string
-  senderId: string | null
-  role: 'system' | 'user' | 'assistant' | 'tool' | 'error'
-  content: string
-  seq: number
-  createdAt: number
-  updatedAt: number
-}
-
 export type MessageRole = WireMessage['role']
 
-export interface SendMessagesRequest {
+export interface NewMessagesPayload {
   chatId: string
-  messages: { id: string, role: string, content: string }[]
-}
-
-export interface SendMessagesResponse {
-  seq: number
+  fromSeq: number
+  messages: WireMessage[]
+  toSeq: number
 }
 
 export interface PullMessagesRequest {
-  chatId: string
   afterSeq: number
+  chatId: string
   limit?: number
 }
 
@@ -33,11 +20,24 @@ export interface PullMessagesResponse {
   seq: number
 }
 
-export interface NewMessagesPayload {
+export interface SendMessagesRequest {
   chatId: string
-  messages: WireMessage[]
-  fromSeq: number
-  toSeq: number
+  messages: { content: string, id: string, role: string }[]
+}
+
+export interface SendMessagesResponse {
+  seq: number
+}
+
+export interface WireMessage {
+  chatId: string
+  content: string
+  createdAt: number
+  id: string
+  role: 'assistant' | 'error' | 'system' | 'tool' | 'user'
+  senderId: null | string
+  seq: number
+  updatedAt: number
 }
 
 export const sendMessages = defineInvokeEventa<SendMessagesResponse, SendMessagesRequest>('chat:send-messages')

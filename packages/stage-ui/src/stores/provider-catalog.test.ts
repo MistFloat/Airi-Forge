@@ -8,19 +8,19 @@ import { providerOpenAICompatible } from '../libs/providers/providers/openai-com
 import { createProviderCatalogListQueryOptions, createProviderCatalogStoreController } from './provider-catalog'
 
 const localProvider = {
-  id: 'local-provider',
-  definitionId: providerOpenAICompatible.id,
-  name: 'OpenAI Compatible',
   config: {},
+  definitionId: providerOpenAICompatible.id,
+  id: 'local-provider',
+  name: 'OpenAI Compatible',
   validated: false,
   validationBypassed: false,
 } satisfies InferenceServiceProvider
 
 const remoteProvider = {
-  id: 'real-id',
-  definitionId: providerOpenAICompatible.id,
-  name: 'OpenAI Compatible',
   config: {},
+  definitionId: providerOpenAICompatible.id,
+  id: 'real-id',
+  name: 'OpenAI Compatible',
   validated: false,
   validationBypassed: false,
 } satisfies InferenceServiceProvider
@@ -43,17 +43,17 @@ function createMutation<TVars, TData>(mutation: (vars: TVars) => Promise<TData>)
 function setupController() {
   const model: InferenceServiceProvidersModel = {
     list: vi.fn(async () => ({})),
+    remove: vi.fn(async () => {}),
     saveAll: vi.fn(async () => {}),
     upsert: vi.fn(async () => {}),
-    remove: vi.fn(async () => {}),
   }
   const service: InferenceServiceProvidersService = {
-    getDefinition: vi.fn(() => providerOpenAICompatible),
-    listDefinitions: vi.fn(() => [providerOpenAICompatible]),
     buildLocal: vi.fn(() => localProvider),
-    fetchRemote: vi.fn(async () => ({})),
     createRemote: vi.fn(async () => remoteProvider),
     deleteRemote: vi.fn(async () => {}),
+    fetchRemote: vi.fn(async () => ({})),
+    getDefinition: vi.fn(() => providerOpenAICompatible),
+    listDefinitions: vi.fn(() => [providerOpenAICompatible]),
     patchConfigRemote: vi.fn(async () => ({ ...remoteProvider, id: 'provider-1', validated: true })),
   }
   const providersQuery = {
@@ -67,7 +67,7 @@ function setupController() {
   }
   const controller = createProviderCatalogStoreController({
     addProviderMutation: createMutation<InferenceServiceProvider, InferenceServiceProvider>(provider => service.createRemote({} as InferenceServiceProvidersRemoteClient, provider)),
-    commitProviderConfigMutation: createMutation<{ providerId: string, config: Record<string, unknown>, options: PatchConfigParams }, InferenceServiceProvider>(
+    commitProviderConfigMutation: createMutation<{ config: Record<string, unknown>, options: PatchConfigParams, providerId: string }, InferenceServiceProvider>(
       vars => service.patchConfigRemote({} as InferenceServiceProvidersRemoteClient, vars.providerId, vars.config, vars.options),
     ),
     configs: ref<Record<string, InferenceServiceProvider>>({}),

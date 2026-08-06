@@ -12,38 +12,10 @@ import { computeAdjacentPosition } from '../../../windows/shared/display'
 
 const ANIMATION_DURATION = 350
 
-function animateWindowTo(
-  window: BrowserWindow,
-  target: Rectangle,
-): ReturnType<typeof animate> | undefined {
-  if (window.isDestroyed())
-    return undefined
-
-  const current = window.getBounds()
-  const needsResize = current.width !== target.width || current.height !== target.height
-
-  if (needsResize)
-    window.setSize(target.width, target.height)
-
-  const state = { x: current.x, y: current.y }
-
-  return animate(state, {
-    x: target.x,
-    y: target.y,
-    duration: ANIMATION_DURATION,
-    ease: 'outCubic',
-    modifier: utils.round(0),
-    onRender: () => {
-      if (!window.isDestroyed())
-        window.setPosition(Math.round(state.x), Math.round(state.y))
-    },
-  })
-}
-
 export function createOnboardingService(params: {
   context: ReturnType<typeof createContext>['context']
-  onboardingWindowManager: OnboardingWindowManager
   mainWindow: BrowserWindow
+  onboardingWindowManager: OnboardingWindowManager
 }) {
   let currentAnimation: ReturnType<typeof animate> | undefined
   let cleanupOnClosed: (() => void) | undefined
@@ -57,16 +29,16 @@ export function createOnboardingService(params: {
 
     const adjacent = computeAdjacentPosition(
       onboardingBounds,
-      { width: savedBounds.width, height: savedBounds.height },
+      { height: savedBounds.height, width: savedBounds.width },
       display.workArea,
     )
 
     currentAnimation?.pause()
     currentAnimation = animateWindowTo(params.mainWindow, {
+      height: adjacent.height,
+      width: adjacent.width,
       x: adjacent.x,
       y: adjacent.y,
-      width: adjacent.width,
-      height: adjacent.height,
     })
 
     let userMovedManually = false
@@ -97,5 +69,33 @@ export function createOnboardingService(params: {
 
       cleanupOnClosed = undefined
     })
+  })
+}
+
+function animateWindowTo(
+  window: BrowserWindow,
+  target: Rectangle,
+): ReturnType<typeof animate> | undefined {
+  if (window.isDestroyed())
+    return undefined
+
+  const current = window.getBounds()
+  const needsResize = current.width !== target.width || current.height !== target.height
+
+  if (needsResize)
+    window.setSize(target.width, target.height)
+
+  const state = { x: current.x, y: current.y }
+
+  return animate(state, {
+    duration: ANIMATION_DURATION,
+    ease: 'outCubic',
+    modifier: utils.round(0),
+    onRender: () => {
+      if (!window.isDestroyed())
+        window.setPosition(Math.round(state.x), Math.round(state.y))
+    },
+    x: target.x,
+    y: target.y,
   })
 }

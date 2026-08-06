@@ -18,13 +18,13 @@ vi.mock('@vueuse/core', async () => {
   return {
     useDevicesList: () => ({
       audioInputs: audioDeviceMock.audioInputsRef,
-      permissionGranted: ref(false),
       ensurePermissions: audioDeviceMock.ensurePermissions,
+      permissionGranted: ref(false),
     }),
     useUserMedia: () => ({
-      stream: ref(undefined),
-      stop: audioDeviceMock.stopStream,
       start: audioDeviceMock.startStream,
+      stop: audioDeviceMock.stopStream,
+      stream: ref(undefined),
     }),
   }
 })
@@ -69,8 +69,8 @@ describe('useAudioDevice analytics lifecycle', () => {
       stt_provider_id: 'unknown',
     })
     expect(audioDeviceMock.trackMicrophonePermissionDenied).toHaveBeenCalledWith({
-      stt_provider_id: 'unknown',
       error_code: 'permission_denied',
+      stt_provider_id: 'unknown',
     })
     expect(audioDeviceMock.trackAudioDeviceUnavailable).not.toHaveBeenCalled()
   })
@@ -92,8 +92,8 @@ describe('useAudioDevice analytics lifecycle', () => {
       stt_provider_id: 'unknown',
     })
     expect(audioDeviceMock.trackAudioDeviceUnavailable).toHaveBeenCalledWith({
-      stt_provider_id: 'unknown',
       error_code: 'device_unavailable',
+      stt_provider_id: 'unknown',
     })
     expect(audioDeviceMock.trackMicrophonePermissionDenied).not.toHaveBeenCalled()
   })

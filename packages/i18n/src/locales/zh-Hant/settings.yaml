@@ -666,6 +666,55 @@ pages:
               Note: If your provider does not support verbose_json responses, this setting will have no effect.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
+    instructions:
+      description: 常駐指令設定與管理
+      title: 指令
+      estimated-tokens: '每輪請求約注入 {tokens} 個 token。'
+      create: 新增指令
+      empty: 還沒有指令，建立一條即可向每輪對話注入固定規則。
+      edit: 編輯
+      delete: 刪除
+      confirm-delete: 刪除這條指令？
+      cancel: 取消
+      priority-value: '優先級：{value}'
+      scopes:
+        global: 全域
+        chat: 對話
+        speech: 語音
+        memory: 記憶
+        vision: 視覺
+        artistry: 創作
+      statuses:
+        active: 啟用中
+        archived: 已封存
+        superseded: 已取代
+      editor:
+        create-title: 新增指令
+        edit-title: 編輯指令
+        cancel: 取消
+        save: 儲存
+        fields:
+          title: 標題
+          content: 內容
+          content-description: 將原樣注入到每次 LLM 請求中的文字。
+          instruction-scope: 作用域
+          instruction-priority: 優先級
+          instruction-rule-key: 規則鍵
+          instruction-rule-key-description: 可選的唯一鍵，新指令可用它取代（supersede）本指令。
+          status: 狀態
+          effective-from: 生效時間
+          effective-until: 失效時間
+        scopes:
+          global: 全域
+          chat: 對話
+          speech: 語音
+          memory: 記憶
+          vision: 視覺
+          artistry: 創作
+        statuses:
+          active: 啟用中
+          archived: 已封存
+          superseded: 已取代
     memory-long-term:
       description: 長期記憶
       title: 長期記憶

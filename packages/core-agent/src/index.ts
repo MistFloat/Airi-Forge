@@ -14,6 +14,7 @@ export { createChatHooks } from './runtime/agent-hooks'
 export type {
   ChatOrchestratorLifecycleRecord,
   ChatOrchestratorLLMPort,
+  ChatOrchestratorMemoryPort,
   ChatOrchestratorPromptProjection,
   ChatOrchestratorRuntime,
   ChatOrchestratorRuntimeDeps,

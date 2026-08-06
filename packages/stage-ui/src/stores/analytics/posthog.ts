@@ -12,22 +12,28 @@ import {
 
 let posthogInitialized = false
 
-// All AIRI surfaces (web, desktop, mobile) capture into a single PostHog
-// project. The platform is carried on every event via the `app_surface` super
-// property (registered at init), so cross-platform funnels live in one
-// project instead of being split across per-platform projects.
-function currentSurface(): 'web' | 'mobile' | 'electron' {
-  if (isStageTamagotchi())
-    return 'electron'
-
-  if (isStageCapacitor())
-    return 'mobile'
-
-  return 'web'
+interface PosthogCaptureOptions {
+  send_instantly?: boolean
+  transport?: 'fetch' | 'sendBeacon' | 'XHR'
 }
 
-export function isPosthogAvailableInBuild(): boolean {
-  return POSTHOG_ENABLED
+/**
+ * Single source-of-truth wrapper for emitting events from store-layer code
+ * (places that can't pull `useAnalytics()` without creating circular
+ * `analytics-store → use-analytics composable → analytics-store` graphs).
+ * Returns `false` when capture was skipped so callers can gate dedup flags.
+ *
+ * Use when:
+ * - You're inside a pinia store / Vue watcher that needs to fire a PostHog
+ *   event. UI components should still prefer `useAnalytics()` composable
+ *   for consistency with existing call sites.
+ */
+export function capturePosthogEvent(name: string, properties: Record<string, unknown>, options?: PosthogCaptureOptions): boolean {
+  if (!posthogInitialized || posthog.has_opted_out_capturing())
+    return false
+
+  posthog.capture(name, properties, options)
+  return true
 }
 
 export function ensurePosthogInitialized(enabled: boolean): boolean {
@@ -46,37 +52,6 @@ export function ensurePosthogInitialized(enabled: boolean): boolean {
   posthog.register({ app_surface: currentSurface() })
   posthogInitialized = true
   return true
-}
-
-export function syncPosthogCapture(enabled: boolean): boolean {
-  if (!POSTHOG_ENABLED)
-    return false
-
-  if (enabled) {
-    ensurePosthogInitialized(true)
-
-    if (posthog.has_opted_out_capturing())
-      posthog.opt_in_capturing()
-
-    return true
-  }
-
-  if (posthogInitialized && !posthog.has_opted_out_capturing())
-    posthog.opt_out_capturing()
-
-  return false
-}
-
-export function registerPosthogBuildInfo(buildInfo: AboutBuildInfo): void {
-  if (!posthogInitialized)
-    return
-
-  posthog.register({
-    app_version: (buildInfo.version && buildInfo.version !== '0.0.0') ? buildInfo.version : 'dev',
-    app_commit: buildInfo.commit,
-    app_branch: buildInfo.branch,
-    app_build_time: buildInfo.builtOn,
-  })
 }
 
 /**
@@ -100,6 +75,22 @@ export function identifyPosthogUser(userId: string): void {
   posthog.identify(userId)
 }
 
+export function isPosthogAvailableInBuild(): boolean {
+  return POSTHOG_ENABLED
+}
+
+export function registerPosthogBuildInfo(buildInfo: AboutBuildInfo): void {
+  if (!posthogInitialized)
+    return
+
+  posthog.register({
+    app_branch: buildInfo.branch,
+    app_build_time: buildInfo.builtOn,
+    app_commit: buildInfo.commit,
+    app_version: (buildInfo.version && buildInfo.version !== '0.0.0') ? buildInfo.version : 'dev',
+  })
+}
+
 /**
  * Reset PostHog's distinct id on logout so subsequent activity from this
  * device is treated as a new anonymous user (not attributed to the prior
@@ -112,26 +103,35 @@ export function resetPosthog(): void {
   posthog.reset()
 }
 
-interface PosthogCaptureOptions {
-  send_instantly?: boolean
-  transport?: 'XHR' | 'fetch' | 'sendBeacon'
-}
-
-/**
- * Single source-of-truth wrapper for emitting events from store-layer code
- * (places that can't pull `useAnalytics()` without creating circular
- * `analytics-store → use-analytics composable → analytics-store` graphs).
- * Returns `false` when capture was skipped so callers can gate dedup flags.
- *
- * Use when:
- * - You're inside a pinia store / Vue watcher that needs to fire a PostHog
- *   event. UI components should still prefer `useAnalytics()` composable
- *   for consistency with existing call sites.
- */
-export function capturePosthogEvent(name: string, properties: Record<string, unknown>, options?: PosthogCaptureOptions): boolean {
-  if (!posthogInitialized || posthog.has_opted_out_capturing())
+export function syncPosthogCapture(enabled: boolean): boolean {
+  if (!POSTHOG_ENABLED)
     return false
 
-  posthog.capture(name, properties, options)
-  return true
+  if (enabled) {
+    ensurePosthogInitialized(true)
+
+    if (posthog.has_opted_out_capturing())
+      posthog.opt_in_capturing()
+
+    return true
+  }
+
+  if (posthogInitialized && !posthog.has_opted_out_capturing())
+    posthog.opt_out_capturing()
+
+  return false
+}
+
+// All AIRI surfaces (web, desktop, mobile) capture into a single PostHog
+// project. The platform is carried on every event via the `app_surface` super
+// property (registered at init), so cross-platform funnels live in one
+// project instead of being split across per-platform projects.
+function currentSurface(): 'electron' | 'mobile' | 'web' {
+  if (isStageTamagotchi())
+    return 'electron'
+
+  if (isStageCapacitor())
+    return 'mobile'
+
+  return 'web'
 }

@@ -1,0 +1,21 @@
+{
+  "name": "@proj-airi/coding-agent",
+  "type": "module",
+  "private": true,
+  "description": "Coding agent MCP server for AIRI. Exposes workdir-scoped read/write/git tools; the agent loop itself is driven by AIRI chat orchestration.",
+  "scripts": {
+    "dev": "NODE_OPTIONS=--no-node-snapshot tsx src/index.ts",
+    "start": "NODE_OPTIONS=--no-node-snapshot tsx src/index.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "NODE_OPTIONS=--no-node-snapshot vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  }
+}

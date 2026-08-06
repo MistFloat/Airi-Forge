@@ -7,10 +7,10 @@ import { useChatSessionStore } from './session-store'
 
 export const useChatStreamStore = defineStore('chat-stream', () => {
   const chatSession = useChatSessionStore()
-  const streamingMessage = ref<StreamingAssistantMessage>({ role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
+  const streamingMessage = ref<StreamingAssistantMessage>({ content: '', createdAt: Date.now(), role: 'assistant', slices: [], tool_results: [] })
 
   function beginStream() {
-    streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() }
+    streamingMessage.value = { content: '', createdAt: Date.now(), role: 'assistant', slices: [], tool_results: [] }
   }
 
   function appendStreamLiteral(literal: string) {
@@ -23,8 +23,8 @@ export const useChatStreamStore = defineStore('chat-stream', () => {
     }
 
     streamingMessage.value.slices.push({
-      type: 'text',
       text: literal,
+      type: 'text',
     })
   }
 
@@ -32,20 +32,20 @@ export const useChatStreamStore = defineStore('chat-stream', () => {
     const sessionId = chatSession.activeSessionId
     if (streamingMessage.value.slices.length > 0)
       chatSession.appendSessionMessage(sessionId, toRaw(streamingMessage.value))
-    streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
+    streamingMessage.value = { content: '', role: 'assistant', slices: [], tool_results: [] }
     if (fullText)
       streamingMessage.value.content = fullText
   }
 
   function resetStream() {
-    streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
+    streamingMessage.value = { content: '', role: 'assistant', slices: [], tool_results: [] }
   }
 
   return {
-    streamingMessage,
-    beginStream,
     appendStreamLiteral,
+    beginStream,
     finalizeStream,
     resetStream,
+    streamingMessage,
   }
 })

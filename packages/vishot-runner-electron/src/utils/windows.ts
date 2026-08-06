@@ -5,69 +5,13 @@ const stageWindowActivationDelayMs = 750
 const stageWindowClassificationLoadStateTimeoutMs = 500
 const mainWindowReadyIconSelector = '[i-solar\\:alt-arrow-up-line-duotone]'
 
-async function inferRoute(page: Page): Promise<string> {
-  const url = page.url()
-  const hashIndex = url.indexOf('#')
-  if (hashIndex === -1) {
-    return ''
-  }
-
-  const hash = url.slice(hashIndex + 1)
-  return hash.length > 0 ? hash : '/'
-}
-
-async function classifyWindow(page: Page): Promise<StageWindowSnapshot | null> {
-  await page.waitForLoadState('domcontentloaded', { timeout: stageWindowClassificationLoadStateTimeoutMs }).catch(() => undefined)
-
-  const title = await page.title()
-  const url = page.url()
-  const route = await inferRoute(page)
-
-  if (url.includes('beat-sync.html') || title.includes('BeatSync') || url.startsWith('devtools://')) {
-    return null
-  }
-
-  if (route === '/chat' || title === 'Chat') {
-    return { name: 'chat', page, title, route }
-  }
-
-  if (route.startsWith('/settings') || title === 'Settings') {
-    return { name: 'settings', page, title, route }
-  }
-
-  if (route.startsWith('/onboarding') || title === 'Welcome to AIRI') {
-    return null
-  }
-
-  const mainControlsVisible = await page.locator(mainWindowReadyIconSelector).first().isVisible().catch(() => false)
-
-  if ((route === '/' || title === 'AIRI') && mainControlsVisible) {
-    return { name: 'main', page, title, route }
-  }
-
-  const bodyText = await page.locator('body').textContent().catch(() => '') || ''
-  if (bodyText.includes('Open the DevTools to troubleshoot BeatSync')) {
-    return null
-  }
-
-  if (bodyText.includes('Chat')) {
-    return { name: 'chat', page, title, route }
-  }
-
-  if (mainControlsVisible || bodyText.includes('Fade on Hover') || bodyText.includes('Open WebSocket settings')) {
-    return { name: 'main', page, title, route }
-  }
-
-  return null
-}
-
-export type StageWindowName = 'main' | 'settings' | 'chat'
+export type StageWindowName = 'chat' | 'main' | 'settings'
 
 export interface StageWindowSnapshot {
   name: StageWindowName
   page: Page
-  title: string
   route: string
+  title: string
 }
 
 export async function snapshotStageWindows(electronApp: ElectronApplication): Promise<StageWindowSnapshot[]> {
@@ -97,4 +41,60 @@ export async function waitForStageWindow(electronApp: ElectronApplication, name:
   }
 
   throw new Error(`Timed out waiting for "${name}" window`)
+}
+
+async function classifyWindow(page: Page): Promise<null | StageWindowSnapshot> {
+  await page.waitForLoadState('domcontentloaded', { timeout: stageWindowClassificationLoadStateTimeoutMs }).catch(() => undefined)
+
+  const title = await page.title()
+  const url = page.url()
+  const route = await inferRoute(page)
+
+  if (url.includes('beat-sync.html') || title.includes('BeatSync') || url.startsWith('devtools://')) {
+    return null
+  }
+
+  if (route === '/chat' || title === 'Chat') {
+    return { name: 'chat', page, route, title }
+  }
+
+  if (route.startsWith('/settings') || title === 'Settings') {
+    return { name: 'settings', page, route, title }
+  }
+
+  if (route.startsWith('/onboarding') || title === 'Welcome to AIRI') {
+    return null
+  }
+
+  const mainControlsVisible = await page.locator(mainWindowReadyIconSelector).first().isVisible().catch(() => false)
+
+  if ((route === '/' || title === 'AIRI') && mainControlsVisible) {
+    return { name: 'main', page, route, title }
+  }
+
+  const bodyText = await page.locator('body').textContent().catch(() => '') || ''
+  if (bodyText.includes('Open the DevTools to troubleshoot BeatSync')) {
+    return null
+  }
+
+  if (bodyText.includes('Chat')) {
+    return { name: 'chat', page, route, title }
+  }
+
+  if (mainControlsVisible || bodyText.includes('Fade on Hover') || bodyText.includes('Open WebSocket settings')) {
+    return { name: 'main', page, route, title }
+  }
+
+  return null
+}
+
+async function inferRoute(page: Page): Promise<string> {
+  const url = page.url()
+  const hashIndex = url.indexOf('#')
+  if (hashIndex === -1) {
+    return ''
+  }
+
+  const hash = url.slice(hashIndex + 1)
+  return hash.length > 0 ? hash : '/'
 }

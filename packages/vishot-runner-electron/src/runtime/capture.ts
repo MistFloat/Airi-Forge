@@ -11,16 +11,6 @@ import { applyArtifactTransformers, createImageArtifact } from './artifacts'
 const nonFilenameCharactersPattern = /[^a-z0-9-_]+/g
 const edgeDashPattern = /^-+|-+$/g
 
-function sanitizeCaptureName(name: string): string {
-  const sanitized = name
-    .trim()
-    .toLowerCase()
-    .replace(nonFilenameCharactersPattern, '-')
-    .replace(edgeDashPattern, '')
-
-  return sanitized.length > 0 ? sanitized : 'capture'
-}
-
 export async function capturePage(
   outputDir: string,
   name: string,
@@ -44,4 +34,14 @@ export async function capturePage(
     }),
     options?.transformers,
   )
+}
+
+function sanitizeCaptureName(name: string): string {
+  const sanitized = name
+    .trim()
+    .toLowerCase()
+    .replace(nonFilenameCharactersPattern, '-')
+    .replace(edgeDashPattern, '')
+
+  return sanitized.length > 0 ? sanitized : 'capture'
 }

@@ -11,9 +11,9 @@ describe('voice input VAD startup', () => {
     await expect(startVoiceInputVadDetectionSafely({
       init,
       loaded: () => false,
+      log,
       start,
       stream: {} as MediaStream,
-      log,
     })).resolves.toBe(false)
 
     expect(start).not.toHaveBeenCalled()

@@ -50,16 +50,16 @@ describe('vision orchestrator', () => {
 
     await store.processCapture({
       imageDataUrl: 'data:image/jpeg;base64,first',
-      workloadId: 'screen:interpret',
-      sourceId: 'screen:0:0',
       publishContext: true,
+      sourceId: 'screen:0:0',
+      workloadId: 'screen:interpret',
     })
 
     await store.processCapture({
       imageDataUrl: 'data:image/jpeg;base64,second',
-      workloadId: 'screen:interpret',
-      sourceId: 'screen:0:0',
       publishContext: true,
+      sourceId: 'screen:0:0',
+      workloadId: 'screen:interpret',
     })
 
     expect(sendContextUpdate).toHaveBeenCalledTimes(2)
@@ -76,14 +76,14 @@ describe('vision orchestrator', () => {
 
     await store.processCapture({
       imageDataUrl: 'data:image/jpeg;base64,first',
-      workloadId: 'screen:interpret',
       publishContext: true,
+      workloadId: 'screen:interpret',
     })
 
     await store.processCapture({
       imageDataUrl: 'data:image/jpeg;base64,second',
-      workloadId: 'screen:understand',
       publishContext: true,
+      workloadId: 'screen:understand',
     })
 
     expect(sendContextUpdate.mock.calls[0]?.[0]).toMatchObject({
@@ -104,5 +104,25 @@ describe('vision orchestrator', () => {
     })).rejects.toThrow('Vision inference failed')
 
     expect(store.lastError).toBe('Vision inference failed')
+  })
+
+  it('keeps only the latest queued frame while inference is busy', async () => {
+    let finishFirst: ((value: string) => void) | undefined
+    runVisionInference.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      finishFirst = resolve
+    }))
+    runVisionInference.mockResolvedValueOnce('Latest frame')
+    const store = useVisionOrchestratorStore()
+
+    store.enqueueCapture({ imageDataUrl: 'data:image/jpeg;base64,first', workloadId: 'screen:interpret' })
+    store.enqueueCapture({ imageDataUrl: 'data:image/jpeg;base64,stale', workloadId: 'screen:interpret' })
+    store.enqueueCapture({ imageDataUrl: 'data:image/jpeg;base64,latest', workloadId: 'screen:interpret' })
+    finishFirst?.('First frame')
+    await vi.waitFor(() => expect(runVisionInference).toHaveBeenCalledTimes(2))
+
+    expect(runVisionInference.mock.calls[1]?.[0]).toMatchObject({
+      imageDataUrl: 'data:image/jpeg;base64,latest',
+    })
+    expect(store.droppedCaptureCount).toBe(1)
   })
 })

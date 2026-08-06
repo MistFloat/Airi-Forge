@@ -6,6 +6,7 @@ import { computed } from 'vue'
 
 import { MarkdownRenderer } from '../../../markdown'
 import { ChatActionMenu } from '../components/action-menu'
+import { projectUserMessage } from '../userMessageProjection'
 import { getChatHistoryItemCopyText } from '../utils'
 
 const props = withDefaults(defineProps<{
@@ -21,7 +22,7 @@ const emit = defineEmits<{
   (e: 'delete'): void
 }>()
 
-const content = computed(() => {
+const rawContent = computed(() => {
   const raw = props.message.content
   if (typeof raw === 'string')
     return raw
@@ -36,6 +37,8 @@ const content = computed(() => {
 
   return ''
 })
+
+const projection = computed(() => projectUserMessage(rawContent.value))
 
 const containerClasses = computed(() => [
   'flex',
@@ -70,9 +73,24 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
             <span text-sm text="black/60 dark:white/65" font-normal class="inline <sm:hidden">{{ label }}</span>
           </div>
           <MarkdownRenderer
-            :content="content as string"
+            v-if="projection.visibleText"
+            :content="projection.visibleText"
             class="break-words"
           />
+          <div v-if="projection.attachments.length" :class="['mt-2 flex flex-col gap-1.5']">
+            <div
+              v-for="attachment in projection.attachments"
+              :key="`${attachment.kind}:${attachment.name}`"
+              :class="[
+                'flex items-center gap-2 rounded-lg px-2.5 py-2',
+                'bg-white/60 text-xs text-neutral-600 dark:bg-neutral-900/45 dark:text-neutral-300',
+              ]"
+            >
+              <div :class="attachment.kind === 'document' ? 'i-solar:document-text-bold-duotone' : 'i-solar:gallery-bold-duotone'" class="shrink-0 text-base" />
+              <span class="min-w-0 flex-1 truncate">{{ attachment.name }}</span>
+              <span v-if="attachment.truncated" class="shrink-0 text-amber-600 dark:text-amber-400">内容已截断</span>
+            </div>
+          </div>
         </div>
       </template>
     </ChatActionMenu>

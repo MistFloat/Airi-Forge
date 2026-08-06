@@ -11,23 +11,6 @@ export interface LoadedScenarioModule {
   scenario: ElectronScenario
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
-}
-
-function isElectronScenario(value: unknown): value is ElectronScenario {
-  if (typeof value !== 'object' || value === null) {
-    return false
-  }
-
-  const scenario = value as Partial<ElectronScenario>
-  return typeof scenario.id === 'string' && typeof scenario.run === 'function'
-}
-
 export async function loadScenarioModule(scenarioPath: string): Promise<LoadedScenarioModule> {
   const modulePath = resolve(process.cwd(), scenarioPath)
 
@@ -55,4 +38,21 @@ export async function loadScenarioModule(scenarioPath: string): Promise<LoadedSc
     modulePath,
     scenario: moduleNamespace.default,
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+
+  return String(error)
+}
+
+function isElectronScenario(value: unknown): value is ElectronScenario {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const scenario = value as Partial<ElectronScenario>
+  return typeof scenario.id === 'string' && typeof scenario.run === 'function'
 }

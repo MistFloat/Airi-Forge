@@ -41,39 +41,39 @@ describe('services inference-service-providers', () => {
         v1: {
           providers: {
             '$get': vi.fn(async () => ({
-              ok: true,
               json: async () => [{
-                id: 'provider-1',
-                definitionId: providerOpenAICompatible.id,
-                name: 'OpenAI Compatible',
                 config: { baseUrl: 'https://example.com/v1/' },
+                definitionId: providerOpenAICompatible.id,
+                id: 'provider-1',
+                name: 'OpenAI Compatible',
                 validated: true,
                 validationBypassed: false,
               }],
+              ok: true,
             })),
             '$post': vi.fn(async () => ({
-              ok: true,
               json: async () => ({
-                id: 'provider-1',
-                definitionId: providerOpenAICompatible.id,
-                name: 'OpenAI Compatible',
                 config: {},
+                definitionId: providerOpenAICompatible.id,
+                id: 'provider-1',
+                name: 'OpenAI Compatible',
                 validated: false,
                 validationBypassed: false,
               }),
+              ok: true,
             })),
             ':id': {
               $delete: vi.fn(async () => ({ ok: true })),
               $patch: vi.fn(async () => ({
-                ok: true,
                 json: async () => ({
-                  id: 'provider-1',
-                  definitionId: providerOpenAICompatible.id,
-                  name: 'OpenAI Compatible',
                   config: {},
+                  definitionId: providerOpenAICompatible.id,
+                  id: 'provider-1',
+                  name: 'OpenAI Compatible',
                   validated: false,
                   validationBypassed: false,
                 }),
+                ok: true,
               })),
             },
           },

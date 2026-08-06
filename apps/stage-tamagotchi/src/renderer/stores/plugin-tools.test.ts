@@ -8,25 +8,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const invokeMocks = vi.hoisted(() => ({
   invokePluginTool: vi.fn(async (payload: unknown) => payload),
   listPluginXsaiTools: vi.fn(async () => ({
-    tools: [
+    prompts: [
       {
+        id: 'chess-tools',
         ownerExtensionId: 'plugin-chess',
-        name: 'play_chess',
-        description: 'Play a chess move.',
-        parameters: {
-          type: 'object',
-          properties: {},
+        prompt: {
+          content: 'Do not pass fen or pgn when mode is "new".',
+          id: 'airi-plugin-game-chess.prompt',
+          title: 'Chess Plugin Guidance',
         },
       },
     ],
-    prompts: [
+    tools: [
       {
+        description: 'Play a chess move.',
+        name: 'play_chess',
         ownerExtensionId: 'plugin-chess',
-        id: 'chess-tools',
-        prompt: {
-          id: 'airi-plugin-game-chess.prompt',
-          title: 'Chess Plugin Guidance',
-          content: 'Do not pass fen or pgn when mode is "new".',
+        parameters: {
+          properties: {},
+          type: 'object',
         },
       },
     ],
@@ -84,18 +84,18 @@ describe('useTamagotchiPluginToolsStore', async () => {
     }, toolOptions)
 
     expect(invokeMocks.invokePluginTool).toHaveBeenCalledWith({
-      ownerExtensionId: 'plugin-chess',
-      name: 'play_chess',
       input: {
         move: 'e2e4',
       },
+      name: 'play_chess',
+      ownerExtensionId: 'plugin-chess',
     })
     expect(executionResult).toEqual({
-      ownerExtensionId: 'plugin-chess',
-      name: 'play_chess',
       input: {
         move: 'e2e4',
       },
+      name: 'play_chess',
+      ownerExtensionId: 'plugin-chess',
     })
 
     store.dispose()

@@ -17,30 +17,30 @@ const zaiConfigSchema = z.object({
 type ZaiConfig = z.input<typeof zaiConfigSchema>
 
 export const providerZai = defineProvider<ZaiConfig>({
-  id: 'zai',
-  name: 'Z.ai',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.zai.title'),
-  description: 'z.ai',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.zai.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:zai',
-
+  createProvider(config) {
+    return createZai(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => zaiConfigSchema.extend({
     apiKey: zaiConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: zaiConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createZai(config.apiKey, config.baseUrl)
-  },
+  description: 'z.ai',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.zai.description'),
+  icon: 'i-lobe-icons:zai',
+  id: 'zai',
+  name: 'Z.ai',
+
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.zai.title'),
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

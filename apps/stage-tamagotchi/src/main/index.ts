@@ -32,6 +32,8 @@ import { createWindowAuthManagerService } from './services/airi/auth'
 import { setupServerChannel } from './services/airi/channel-server'
 import { setupGodotStageManager } from './services/airi/godot-stage'
 import { setupBuiltInServer } from './services/airi/http-server'
+import { createKnowlezTtsProxy } from './services/airi/http-server/http/knowlez-tts'
+import { createPgvectorMemoryServer } from './services/airi/http-server/http/memory-pgvector'
 import { setupMcpStdioManager } from './services/airi/mcp-servers'
 import { setupExtensionHost } from './services/airi/plugins'
 import { setupArtistryBridge } from './services/airi/widgets/artistry-bridge'
@@ -133,7 +135,6 @@ app.whenReady().then(async () => {
   const artistryConfig = injeca.provide('configs:artistry', () => createArtistryConfig())
   const electronApp = injeca.provide('host:electron:app', () => app)
   const autoUpdater = injeca.provide('services:auto-updater', {
-    dependsOn: { appConfig },
     build: ({ dependsOn }) => setupAutoUpdater({
       getStoredUpdateLane: () => dependsOn.appConfig.get()?.updateChannel,
       setStoredUpdateLane: (lane) => {
@@ -144,20 +145,24 @@ app.whenReady().then(async () => {
         })
       },
     }),
+    dependsOn: { appConfig },
   })
 
   const i18n = injeca.provide('libs:i18n', {
+    build: ({ dependsOn }) => createI18n({ locale: dependsOn.appConfig.get()?.language, messages }),
     dependsOn: { appConfig },
-    build: ({ dependsOn }) => createI18n({ messages, locale: dependsOn.appConfig.get()?.language }),
   })
 
   const serverChannel = injeca.provide('modules:channel-server', {
-    dependsOn: { app: electronApp, lifecycle },
     build: async ({ dependsOn }) => setupServerChannel(dependsOn),
+    dependsOn: { app: electronApp, lifecycle },
   })
 
+  const knowlezTtsProxy = await createKnowlezTtsProxy()
+  const pgvectorMemoryServer = await createPgvectorMemoryServer()
+
   const airiHttpServer = injeca.provide('modules:airi-http-server', {
-    build: async () => setupBuiltInServer({ servers: [] }),
+    build: async () => setupBuiltInServer({ servers: [knowlezTtsProxy.serverManager, pgvectorMemoryServer.serverManager] }),
   })
 
   const godotStageManager = injeca.provide('modules:godot-stage-manager', {
@@ -169,13 +174,13 @@ app.whenReady().then(async () => {
   })
 
   const widgetsManager = injeca.provide('windows:widgets', {
-    dependsOn: { serverChannel, i18n },
     build: ({ dependsOn }) => setupWidgetsWindowManager(dependsOn),
+    dependsOn: { i18n, serverChannel },
   })
 
   const pluginHost = injeca.provide('modules:plugin-host', {
-    dependsOn: { serverChannel, widgetsManager },
     build: ({ dependsOn }) => setupExtensionHost(dependsOn),
+    dependsOn: { serverChannel, widgetsManager },
   })
 
   const windowAuthManager = injeca.provide('services:window-auth-manager', () => createWindowAuthManagerService())
@@ -188,85 +193,85 @@ app.whenReady().then(async () => {
   const devtoolsMarkdownStressWindow = injeca.provide('windows:devtools:markdown-stress', () => setupDevtoolsWindow())
 
   const onboardingWindowManager = injeca.provide('windows:onboarding', {
-    dependsOn: { serverChannel, i18n, windowAuthManager },
     build: ({ dependsOn }) => setupOnboardingWindowManager(dependsOn),
+    dependsOn: { i18n, serverChannel, windowAuthManager },
   })
 
   const noticeWindow = injeca.provide('windows:notice', {
-    dependsOn: { i18n, serverChannel },
     build: ({ dependsOn }) => setupNoticeWindowManager(dependsOn),
+    dependsOn: { i18n, serverChannel },
   })
 
   const aboutWindow = injeca.provide('windows:about', {
-    dependsOn: { autoUpdater, i18n, serverChannel },
     build: ({ dependsOn }) => setupAboutWindowReusable(dependsOn),
+    dependsOn: { autoUpdater, i18n, serverChannel },
   })
 
   const chatWindow = injeca.provide('windows:chat', {
-    dependsOn: { widgetsManager, serverChannel, mcpStdioManager, i18n },
     build: ({ dependsOn }) => setupChatWindowReusableFunc(dependsOn),
+    dependsOn: { i18n, mcpStdioManager, serverChannel, widgetsManager },
   })
 
   const spotlightWindow = injeca.provide('windows:spotlight', {
-    dependsOn: { serverChannel, i18n, chatWindow, globalShortcut, appConfig },
     build: ({ dependsOn }) => setupSpotlightWindowManager(dependsOn),
+    dependsOn: { appConfig, chatWindow, globalShortcut, i18n, serverChannel },
   })
 
   const settingsWindow = injeca.provide('windows:settings', {
-    dependsOn: { widgetsManager, beatSync, autoUpdater, devtoolsWindow: devtoolsMarkdownStressWindow, serverChannel, godotStageManager, mcpStdioManager, i18n, windowAuthManager, globalShortcut, spotlightWindow },
     build: async ({ dependsOn }) =>
       setupSettingsWindowReusableFunc({
         ...dependsOn,
         getMainWindow: () => userFacingMainWindow,
       }),
+    dependsOn: { autoUpdater, beatSync, devtoolsWindow: devtoolsMarkdownStressWindow, globalShortcut, godotStageManager, i18n, mcpStdioManager, serverChannel, spotlightWindow, widgetsManager, windowAuthManager },
   })
 
   const mainWindow = injeca.provide('windows:main', {
-    dependsOn: { settingsWindow, chatWindow, widgetsManager, noticeWindow, beatSync, autoUpdater, serverChannel, godotStageManager, mcpStdioManager, i18n, onboardingWindowManager, windowAuthManager },
     build: async ({ dependsOn }) => setupMainWindow({
       ...dependsOn,
       onWindowCreated: (window) => {
         userFacingMainWindow = window
       },
     }),
+    dependsOn: { autoUpdater, beatSync, chatWindow, godotStageManager, i18n, mcpStdioManager, noticeWindow, onboardingWindowManager, serverChannel, settingsWindow, widgetsManager, windowAuthManager },
   })
 
   const captionWindow = injeca.provide('windows:caption', {
-    dependsOn: { mainWindow, serverChannel, i18n },
     build: async ({ dependsOn }) => setupCaptionWindowManager(dependsOn),
+    dependsOn: { i18n, mainWindow, serverChannel },
   })
 
   const tray = injeca.provide('app:tray', {
-    dependsOn: { mainWindow, settingsWindow, captionWindow, widgetsWindow: widgetsManager, serverChannel, beatSyncBgWindow: beatSync, aboutWindow, i18n },
     build: async ({ dependsOn }) => setupTray(dependsOn),
+    dependsOn: { aboutWindow, beatSyncBgWindow: beatSync, captionWindow, i18n, mainWindow, serverChannel, settingsWindow, widgetsWindow: widgetsManager },
   })
 
   // Desktop grounding overlay — gated by AIRI_DESKTOP_OVERLAY=1
   if (isDesktopOverlayEnabled()) {
     const desktopOverlay = injeca.provide('windows:desktop-overlay', {
-      dependsOn: { mcpStdioManager, serverChannel, i18n },
       build: async ({ dependsOn }) => setupDesktopOverlayWindow(dependsOn),
+      dependsOn: { i18n, mcpStdioManager, serverChannel },
     })
 
     // NOTICE: Separate invoke ensures the overlay is eagerly built.
     // Without this, injeca.start() would skip it because no other
     // provider depends on 'windows:desktop-overlay'.
     injeca.invoke({
-      dependsOn: { desktopOverlay },
       callback: noop,
+      dependsOn: { desktopOverlay },
     })
   }
 
   injeca.invoke({
-    dependsOn: { mainWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, spotlightWindow, artistryConfig },
     callback: async (deps) => {
       const { context } = createContext(ipcMain)
       await setupArtistryBridge({
-        widgetsManager: deps.widgetsWindow,
-        context,
         artistryConfig: deps.artistryConfig,
+        context,
+        widgetsManager: deps.widgetsWindow,
       })
     },
+    dependsOn: { airiHttpServer, artistryConfig, godotStageManager, mainWindow, mcpStdioManager, onboardingWindow: onboardingWindowManager, pluginHost, serverChannel, spotlightWindow, tray, widgetsWindow: widgetsManager },
   })
 
   injeca.start().catch(err => console.error(err))

@@ -71,6 +71,11 @@ const audioPlayer = ref<HTMLAudioElement | null>(null)
 const errorMessage = ref('')
 let lastOfficialTtsExposureKey = ''
 
+watch(() => speechStore.supportsSSML, (supportsSSML) => {
+  if (!supportsSSML)
+    useSSML.value = false
+})
+
 const STREAMING_MODEL_OPTION_PREFIX = 'streaming:'
 
 const selectableSpeechSources = computed(() => {
@@ -413,6 +418,11 @@ async function generateTestSpeech() {
 
   if (useSSML.value && !ssmlText.value.trim())
     return
+
+  if (useSSML.value && !speechStore.supportsSSML) {
+    errorMessage.value = 'The selected speech provider does not support raw SSML. Disable Custom SSML and enter plain text instead.'
+    return
+  }
 
   const provider = await providersStore.getProviderInstance(activeSpeechProvider.value) as SpeechProviderWithExtraOptions<string, any>
   if (!provider) {
@@ -928,7 +938,10 @@ function handleDeleteProvider(providerId: string) {
           <FieldCheckbox
             v-model="useSSML"
             label="Use Custom SSML"
-            description="Enable to input raw SSML instead of plain text"
+            :disabled="!speechStore.supportsSSML"
+            :description="speechStore.supportsSSML
+              ? 'Enable to input raw SSML instead of plain text'
+              : 'The selected provider accepts plain text only'"
           />
 
           <template v-if="!useSSML">

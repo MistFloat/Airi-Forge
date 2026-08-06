@@ -17,31 +17,31 @@ const novitaConfigSchema = z.object({
 type NovitaConfig = z.input<typeof novitaConfigSchema>
 
 export const providerNovitaAI = defineProvider<NovitaConfig>({
-  id: 'novita-ai',
-  name: 'Novita',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.novita.title'),
-  description: 'novita.ai',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.novita.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:novita',
-  iconColor: 'i-lobe-icons:novita-color',
-
+  createProvider(config) {
+    return createNovita(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => novitaConfigSchema.extend({
     apiKey: novitaConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: novitaConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createNovita(config.apiKey, config.baseUrl)
-  },
+  description: 'novita.ai',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.novita.description'),
+  icon: 'i-lobe-icons:novita',
+  iconColor: 'i-lobe-icons:novita-color',
+  id: 'novita-ai',
+  name: 'Novita',
+
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.novita.title'),
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

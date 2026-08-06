@@ -1,7 +1,6 @@
 import type { DuckDBWasmDrizzleDatabase } from '@proj-airi/drizzle-duckdb-wasm'
 
 import { drizzle } from '@proj-airi/drizzle-duckdb-wasm'
-import { getImportUrlBundles } from '@proj-airi/drizzle-duckdb-wasm/bundles/import-url-browser'
 import { Mutex } from 'async-mutex'
 import { shallowRef } from 'vue'
 
@@ -27,8 +26,21 @@ export function useDuckDb() {
         return db
       let dbInstance
       try {
-        dbInstance = drizzle({ connection: { bundles: getImportUrlBundles() } })
-        await dbInstance.execute(`CREATE TABLE IF NOT EXISTS memory_test (vec FLOAT[768]);`)
+        // Origin Private File System keeps memory on-device without exposing a
+        // filesystem path to renderer code. `write=true` is required for DuckDB
+        // to reopen the same database across desktop/browser sessions.
+        dbInstance = drizzle('duckdb-wasm:///airi-memory.db?bundles=import-url&storage=origin-private-fs&write=true')
+        await dbInstance.execute(`
+          CREATE TABLE IF NOT EXISTS short_term_memory_turns (
+            id VARCHAR PRIMARY KEY,
+            session_id VARCHAR NOT NULL,
+            user_text TEXT NOT NULL,
+            assistant_text TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS short_term_memory_session_created_idx
+            ON short_term_memory_turns (session_id, created_at);
+        `)
         db.value = dbInstance
         return db
       }
@@ -40,8 +52,8 @@ export function useDuckDb() {
     })
 
   return {
+    closeDb,
     db,
     getDb,
-    closeDb,
   }
 }

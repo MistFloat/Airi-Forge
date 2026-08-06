@@ -37,18 +37,41 @@ type WsEventContext = ReturnType<typeof createWsContext>['context']
 const NewMessagesPayloadSchema = v.object({
   chatId: v.pipe(v.string(), v.minLength(1)),
   fromSeq: v.number(),
-  toSeq: v.number(),
   messages: v.array(v.object({
-    id: v.pipe(v.string(), v.minLength(1)),
     chatId: v.pipe(v.string(), v.minLength(1)),
-    senderId: v.nullable(v.string()),
-    role: v.picklist(['system', 'user', 'assistant', 'tool', 'error']),
     content: v.string(),
-    seq: v.number(),
     createdAt: v.number(),
+    id: v.pipe(v.string(), v.minLength(1)),
+    role: v.picklist(['system', 'user', 'assistant', 'tool', 'error']),
+    senderId: v.nullable(v.string()),
+    seq: v.number(),
     updatedAt: v.number(),
   })),
+  toSeq: v.number(),
 })
+
+export interface ChatWsClient {
+  /** Connect (or reconnect with the latest token). No-op if already open. */
+  connect: () => void
+  /** Permanently dispose the client (stops the status watcher). After `destroy()` the handle is unusable. */
+  destroy: () => void
+  /** Close the socket and stop auto-reconnect until the next `connect()`. The handle is reusable. */
+  disconnect: () => void
+  /**
+   * Subscribe to inbound `newMessages` push. The handler fires for every
+   * authenticated push, including potential echoes of the local sender — the
+   * caller MUST dedup by message id.
+   */
+  onNewMessages: (handler: (payload: NewMessagesPayload) => void) => ChatWsUnsubscribe
+  /** Subscribe to status transitions for UI / catchup orchestration. */
+  onStatusChange: (handler: (status: ChatWsStatus) => void) => ChatWsUnsubscribe
+  /** RPC: pull messages newer than `afterSeq`. Rejects if disconnected mid-flight. */
+  pullMessages: (req: PullMessagesRequest) => Promise<PullMessagesResponse>
+  /** RPC: push messages to a chat. Rejects if disconnected mid-flight. */
+  sendMessages: (req: SendMessagesRequest) => Promise<SendMessagesResponse>
+  /** Current connection status. Useful for UI banners. */
+  status: () => ChatWsStatus
+}
 
 /**
  * WebSocket connection lifecycle states surfaced to the chat-sync layer.
@@ -59,7 +82,7 @@ const NewMessagesPayloadSchema = v.object({
  * - `open`: socket open and `wsConnectedEvent` fired.
  * - `closed`: lost the socket; auto-reconnect may bring it back to `connecting`.
  */
-export type ChatWsStatus = 'idle' | 'connecting' | 'open' | 'closed'
+export type ChatWsStatus = 'closed' | 'connecting' | 'idle' | 'open'
 
 /**
  * Disposer returned by `onNewMessages` / `onStatusChange`. Calling it removes
@@ -69,38 +92,15 @@ export type ChatWsUnsubscribe = () => void
 
 export interface CreateChatWsClientOptions {
   /**
+   * Resolves the current bearer token at connect/reconnect time. Returning
+   * `null` skips connecting (the user is not authenticated).
+   */
+  getToken: () => null | string
+  /**
    * Base server URL, e.g. `https://api.airi.build`. The client appends
    * `/ws/chat?token=<jwt>` to build the WebSocket URL.
    */
   serverUrl: string
-  /**
-   * Resolves the current bearer token at connect/reconnect time. Returning
-   * `null` skips connecting (the user is not authenticated).
-   */
-  getToken: () => string | null
-}
-
-export interface ChatWsClient {
-  /** Current connection status. Useful for UI banners. */
-  status: () => ChatWsStatus
-  /** Connect (or reconnect with the latest token). No-op if already open. */
-  connect: () => void
-  /** Close the socket and stop auto-reconnect until the next `connect()`. The handle is reusable. */
-  disconnect: () => void
-  /** Permanently dispose the client (stops the status watcher). After `destroy()` the handle is unusable. */
-  destroy: () => void
-  /** RPC: push messages to a chat. Rejects if disconnected mid-flight. */
-  sendMessages: (req: SendMessagesRequest) => Promise<SendMessagesResponse>
-  /** RPC: pull messages newer than `afterSeq`. Rejects if disconnected mid-flight. */
-  pullMessages: (req: PullMessagesRequest) => Promise<PullMessagesResponse>
-  /**
-   * Subscribe to inbound `newMessages` push. The handler fires for every
-   * authenticated push, including potential echoes of the local sender — the
-   * caller MUST dedup by message id.
-   */
-  onNewMessages: (handler: (payload: NewMessagesPayload) => void) => ChatWsUnsubscribe
-  /** Subscribe to status transitions for UI / catchup orchestration. */
-  onStatusChange: (handler: (status: ChatWsStatus) => void) => ChatWsUnsubscribe
 }
 
 /**
@@ -140,70 +140,6 @@ export function computeReconnectDelay(retries: number, baseMs: number, maxMs: nu
   return Math.floor(exp * 0.5 + Math.random() * exp * 0.5)
 }
 
-/**
- * Map VueUse's 3-state status onto the chat-sync 4-state machine.
- *
- * VueUse exposes `OPEN | CONNECTING | CLOSED`. Chat-sync needs to distinguish
- * "never connected / explicitly disconnected" (`idle`) from "lost the socket
- * and auto-reconnect is pending" (`closed`). The caller tracks the user
- * intent via `enabled`; here we just translate the transport state.
- *
- * @internal
- */
-export function mapStatus(vue: 'OPEN' | 'CONNECTING' | 'CLOSED', enabled: boolean): ChatWsStatus {
-  if (vue === 'OPEN')
-    return 'open'
-  if (vue === 'CONNECTING')
-    return 'connecting'
-  return enabled ? 'closed' : 'idle'
-}
-
-/**
- * Create a chat-sync WebSocket client backed by VueUse's `useWebSocket` plus
- * eventa's native ws adapter for the eventa context that handles RPC and
- * outbound subscription routing.
- *
- * Use when:
- * - The user is signed in and the chat store wants real-time sync.
- *
- * Expects:
- * - `serverUrl` includes scheme (https/http). Token must be a valid JWT;
- *   401s during the WebSocket upgrade close the socket immediately and the
- *   auto-reconnect loop will keep retrying with whatever `getToken()`
- *   returns next.
- *
- * Returns:
- * - A handle exposing connect/disconnect/destroy, RPC functions, and event
- *   hooks. RPC closures resolve the live `EventContext` per invocation so a
- *   reconnect-induced context swap is transparent. In-flight RPCs reject on
- *   disconnect with `chat-ws: rpc cancelled` so callers do not hang
- *   indefinitely (eventa@0.3.0 does not flush its internal pending maps when
- *   the underlying context is disposed; we wrap each invoke in a race).
- */
-/**
- * Build the reactive ws URL ref `useWebSocket` watches.
- *
- * `getToken` MUST read from a reactive source (Pinia store ref, Vue ref,
- * computed). A non-reactive read (e.g. `localStorage.getItem`) freezes the
- * URL at first evaluation and `useWebSocket` will reconnect forever with
- * the stale token after the next OIDC refresh — verified by
- * `freezes ws URL when getToken is non-reactive` in ws-client.test.ts.
- */
-export function createChatWsUrlRef(
-  enabled: Ref<boolean>,
-  getToken: () => string | null,
-  serverUrl: string,
-): ComputedRef<string | undefined> {
-  return computed(() => {
-    if (!enabled.value)
-      return undefined
-    const token = getToken()
-    if (!token)
-      return undefined
-    return buildChatWsUrl(serverUrl, token)
-  })
-}
-
 export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsClient {
   // `enabled` mirrors user intent: connect() flips on, disconnect() flips off.
   // The url ref returns `undefined` when disabled, which makes useWebSocket
@@ -216,7 +152,7 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
   // In-flight invokes auto-reject on socket close because the native ws
   // adapter registers wsDisconnectedEvent / wsErrorEvent as abort events on
   // the context (see @moeru/eventa adapters/websocket/native).
-  const context = shallowRef<WsEventContext | undefined>(undefined)
+  const context = shallowRef<undefined | WsEventContext>(undefined)
   const contextDisposers: Array<() => void> = []
   const newMessagesHandlers = new Set<(payload: NewMessagesPayload) => void>()
   const statusHandlers = new Set<(status: ChatWsStatus) => void>()
@@ -279,12 +215,12 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
   // (token rotation, disconnect intent). VueUse internally compares the
   // value and reopens; passing `undefined` cleanly closes any open socket.
   const ws = useWebSocket<string>(urlRef, {
-    immediate: false,
     autoClose: true,
     autoReconnect: {
-      retries: RECONNECT_RETRIES,
       delay: r => computeReconnectDelay(r, RECONNECT_BASE_MS, RECONNECT_MAX_MS),
+      retries: RECONNECT_RETRIES,
     },
+    immediate: false,
     onConnected(rawWs) {
       const created = createWsContext(rawWs)
       context.value = created.context
@@ -344,7 +280,6 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
   const invokePullMessages = defineInvoke(getContext, pullMessages)
 
   return {
-    status: () => mapStatus(ws.status.value, enabled.value),
     connect() {
       if (enabled.value && ws.status.value === 'OPEN')
         return
@@ -353,6 +288,12 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
       // closed by a previous disconnect, call open() to nudge it.
       if (ws.status.value === 'CLOSED')
         ws.open()
+    },
+    destroy() {
+      enabled.value = false
+      ws.close()
+      disposeContext()
+      stopStatusWatch()
     },
     disconnect() {
       // Flip intent off first so the autoReconnect loop won't fight us, then
@@ -364,14 +305,6 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
       ws.close()
       disposeContext()
     },
-    destroy() {
-      enabled.value = false
-      ws.close()
-      disposeContext()
-      stopStatusWatch()
-    },
-    sendMessages: req => invokeSendMessages(req),
-    pullMessages: req => invokePullMessages(req),
     onNewMessages(handler) {
       newMessagesHandlers.add(handler)
       return () => {
@@ -384,5 +317,72 @@ export function createChatWsClient(options: CreateChatWsClientOptions): ChatWsCl
         statusHandlers.delete(handler)
       }
     },
+    pullMessages: req => invokePullMessages(req),
+    sendMessages: req => invokeSendMessages(req),
+    status: () => mapStatus(ws.status.value, enabled.value),
   }
+}
+
+/**
+ * Create a chat-sync WebSocket client backed by VueUse's `useWebSocket` plus
+ * eventa's native ws adapter for the eventa context that handles RPC and
+ * outbound subscription routing.
+ *
+ * Use when:
+ * - The user is signed in and the chat store wants real-time sync.
+ *
+ * Expects:
+ * - `serverUrl` includes scheme (https/http). Token must be a valid JWT;
+ *   401s during the WebSocket upgrade close the socket immediately and the
+ *   auto-reconnect loop will keep retrying with whatever `getToken()`
+ *   returns next.
+ *
+ * Returns:
+ * - A handle exposing connect/disconnect/destroy, RPC functions, and event
+ *   hooks. RPC closures resolve the live `EventContext` per invocation so a
+ *   reconnect-induced context swap is transparent. In-flight RPCs reject on
+ *   disconnect with `chat-ws: rpc cancelled` so callers do not hang
+ *   indefinitely (eventa@0.3.0 does not flush its internal pending maps when
+ *   the underlying context is disposed; we wrap each invoke in a race).
+ */
+/**
+ * Build the reactive ws URL ref `useWebSocket` watches.
+ *
+ * `getToken` MUST read from a reactive source (Pinia store ref, Vue ref,
+ * computed). A non-reactive read (e.g. `localStorage.getItem`) freezes the
+ * URL at first evaluation and `useWebSocket` will reconnect forever with
+ * the stale token after the next OIDC refresh — verified by
+ * `freezes ws URL when getToken is non-reactive` in ws-client.test.ts.
+ */
+export function createChatWsUrlRef(
+  enabled: Ref<boolean>,
+  getToken: () => null | string,
+  serverUrl: string,
+): ComputedRef<string | undefined> {
+  return computed(() => {
+    if (!enabled.value)
+      return undefined
+    const token = getToken()
+    if (!token)
+      return undefined
+    return buildChatWsUrl(serverUrl, token)
+  })
+}
+
+/**
+ * Map VueUse's 3-state status onto the chat-sync 4-state machine.
+ *
+ * VueUse exposes `OPEN | CONNECTING | CLOSED`. Chat-sync needs to distinguish
+ * "never connected / explicitly disconnected" (`idle`) from "lost the socket
+ * and auto-reconnect is pending" (`closed`). The caller tracks the user
+ * intent via `enabled`; here we just translate the transport state.
+ *
+ * @internal
+ */
+export function mapStatus(vue: 'CLOSED' | 'CONNECTING' | 'OPEN', enabled: boolean): ChatWsStatus {
+  if (vue === 'OPEN')
+    return 'open'
+  if (vue === 'CONNECTING')
+    return 'connecting'
+  return enabled ? 'closed' : 'idle'
 }

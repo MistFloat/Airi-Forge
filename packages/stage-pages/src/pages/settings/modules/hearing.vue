@@ -77,7 +77,7 @@ const testStreamingText = ref<string>('')
 const testStatusMessage = ref<string>('')
 const testStreamWasStarted = ref(false) // Track if we started the stream for testing
 
-const useVADThreshold = ref(0.6) // 0.1 - 0.9
+const useVADThreshold = ref(0.35) // 0.1 - 0.9; lower values detect quieter speech.
 const useVADMinSilenceDurationMs = ref(800)
 const useVADModel = ref(true) // Toggle between VAD and volume-based detection
 const shouldUseStreamInput = computed(() => supportsStreamInput.value && !!stream.value)
@@ -511,6 +511,10 @@ watch(activeTranscriptionProvider, async (provider) => {
 
   await hearingStore.loadModelsForProvider(provider)
   syncOpenAICompatibleSettings()
+
+  const listedModels = providerModels.value
+  if (listedModels.length === 1 && !listedModels.some(model => model.id === activeTranscriptionModel.value))
+    activeTranscriptionModel.value = listedModels[0].id
 
   // Auto-select first model for Web Speech API if no model is selected
   if (provider === 'browser-web-speech-api' && !activeTranscriptionModel.value) {

@@ -2,10 +2,13 @@
 import type { ChatToolCallRendererRegistry } from '@proj-airi/stage-ui/components'
 import type { ChatHistoryItem } from '@proj-airi/stage-ui/types/chat'
 
+import type { PendingChatFile } from '../utils/chat-file-ingestion'
+
 import { errorMessageFrom } from '@moeru/std'
 import { useStopSpeakingButton } from '@proj-airi/stage-layouts/composables/useStopSpeakingButton'
 import { ChatHistory, JournalPreviewModal } from '@proj-airi/stage-ui/components'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
+import { useVisionInference } from '@proj-airi/stage-ui/composables/vision'
 import { useBackgroundStore } from '@proj-airi/stage-ui/stores/background'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -16,18 +19,22 @@ import { BasicTextarea } from '@proj-airi/ui'
 import { useLocalStorage } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger } from 'reka-ui'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 
+import ChatStatusBadge from './chat-status-badge.vue'
 import JournalToolCallBlock from './chat-tool-renderers/journal-tool-call-block.vue'
 
 import { useChatSyncStore } from '../stores/chat-sync'
+import { useTamagotchiMcpToolsStore } from '../stores/mcp-tools'
+import { buildChatFileContext, disposePendingChatFiles, prepareChatFiles } from '../utils/chat-file-ingestion'
 
 const router = useRouter()
 const messageInput = ref('')
 const lastEnterTime = ref(0)
-const attachments = ref<{ type: 'image', data: string, mimeType: string, url: string }[]>([])
+const attachments = ref<PendingChatFile[]>([])
 
 const chatOrchestrator = useChatOrchestratorStore()
 const chatSession = useChatSessionStore()
@@ -36,6 +43,7 @@ const chatSyncStore = useChatSyncStore()
 const backgroundStore = useBackgroundStore()
 const journalPreviewStore = useJournalPreviewStore()
 const airiCardStore = useAiriCardStore()
+const mcpToolsStore = useTamagotchiMcpToolsStore()
 
 const { messages } = storeToRefs(chatSession)
 const { streamingMessage } = storeToRefs(chatStream)
@@ -50,10 +58,13 @@ const SEND_MODES = ['enter', 'ctrl-enter', 'double-enter'] as const
 type SendMode = (typeof SEND_MODES)[number]
 type ToolCallRerunToolset = 'widgets' | 'artistry'
 const sendMode = useLocalStorage<SendMode>('ui/chat/settings/send-mode', 'enter')
-const toolCallRenderers = {
+// MCP tool names are only known after `refresh()`, so MCP renderers are merged
+// dynamically instead of being hardcoded like the journal tools.
+const toolCallRenderers = computed<ChatToolCallRendererRegistry>(() => ({
   image_journal: JournalToolCallBlock,
   text_journal: JournalToolCallBlock,
-} satisfies ChatToolCallRendererRegistry
+  ...mcpToolsStore.mcpToolCallRenderers,
+}))
 const sendModeLabels = computed<Record<SendMode, string>>(() => ({
   'enter': t('stage.send-mode.enter'),
   'ctrl-enter': t('stage.send-mode.ctrl-enter'),
@@ -65,6 +76,7 @@ const {
   trackChatMessagesCleared,
 } = useAnalytics()
 const { showStopSpeakingButton, stopSpeakingFromChat } = useStopSpeakingButton()
+const { runVisionInference } = useVisionInference()
 
 const latestImageEntries = computed(() => {
   if (!activeCardId.value)
@@ -88,20 +100,27 @@ async function handleSend() {
   }
 
   const textToSend = messageInput.value
-  const attachmentsToSend = attachments.value.map(att => ({ ...att }))
+  const attachmentsToSend = [...attachments.value]
 
   // optimistic clear
   messageInput.value = ''
   attachments.value = []
 
   try {
+    const fileContext = await buildChatFileContext(attachmentsToSend, {
+      analyzeImage: (imageDataUrl, promptOverride) => runVisionInference({
+        imageDataUrl,
+        workloadId: 'screen:understand',
+        promptOverride,
+      }),
+    })
+    const composedText = [textToSend.trim(), fileContext].filter(Boolean).join('\n\n')
     await chatSyncStore.requestIngest({
-      text: textToSend,
-      attachments: attachmentsToSend,
+      text: composedText,
       toolset: 'artistry',
     })
 
-    attachmentsToSend.forEach(att => URL.revokeObjectURL(att.url))
+    disposePendingChatFiles(attachmentsToSend)
   }
   catch (error) {
     // restore on failure
@@ -130,9 +149,9 @@ function handleManualAttach() {
 
 function handleFileSelect(event: Event) {
   const target = event.target as HTMLInputElement
-  if (target.files?.length) {
+  if (target.files?.length)
     handleFilePaste(Array.from(target.files))
-  }
+  target.value = ''
 }
 
 function handleMessageInputKeydown(event: KeyboardEvent) {
@@ -170,30 +189,19 @@ function handleMessageInputKeydown(event: KeyboardEvent) {
   }
 }
 
-async function handleFilePaste(files: File[]) {
-  for (const file of files) {
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        const base64Data = (e.target?.result as string)?.split(',')[1]
-        if (base64Data) {
-          attachments.value.push({
-            type: 'image' as const,
-            data: base64Data,
-            mimeType: file.type,
-            url: URL.createObjectURL(file),
-          })
-        }
-      }
-      reader.readAsDataURL(file)
-    }
+function handleFilePaste(files: File[]) {
+  try {
+    attachments.value.push(...prepareChatFiles(files))
+  }
+  catch (error) {
+    toast.error(errorMessageFrom(error) ?? 'Failed to attach file')
   }
 }
 
 function removeAttachment(index: number) {
   const attachment = attachments.value[index]
   if (attachment) {
-    URL.revokeObjectURL(attachment.url)
+    disposePendingChatFiles([attachment])
     attachments.value.splice(index, 1)
   }
 }
@@ -217,6 +225,8 @@ async function handleDeleteMessage(index: number) {
 onMounted(() => {
   backgroundStore.initializeStore()
 })
+
+onUnmounted(() => disposePendingChatFiles(attachments.value))
 
 async function handleRetryMessage(index: number) {
   await chatSyncStore.requestRetry({
@@ -266,6 +276,7 @@ async function handleCleanupMessages() {
 <template>
   <div h-full w-full flex="~ col gap-1">
     <div w-full flex-1 overflow-hidden>
+      <ChatStatusBadge class="mb-1" />
       <ChatHistory
         :messages="historyMessages"
         :assistant-label="assistantLabel"
@@ -314,8 +325,17 @@ async function handleCleanupMessages() {
         'flex flex-wrap gap-2 border-t border-primary-100 p-2',
       ]"
     >
-      <div v-for="(attachment, index) in attachments" :key="index" class="relative">
-        <img :src="attachment.url" :class="['h-20 w-20 rounded-md object-cover']">
+      <div
+        v-for="(attachment, index) in attachments"
+        :key="attachment.id"
+        :class="['relative h-20 w-28 overflow-hidden rounded-md', 'bg-neutral-100 dark:bg-neutral-800']"
+      >
+        <img v-if="attachment.kind === 'image'" :src="attachment.previewUrl" :class="['h-full w-full object-cover']">
+        <video v-else-if="attachment.kind === 'video'" :src="attachment.previewUrl" :class="['h-full w-full object-cover']" muted />
+        <div v-else :class="['h-full w-full flex flex-col items-center justify-center gap-1 px-2', 'text-neutral-500 dark:text-neutral-300']">
+          <div class="i-solar:document-text-bold-duotone text-2xl" />
+          <span class="w-full truncate text-center text-xs">{{ attachment.file.name }}</span>
+        </div>
         <button
           :class="[
             'absolute right-1 top-1 h-5 w-5 flex items-center justify-center rounded-full',
@@ -387,8 +407,8 @@ async function handleCleanupMessages() {
         hover:text="primary-500 dark:primary-400"
         flex items-center justify-center rounded-md p-2 outline-none
         transition-colors transition-transform active:scale-95
-        title="Stop speaking"
-        aria-label="Stop speaking"
+        title="停止语音播放"
+        aria-label="停止语音播放"
         @click="stopSpeakingFromChat"
       >
         <div class="i-solar:stop-circle-bold-duotone" />
@@ -422,7 +442,7 @@ async function handleCleanupMessages() {
         <div class="i-solar:gallery-bold-duotone" />
       </button>
 
-      <!-- Attach Image -->
+      <!-- Attach document or media -->
       <button
         class="max-h-[10lh] min-h-[1lh]"
         bg="neutral-100 dark:neutral-800"
@@ -430,15 +450,15 @@ async function handleCleanupMessages() {
         hover:text="primary-500 dark:primary-400"
         flex items-center justify-center rounded-md p-2 outline-none
         transition-colors transition-transform active:scale-95
-        title="Attach Image"
+        title="Attach document or media"
         @click="handleManualAttach"
       >
-        <div class="i-solar:camera-add-bold-duotone" />
+        <div class="i-solar:paperclip-2-bold-duotone" />
       </button>
       <input
         ref="fileInput"
         type="file"
-        accept="image/*"
+        accept="text/*,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.toml,.xml,.log,image/*,video/*"
         class="hidden"
         multiple
         @change="handleFileSelect"

@@ -1,9 +1,17 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID, providerOfficialSpeech } from '../../libs/providers/providers/official'
+import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID, providerOfficialSpeech, providerOfficialSpeechStreaming } from '../../libs/providers/providers/official'
 import { useProvidersStore } from '../providers'
+import { convertProviderDefinitionToMetadata } from '../providers/converters'
 import { toSignedPercent, useSpeechStore } from './speech'
+
+// NOTICE:
+// convertProviderDefinitionToMetadata expects a ComposerTranslation for
+// descriptionLocalize/nameLocalize/onboardingFields. The official speech
+// definitions resolve those through their own identity extractor and expose
+// no onboarding fields/validators, so a plain identity key function suffices.
+const translateKey = (key: string): string => key
 
 const i18nState = vi.hoisted(() => ({
   locale: { value: 'en-US' },
@@ -20,6 +28,30 @@ describe('speech store helpers', () => {
   beforeEach(() => {
     i18nState.locale.value = 'en-US'
     setActivePinia(createPinia())
+
+    // NOTICE:
+    // vitest does not run unplugin-info, so `translatedProviderMetadata` is
+    // empty and the `defineProvider()` registry never reaches `providerMetadata`
+    // (providers.ts). Production gets these entries injected at build time.
+    // Run the definitions through the same converter the build uses so the
+    // resulting metadata exposes `capabilities.listVoices/listModels` wired to
+    // the real implementations (which also populate the server `recommended`
+    // voice map the auto-pick assertions rely on).
+    const providersStore = useProvidersStore()
+    providersStore.providerMetadata[OFFICIAL_SPEECH_PROVIDER_ID] = convertProviderDefinitionToMetadata(providerOfficialSpeech, translateKey)
+    providersStore.providerMetadata[OFFICIAL_SPEECH_STREAMING_PROVIDER_ID] = convertProviderDefinitionToMetadata(providerOfficialSpeechStreaming, translateKey)
+    providersStore.providerRuntimeState[OFFICIAL_SPEECH_PROVIDER_ID] = {
+      isConfigured: true,
+      isLoadingModels: false,
+      modelLoadError: null,
+      models: [],
+    }
+    providersStore.providerRuntimeState[OFFICIAL_SPEECH_STREAMING_PROVIDER_ID] = {
+      isConfigured: false,
+      isLoadingModels: false,
+      modelLoadError: null,
+      models: [],
+    }
   })
 
   it('formats positive percentages with a plus sign', () => {
@@ -43,15 +75,15 @@ describe('speech store helpers', () => {
     const speechStore = useSpeechStore()
     const voice = {
       id: 'plain-voice',
+      languages: [{ code: 'en-US', title: 'English' }],
       name: 'Plain Voice',
       provider: 'openai-compatible-audio-speech',
-      languages: [{ code: 'en-US', title: 'English' }],
     }
 
     const request = speechStore.resolveSpeechInput({
+      providerConfig: { voice: 'plain-voice' },
       text: 'hello',
       voice,
-      providerConfig: { voice: 'plain-voice' },
     })
 
     expect(request.input).toBe('hello')
@@ -61,19 +93,19 @@ describe('speech store helpers', () => {
   it('applies configured pitch through SSML when supported', () => {
     const speechStore = useSpeechStore()
     const voice = {
+      gender: 'neutral',
       id: 'voice-1',
+      languages: [{ code: 'en-US', title: 'English' }],
       name: 'Voice 1',
       provider: OFFICIAL_SPEECH_PROVIDER_ID,
-      languages: [{ code: 'en-US', title: 'English' }],
-      gender: 'neutral',
     }
 
     const request = speechStore.resolveSpeechInput({
+      forceSSML: true,
+      providerConfig: { pitch: 20 },
+      supportsSSML: true,
       text: 'hello',
       voice,
-      providerConfig: { pitch: 20 },
-      forceSSML: true,
-      supportsSSML: true,
     })
 
     expect(request.input).toContain('<prosody')
@@ -87,11 +119,11 @@ describe('speech store helpers', () => {
   it('keeps official adapter-backed speech input as plain text when global SSML is enabled', () => {
     const speechStore = useSpeechStore()
     const voice = {
+      gender: 'neutral',
       id: 'voice-1',
+      languages: [{ code: 'en-US', title: 'English' }],
       name: 'Voice 1',
       provider: OFFICIAL_SPEECH_PROVIDER_ID,
-      languages: [{ code: 'en-US', title: 'English' }],
-      gender: 'neutral',
     }
 
     // ROOT CAUSE:
@@ -101,11 +133,11 @@ describe('speech store helpers', () => {
     // payloads with `SSML text is not supported at the moment!`, so providers
     // that apply prosody through adapter options must keep the text field plain.
     const request = speechStore.resolveSpeechInput({
+      forceSSML: true,
+      providerConfig: { pitch: 0 },
+      supportsSSML: false,
       text: 'hello',
       voice,
-      providerConfig: { pitch: 0 },
-      forceSSML: true,
-      supportsSSML: false,
     })
 
     expect(request.input).toBe('hello')
@@ -161,23 +193,23 @@ describe('speech store helpers', () => {
   it('resets stale streaming model to the server default when the regular official speech provider is active', async () => {
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => null),
-      setItem: vi.fn(),
       removeItem: vi.fn(),
+      setItem: vi.fn(),
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString()
       if (url.includes('/api/v1/audio/models')) {
         return new Response(JSON.stringify({
+          default: 'microsoft/v1',
           models: [
             { id: 'alibaba/cosyvoice-v2', name: 'alibaba/cosyvoice-v2' },
             { id: 'microsoft/v1', name: 'microsoft/v1' },
           ],
-          default: 'microsoft/v1',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
       }
-      return new Response(JSON.stringify({ voices: [], recommended: {} }), {
-        status: 200,
+      return new Response(JSON.stringify({ recommended: {}, voices: [] }), {
         headers: { 'Content-Type': 'application/json' },
+        status: 200,
       })
     }) as typeof fetch)
 
@@ -188,9 +220,9 @@ describe('speech store helpers', () => {
     speechStore.activeSpeechVoiceId = 'zh_female_x'
     speechStore.activeSpeechVoice = {
       id: 'zh_female_x',
+      languages: [],
       name: 'X',
       provider: OFFICIAL_SPEECH_STREAMING_PROVIDER_ID,
-      languages: [],
     }
     try {
       providersStore.providerRuntimeState[OFFICIAL_SPEECH_PROVIDER_ID].models = await providerOfficialSpeech.extraMethods!.listModels!(
@@ -216,32 +248,32 @@ describe('speech store helpers', () => {
   it('uses the server recommended voice when the persisted official voice is stale', async () => {
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => null),
-      setItem: vi.fn(),
       removeItem: vi.fn(),
+      setItem: vi.fn(),
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString()
       if (url.includes('/api/v1/audio/models')) {
         return new Response(JSON.stringify({
-          models: [{ id: 'microsoft/v1', name: 'microsoft/v1' }],
           default: 'microsoft/v1',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          models: [{ id: 'microsoft/v1', name: 'microsoft/v1' }],
+        }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
       }
       return new Response(JSON.stringify({
+        recommended: { 'en-US': 'en-US-AvaMultilingualNeural' },
         voices: [
           {
             id: 'en-US-JennyNeural',
-            name: 'Jenny',
             languages: [{ code: 'en-US', title: 'English' }],
+            name: 'Jenny',
           },
           {
             id: 'en-US-AvaMultilingualNeural',
-            name: 'Ava',
             languages: [{ code: 'en-US', title: 'English' }],
+            name: 'Ava',
           },
         ],
-        recommended: { 'en-US': 'en-US-AvaMultilingualNeural' },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
     }) as typeof fetch)
 
     const providersStore = useProvidersStore()
@@ -275,32 +307,32 @@ describe('speech store helpers', () => {
     i18nState.locale.value = 'ko-KR'
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => null),
-      setItem: vi.fn(),
       removeItem: vi.fn(),
+      setItem: vi.fn(),
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString()
       if (url.includes('/api/v1/audio/models')) {
         return new Response(JSON.stringify({
-          models: [{ id: 'microsoft/v1', name: 'microsoft/v1' }],
           default: 'microsoft/v1',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          models: [{ id: 'microsoft/v1', name: 'microsoft/v1' }],
+        }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
       }
       return new Response(JSON.stringify({
+        recommended: { 'zh-CN': 'zh-CN-XiaochenNeural' },
         voices: [
           {
             id: 'ko-KR-SunHiNeural',
-            name: 'SunHi',
             languages: [{ code: 'ko-KR', title: 'Korean' }],
+            name: 'SunHi',
           },
           {
             id: 'zh-CN-XiaochenNeural',
-            name: 'Xiaochen',
             languages: [{ code: 'zh-CN', title: 'Chinese' }],
+            name: 'Xiaochen',
           },
         ],
-        recommended: { 'zh-CN': 'zh-CN-XiaochenNeural' },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
     }) as typeof fetch)
 
     const providersStore = useProvidersStore()

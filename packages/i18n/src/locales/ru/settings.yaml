@@ -666,6 +666,55 @@ pages:
               Примечание: Если ваш провайдер не поддерживает verbose_json ответы, эта настройка не будет иметь никакого эффекта.
             verbose-json-unsupported: >-
               Ваш провайдер не вернул сегменты verbose_json. Фильтрация по уверенности не повлияла на последнюю транскрипцию.
+    instructions:
+      description: Настройка и управление постоянными инструкциями, внедряемыми в каждый запрос
+      title: Инструкции
+      estimated-tokens: 'В каждый запрос внедряется около {tokens} токенов.'
+      create: Создать инструкцию
+      empty: Инструкций пока нет. Создайте инструкцию, чтобы внедрять фиксированные правила в каждый диалог.
+      edit: Изменить
+      delete: Удалить
+      confirm-delete: Удалить эту инструкцию?
+      cancel: Отмена
+      priority-value: 'Приоритет: {value}'
+      scopes:
+        global: Глобальный
+        chat: Чат
+        speech: Речь
+        memory: Память
+        vision: Зрение
+        artistry: Творчество
+      statuses:
+        active: Активна
+        archived: В архиве
+        superseded: Заменена
+      editor:
+        create-title: Создать инструкцию
+        edit-title: Изменить инструкцию
+        cancel: Отмена
+        save: Сохранить
+        fields:
+          title: Заголовок
+          content: Содержимое
+          content-description: Текст, внедряемый в каждый запрос к LLM без изменений.
+          instruction-scope: Область действия
+          instruction-priority: Приоритет
+          instruction-rule-key: Ключ правила
+          instruction-rule-key-description: Необязательный уникальный ключ, позволяющий новой инструкции заменить (supersede) эту.
+          status: Статус
+          effective-from: Действует с
+          effective-until: Действует до
+        scopes:
+          global: Глобальный
+          chat: Чат
+          speech: Речь
+          memory: Память
+          vision: Зрение
+          artistry: Творчество
+        statuses:
+          active: Активна
+          archived: В архиве
+          superseded: Заменена
     memory-long-term:
       description: Настройки долговременной памяти
       title: Долговременная память

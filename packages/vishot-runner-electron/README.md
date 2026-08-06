@@ -81,7 +81,7 @@ import { defineScenario } from '@proj-airi/vishot-runner-electron'
 
 export default defineScenario({
   id: 'settings-connection',
-  async run({ controlsIsland, settingsWindow, stageWindows, capture }) {
+  async run({ capture, controlsIsland, settingsWindow, stageWindows }) {
     const main = await stageWindows.waitFor('main')
     await controlsIsland.expand(main.page)
     const settings = await controlsIsland.openSettings(main.page)

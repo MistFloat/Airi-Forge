@@ -15,6 +15,12 @@ chat:
     new-chat-fallback: New chat
     delete: Delete conversation
 message: 說點什麼...
+api-status:
+  running: 運行中
+  stopped: 已停止
+  queued: '排隊: {count}'
+  tools: '工具調用: {done}/{total}'
+  model: '{provider} · {model}'
 send-mode:
   title: 傳送按鍵
   enter: Enter

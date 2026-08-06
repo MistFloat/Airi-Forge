@@ -8,18 +8,18 @@ import { nanoid } from 'nanoid'
 
 interface SparkCommandData {
   commandId: string
-  intent: 'plan' | 'proposal' | 'action' | 'pause' | 'resume' | 'reroute' | 'context'
-  interrupt: 'force' | 'soft' | false
-  priority: 'critical' | 'high' | 'normal' | 'low'
   guidance?: {
     options?: Array<{ label: string, steps: string[] }>
   }
+  intent: 'action' | 'context' | 'pause' | 'plan' | 'proposal' | 'reroute' | 'resume'
+  interrupt: 'force' | 'soft' | false
+  priority: 'critical' | 'high' | 'low' | 'normal'
 }
 
 export class AiriBridge {
-  private readonly logger = useLogg('airi-bridge').useGlobalConfig()
   private commandHandler: ((event: { data: SparkCommandData }) => void) | null = null
   private contextUpdateHandler: ((event: { data: ContextUpdate }) => void) | null = null
+  private readonly logger = useLogg('airi-bridge').useGlobalConfig()
   private moduleAnnouncedHandler: ((event: { data: ModuleAnnouncedEvent }) => void) | null = null
   private readonly moduleAnnouncedListeners = new Set<(event: ModuleAnnouncedEvent) => void>()
 
@@ -28,20 +28,37 @@ export class AiriBridge {
     private readonly eventBus: EventBus,
   ) {}
 
+  destroy(): void {
+    if (this.commandHandler) {
+      this.client.offEvent('spark:command', this.commandHandler as Parameters<typeof this.client.offEvent<'spark:command'>>[1])
+      this.commandHandler = null
+    }
+    if (this.contextUpdateHandler) {
+      this.client.offEvent('context:update', this.contextUpdateHandler as Parameters<typeof this.client.offEvent<'context:update'>>[1])
+      this.contextUpdateHandler = null
+    }
+    if (this.moduleAnnouncedHandler) {
+      this.client.offEvent('module:announced', this.moduleAnnouncedHandler as Parameters<typeof this.client.offEvent<'module:announced'>>[1])
+      this.moduleAnnouncedHandler = null
+    }
+    this.moduleAnnouncedListeners.clear()
+    this.logger.log('AiriBridge destroyed')
+  }
+
   init(): void {
     this.commandHandler = (event) => {
       const cmd = event.data
-      this.logger.log('Received spark:command', { intent: cmd.intent, commandId: cmd.commandId })
+      this.logger.log('Received spark:command', { commandId: cmd.commandId, intent: cmd.intent })
 
       // Acknowledge receipt
       this.client.send({
-        type: 'spark:emit',
         data: {
-          id: nanoid(),
           eventId: cmd.commandId,
-          state: 'queued',
+          id: nanoid(),
           note: 'Command received',
+          state: 'queued',
         },
+        type: 'spark:emit',
       } as Parameters<typeof this.client.send>[0])
 
       // A spark:command is high-level guidance from the AIRI server. It must carry enough weight to
@@ -61,21 +78,21 @@ export class AiriBridge {
       this.logger.log('Received context:update', { lane: ctx.lane, preview: ctx.text.slice(0, 80) })
 
       this.eventBus.emit({
-        type: 'signal:airi_context',
         payload: Object.freeze({
-          type: 'airi_context' as const,
-          description: ctx.text,
-          sourceId: 'airi',
           confidence: 1.0,
-          timestamp: Date.now(),
+          description: ctx.text,
           metadata: {
-            source: 'airi',
             contextId: ctx.contextId,
-            lane: ctx.lane ?? 'general',
             hints: ctx.hints ?? [],
+            lane: ctx.lane ?? 'general',
+            source: 'airi',
           },
+          sourceId: 'airi',
+          timestamp: Date.now(),
+          type: 'airi_context' as const,
         }),
         source: { component: 'airi', id: 'bridge' },
+        type: 'signal:airi_context',
       })
     }
 
@@ -93,49 +110,24 @@ export class AiriBridge {
     this.logger.log('AiriBridge initialized, listening for spark:command, context:update, and module:announced')
   }
 
-  destroy(): void {
-    if (this.commandHandler) {
-      this.client.offEvent('spark:command', this.commandHandler as Parameters<typeof this.client.offEvent<'spark:command'>>[1])
-      this.commandHandler = null
-    }
-    if (this.contextUpdateHandler) {
-      this.client.offEvent('context:update', this.contextUpdateHandler as Parameters<typeof this.client.offEvent<'context:update'>>[1])
-      this.contextUpdateHandler = null
-    }
-    if (this.moduleAnnouncedHandler) {
-      this.client.offEvent('module:announced', this.moduleAnnouncedHandler as Parameters<typeof this.client.offEvent<'module:announced'>>[1])
-      this.moduleAnnouncedHandler = null
-    }
-    this.moduleAnnouncedListeners.clear()
-    this.logger.log('AiriBridge destroyed')
-  }
+  onModuleAnnounced(listener: (event: ModuleAnnouncedEvent) => void) {
+    this.moduleAnnouncedListeners.add(listener)
 
-  sendNotify(headline: string, note?: string, urgency: 'immediate' | 'soon' | 'later' = 'soon'): void {
-    this.client.send({
-      type: 'spark:notify',
-      data: {
-        id: nanoid(),
-        eventId: nanoid(),
-        kind: 'ping',
-        urgency,
-        headline,
-        note,
-        destinations: ['proj-airi:stage-*'],
-      },
-    } as Parameters<typeof this.client.send>[0])
-    this.logger.log('Sent spark:notify', { headline, urgency })
+    return () => {
+      this.moduleAnnouncedListeners.delete(listener)
+    }
   }
 
   sendContextUpdate(text: string, hints?: string[], lane?: string): void
   sendContextUpdate(update: ContextUpdate): void
-  sendContextUpdate(textOrUpdate: string | Omit<ContextUpdate, 'strategy' | 'id' | 'contextId'> & { contextId?: string }, hints?: string[], lane = 'game'): void {
+  sendContextUpdate(textOrUpdate: Omit<ContextUpdate, 'contextId' | 'id' | 'strategy'> & { contextId?: string } | string, hints?: string[], lane = 'game'): void {
     const update = typeof textOrUpdate === 'string'
       ? {
-        text: textOrUpdate,
         hints,
         lane,
         strategy: ContextUpdateStrategy.AppendSelf,
-      } satisfies Omit<ContextUpdate, 'id' | 'contextId'> & { contextId?: string }
+        text: textOrUpdate,
+      } satisfies Omit<ContextUpdate, 'contextId' | 'id'> & { contextId?: string }
       : {
           strategy: ContextUpdateStrategy.AppendSelf,
           ...textOrUpdate,
@@ -143,39 +135,47 @@ export class AiriBridge {
 
     const contextId = update.contextId ?? nanoid()
     this.client.send({
-      type: 'context:update',
       data: {
-        id: nanoid(),
         contextId,
-        lane: update.lane,
-        text: update.text,
-        hints: update.hints,
-        strategy: update.strategy,
         destinations: update.destinations,
+        hints: update.hints,
+        id: nanoid(),
+        lane: update.lane,
+        strategy: update.strategy,
+        text: update.text,
       },
+      type: 'context:update',
     } as Parameters<typeof this.client.send>[0])
-    this.logger.log('Sent context:update', { lane: update.lane, preview: update.text.slice(0, 80), contextId })
+    this.logger.log('Sent context:update', { contextId, lane: update.lane, preview: update.text.slice(0, 80) })
   }
 
-  sendEmit(eventId: string, state: 'queued' | 'working' | 'done' | 'dropped', note?: string): void {
+  sendEmit(eventId: string, state: 'done' | 'dropped' | 'queued' | 'working', note?: string): void {
     this.client.send({
-      type: 'spark:emit',
       data: {
-        id: nanoid(),
         eventId,
-        state,
+        id: nanoid(),
         note,
+        state,
       },
+      type: 'spark:emit',
     } as Parameters<typeof this.client.send>[0])
     this.logger.log('Sent spark:emit', { eventId, state })
   }
 
-  onModuleAnnounced(listener: (event: ModuleAnnouncedEvent) => void) {
-    this.moduleAnnouncedListeners.add(listener)
-
-    return () => {
-      this.moduleAnnouncedListeners.delete(listener)
-    }
+  sendNotify(headline: string, note?: string, urgency: 'immediate' | 'later' | 'soon' = 'soon'): void {
+    this.client.send({
+      data: {
+        destinations: ['proj-airi:stage-*'],
+        eventId: nanoid(),
+        headline,
+        id: nanoid(),
+        kind: 'ping',
+        note,
+        urgency,
+      },
+      type: 'spark:notify',
+    } as Parameters<typeof this.client.send>[0])
+    this.logger.log('Sent spark:notify', { headline, urgency })
   }
 
   private handleActionIntent(cmd: SparkCommandData): void {
@@ -202,21 +202,21 @@ export class AiriBridge {
     })
 
     this.eventBus.emit({
-      type: 'signal:airi_command',
       payload: Object.freeze({
-        type: 'airi_command' as const,
-        description: `Directive from AIRI: "${message}"`,
-        sourceId,
         confidence: 1.0,
-        timestamp: Date.now(),
+        description: `Directive from AIRI: "${message}"`,
         metadata: {
           message,
           // Keep the spark provenance for debugging; the brain sees a typed AIRI directive.
           sparkCommandId: cmd.commandId,
           sparkIntent: cmd.intent,
         },
+        sourceId,
+        timestamp: Date.now(),
+        type: 'airi_command' as const,
       }),
       source: { component: 'airi', id: 'bridge' },
+      type: 'signal:airi_command',
     })
   }
 }

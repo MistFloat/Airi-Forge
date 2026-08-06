@@ -9,12 +9,6 @@ describe('buildOpenAICompatibleProvider', () => {
    */
   it('preserves transcription extra options for OpenAI-compatible ASR providers', async () => {
     const metadata = buildOpenAICompatibleProvider({
-      id: 'test-openai-compatible-transcription',
-      name: 'Test Transcription',
-      nameKey: 'test.transcription.title',
-      description: 'Test transcription provider',
-      descriptionKey: 'test.transcription.description',
-      icon: 'i-lobe-icons:openai',
       category: 'transcription',
       creator: () => ({
         transcription: (model: string) => ({
@@ -22,6 +16,12 @@ describe('buildOpenAICompatibleProvider', () => {
           model,
         }),
       }),
+      description: 'Test transcription provider',
+      descriptionKey: 'test.transcription.description',
+      icon: 'i-lobe-icons:openai',
+      id: 'test-openai-compatible-transcription',
+      name: 'Test Transcription',
+      nameKey: 'test.transcription.title',
     })
 
     const provider = await metadata.createProvider({})

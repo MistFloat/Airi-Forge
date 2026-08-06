@@ -6,16 +6,11 @@ import { useDuckDb } from './use-duck-db'
 
 vi.mock('@proj-airi/drizzle-duckdb-wasm', () => ({
   drizzle: vi.fn().mockImplementation(() => ({
-    execute: vi.fn().mockResolvedValue([]),
     $client: {
       close: vi.fn().mockResolvedValue(undefined),
     },
+    execute: vi.fn().mockResolvedValue([]),
   })),
-}))
-
-// Mock the helper function
-vi.mock('@proj-airi/drizzle-duckdb-wasm/bundles/import-url-browser', () => ({
-  getImportUrlBundles: vi.fn().mockReturnValue([]),
 }))
 
 describe('useDuckDB (Singleton)', () => {
@@ -29,11 +24,12 @@ describe('useDuckDB (Singleton)', () => {
   })
 
   it('should return the same instance on multiple calls', async () => {
-    const { getDb, closeDb } = useDuckDb()
+    const { closeDb, getDb } = useDuckDb()
 
     const instance1 = await getDb()
     expect(instance1).toBeDefined()
     expect(vi.mocked(drizzle).mock.calls.length).toBe(1)
+    expect(vi.mocked(drizzle)).toHaveBeenCalledWith('duckdb-wasm:///airi-memory.db?bundles=import-url&storage=origin-private-fs&write=true')
 
     const { getDb: getDb2 } = useDuckDb()
     const instance2 = await getDb2()
@@ -45,7 +41,7 @@ describe('useDuckDB (Singleton)', () => {
   })
 
   it('should handle concurrent getDb calls without duplicate initialization', async () => {
-    const { getDb, closeDb } = useDuckDb()
+    const { closeDb, getDb } = useDuckDb()
 
     const promise1 = getDb()
     const promise2 = getDb()
@@ -59,7 +55,7 @@ describe('useDuckDB (Singleton)', () => {
   })
 
   it('should allow re-initialization after closeDb is called', async () => {
-    const { getDb, closeDb, db } = useDuckDb()
+    const { closeDb, db, getDb } = useDuckDb()
 
     await getDb()
     const instance1 = db.value

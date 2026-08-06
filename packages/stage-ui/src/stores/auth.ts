@@ -17,26 +17,26 @@ import { refreshAccessToken } from '../libs/auth-oidc'
  * `providers` to safely depend on it without creating a circular import.
  */
 export const useAuthStore = defineStore('auth', () => {
-  const user = useLocalStorage<User | null>('auth/v1/user', null, {
+  const user = useLocalStorage<null | User>('auth/v1/user', null, {
     // Why: https://github.com/vueuse/vueuse/pull/614#issuecomment-875450160
     serializer: StorageSerializers.object,
   })
-  const session = useLocalStorage<Session | null>('auth/v1/session', null, { serializer: StorageSerializers.object })
-  const token = useLocalStorage<string | null>('auth/v1/token', null)
-  const refreshToken = useLocalStorage<string | null>('auth/v1/refresh-token', null)
+  const session = useLocalStorage<null | Session>('auth/v1/session', null, { serializer: StorageSerializers.object })
+  const token = useLocalStorage<null | string>('auth/v1/token', null)
+  const refreshToken = useLocalStorage<null | string>('auth/v1/refresh-token', null)
   // NOTICE:
   // Persisted to drive `id_token_hint` on RP-Initiated Logout
   // (`/api/auth/oauth2/end-session`). The `sid` claim inside the ID token is
   // what lets the OIDC provider locate the server-side session row to delete
   // — without this we'd be back to relying on cross-site session cookies.
-  const idToken = useLocalStorage<string | null>('auth/v1/oidc-id-token', null)
+  const idToken = useLocalStorage<null | string>('auth/v1/oidc-id-token', null)
   const isAuthenticated = computed(() => !!user.value && !!session.value)
   const userId = computed(() => user.value?.id ?? 'local')
 
   // --- OIDC token refresh state ---
   // Persisted so refresh scheduling survives page reloads.
-  const oidcClientId = useLocalStorage<string | null>('auth/v1/oidc-client-id', null)
-  const tokenExpiry = useLocalStorage<number | null>('auth/v1/oidc-token-expiry', null)
+  const oidcClientId = useLocalStorage<null | string>('auth/v1/oidc-client-id', null)
+  const tokenExpiry = useLocalStorage<null | number>('auth/v1/oidc-token-expiry', null)
 
   const credits = useLocalStorage<number>('user/v1/flux', 0)
 
@@ -58,7 +58,7 @@ export const useAuthStore = defineStore('auth', () => {
   watch(isMobile, () => needsLogin.value = false)
 
   // --- Lifecycle hooks ---
-  type AuthHook = () => void | Promise<void>
+  type AuthHook = () => Promise<void> | void
   const authenticatedHooks: AuthHook[] = []
   const logoutHooks: AuthHook[] = []
 
@@ -114,14 +114,14 @@ export const useAuthStore = defineStore('auth', () => {
   // The delay ref is updated by scheduleTokenRefresh before calling start().
 
   const refreshDelayMs = ref(0)
-  type TokenRefreshedHook = (accessToken: string) => void | Promise<void>
+  type TokenRefreshedHook = (accessToken: string) => Promise<void> | void
   const tokenRefreshedHooks: TokenRefreshedHook[] = []
 
   // Single-flight refresh: multiple concurrent callers (timer + 401 retry + restore)
   // must not trigger multiple token exchanges. All share one in-flight promise.
-  let inflightRefresh: Promise<string | null> | null = null
+  let inflightRefresh: null | Promise<null | string> = null
 
-  async function refreshTokenNow(): Promise<string | null> {
+  async function refreshTokenNow(): Promise<null | string> {
     if (inflightRefresh)
       return inflightRefresh
 
@@ -255,26 +255,26 @@ export const useAuthStore = defineStore('auth', () => {
   }, { immediate: true })
 
   return {
-    user,
-    userId,
-    session,
-    token,
-    refreshToken,
+    clearAllAuthState,
+    credits,
     idToken,
     isAuthenticated,
-    credits,
-    updateCredits,
     needsLogin,
-    onAuthenticated,
-    onLogout,
-
     // OIDC token refresh
     oidcClientId,
-    tokenExpiry,
-    scheduleTokenRefresh,
-    restoreRefreshSchedule,
-    refreshTokenNow,
-    clearAllAuthState,
+    onAuthenticated,
+    onLogout,
     onTokenRefreshed,
+    refreshToken,
+    refreshTokenNow,
+    restoreRefreshSchedule,
+
+    scheduleTokenRefresh,
+    session,
+    token,
+    tokenExpiry,
+    updateCredits,
+    user,
+    userId,
   }
 })

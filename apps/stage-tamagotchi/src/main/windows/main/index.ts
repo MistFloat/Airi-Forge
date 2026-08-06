@@ -38,38 +38,38 @@ import { setupMainWindowElectronInvokes } from './rpc/index.electron'
 
 const appConfigSchema = object({
   windows: optional(array(object({
-    title: optional(string()),
+    height: optional(number()),
     tag: string(),
+    title: optional(string()),
+    width: optional(number()),
     x: optional(number()),
     y: optional(number()),
-    width: optional(number()),
-    height: optional(number()),
   }))),
 })
 
 type AppConfig = InferOutput<typeof appConfigSchema>
 
 export async function setupMainWindow(params: {
-  settingsWindow: SettingsWindowManager
-  chatWindow: () => Promise<BrowserWindow>
-  widgetsManager: WidgetsWindowManager
-  noticeWindow: NoticeWindowManager
   autoUpdater: AutoUpdater
+  chatWindow: () => Promise<BrowserWindow>
+  godotStageManager: GodotStageManager
+  i18n: I18n
+  mcpStdioManager: McpStdioManager
+  noticeWindow: NoticeWindowManager
+  onboardingWindowManager: OnboardingWindowManager
   onWindowCreated?: (window: BrowserWindow) => void
   serverChannel: ServerChannel
-  godotStageManager: GodotStageManager
-  mcpStdioManager: McpStdioManager
-  i18n: I18n
-  onboardingWindowManager: OnboardingWindowManager
+  settingsWindow: SettingsWindowManager
+  widgetsManager: WidgetsWindowManager
   windowAuthManager: WindowAuthManager
 }) {
   const {
-    setup: setupConfig,
     get: getConfigRaw,
+    setup: setupConfig,
     update: updateConfig,
   } = createConfig('app', 'config.json', appConfigSchema, {
-    default: { windows: [] },
     autoHeal: true,
+    default: { windows: [] },
   })
   const getConfig = (): AppConfig => getConfigRaw() ?? { windows: [] }
 
@@ -78,22 +78,22 @@ export async function setupMainWindow(params: {
   const mainWindowConfig = getConfig().windows?.find(w => w.title === 'AIRI' && w.tag === 'main')
 
   const window = new BrowserWindow({
-    title: 'AIRI',
-    width: mainWindowConfig?.width ?? 450.0,
     height: mainWindowConfig?.height ?? 600.0,
-    x: mainWindowConfig?.x,
-    y: mainWindowConfig?.y,
-    show: false,
     icon,
-    webPreferences: {
-      preload: join(dirname(fileURLToPath(import.meta.url)), '../preload/index.mjs'),
-      sandbox: false,
-    },
+    show: false,
+    title: 'AIRI',
     // Thanks to [@HeartArmy](https://github.com/HeartArmy) for the tip implementation.
     //
     // https://github.com/electron/electron/issues/10078#issuecomment-3410164802
     // https://stackoverflow.com/questions/39835282/set-browserwindow-always-on-top-even-other-app-is-in-fullscreen-electron-mac
     type: 'panel',
+    webPreferences: {
+      preload: join(dirname(fileURLToPath(import.meta.url)), '../preload/index.mjs'),
+      sandbox: false,
+    },
+    width: mainWindowConfig?.width ?? 450.0,
+    x: mainWindowConfig?.x,
+    y: mainWindowConfig?.y,
     ...transparentWindowConfig(),
   })
 
@@ -126,16 +126,16 @@ export async function setupMainWindow(params: {
 
     if (existingConfigIndex === -1) {
       config.windows.push({
-        title: 'AIRI',
+        height: newBounds.height,
         tag: 'main',
+        title: 'AIRI',
+        width: newBounds.width,
         x: newBounds.x,
         y: newBounds.y,
-        width: newBounds.width,
-        height: newBounds.height,
       })
     }
     else {
-      const mainWindowConfig = defu(config.windows[existingConfigIndex], { title: 'AIRI', tag: 'main' })
+      const mainWindowConfig = defu(config.windows[existingConfigIndex], { tag: 'main', title: 'AIRI' })
 
       mainWindowConfig.x = newBounds.x
       mainWindowConfig.y = newBounds.y
@@ -177,17 +177,17 @@ export async function setupMainWindow(params: {
   })
 
   await setupMainWindowElectronInvokes({
-    window,
-    settingsWindow: params.settingsWindow,
-    chatWindow: params.chatWindow,
-    widgetsManager: params.widgetsManager,
-    noticeWindow: params.noticeWindow,
     autoUpdater: params.autoUpdater,
-    serverChannel: params.serverChannel,
+    chatWindow: params.chatWindow,
     godotStageManager: params.godotStageManager,
-    mcpStdioManager: params.mcpStdioManager,
     i18n: params.i18n,
+    mcpStdioManager: params.mcpStdioManager,
+    noticeWindow: params.noticeWindow,
     onboardingWindowManager: params.onboardingWindowManager,
+    serverChannel: params.serverChannel,
+    settingsWindow: params.settingsWindow,
+    widgetsManager: params.widgetsManager,
+    window,
     windowAuthManager: params.windowAuthManager,
   })
 

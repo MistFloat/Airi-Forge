@@ -4,31 +4,31 @@ import { playwright } from '@vitest/browser-playwright'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-  root: import.meta.dirname,
   plugins: [Vue()],
+  root: import.meta.dirname,
   test: {
     projects: [
       {
         extends: true,
         test: {
-          name: 'node',
-          include: ['src/**/*.test.ts'],
           exclude: ['src/**/*.browser.test.ts'],
+          include: ['src/**/*.test.ts'],
+          name: 'node',
         },
       },
       {
         extends: true,
         test: {
-          name: 'browser',
-          include: ['src/**/*.browser.{spec,test}.ts'],
-          exclude: ['**/node_modules/**'],
           browser: {
             enabled: true,
-            provider: playwright(),
             instances: [
               { browser: 'chromium' },
             ],
+            provider: playwright(),
           },
+          exclude: ['**/node_modules/**'],
+          include: ['src/**/*.browser.{spec,test}.ts'],
+          name: 'browser',
         },
       },
     ],

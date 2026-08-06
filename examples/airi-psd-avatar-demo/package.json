@@ -1,0 +1,22 @@
+{
+  "name": "@proj-airi/psd-avatar-demo",
+  "type": "module",
+  "private": true,
+  "description": "PSD layer proxy rig driven with AIRI's Live2D motion semantics",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@moeru/std": "catalog:",
+    "ag-psd": "31.0.2",
+    "vue": "catalog:"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "catalog:",
+    "@vue/tsconfig": "catalog:",
+    "vite": "catalog:",
+    "vue-tsc": "catalog:"
+  }
+}

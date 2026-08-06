@@ -9,19 +9,19 @@ vi.mock('./artistry', async () => {
 
   return {
     useArtistryStore: defineStore('artistry', {
-      state: () => ({
-        globalProvider: 'mock-artistry-provider',
-        globalModel: 'mock-artistry-model',
-        globalPromptPrefix: 'mock-artistry-prefix',
-        globalProviderOptions: {},
-        activeProvider: 'mock-artistry-provider',
-        activeModel: 'mock-artistry-model',
-        defaultPromptPrefix: 'mock-artistry-prefix',
-        providerOptions: {},
-      }),
       actions: {
         resetToGlobal() {},
       },
+      state: () => ({
+        activeModel: 'mock-artistry-model',
+        activeProvider: 'mock-artistry-provider',
+        defaultPromptPrefix: 'mock-artistry-prefix',
+        globalModel: 'mock-artistry-model',
+        globalPromptPrefix: 'mock-artistry-prefix',
+        globalProvider: 'mock-artistry-provider',
+        globalProviderOptions: {},
+        providerOptions: {},
+      }),
     }),
   }
 })
@@ -32,8 +32,8 @@ vi.mock('./consciousness', async () => {
   return {
     useConsciousnessStore: defineStore('consciousness', {
       state: () => ({
-        activeProvider: 'mock-consciousness-provider',
         activeModel: 'mock-consciousness-model',
+        activeProvider: 'mock-consciousness-provider',
       }),
     }),
   }
@@ -45,8 +45,8 @@ vi.mock('./speech', async () => {
   return {
     useSpeechStore: defineStore('speech', {
       state: () => ({
-        activeSpeechProvider: 'mock-speech-provider',
         activeSpeechModel: 'mock-speech-model',
+        activeSpeechProvider: 'mock-speech-provider',
         activeSpeechVoiceId: 'mock-speech-voice',
       }),
     }),
@@ -59,8 +59,8 @@ vi.mock('./vision', async () => {
   return {
     useVisionStore: defineStore('vision', {
       state: () => ({
-        activeProvider: 'mock-vision-provider',
         activeModel: 'mock-vision-model',
+        activeProvider: 'mock-vision-provider',
       }),
     }),
   }
@@ -93,14 +93,14 @@ describe('airi-card store', () => {
     cardStore.initialize()
 
     expect(cardStore.updateActiveCardDisplayModel('display-model-iru-v2')).toBe(true)
-    expect(cardStore.updateActiveCardConsciousness({ provider: 'openrouter-ai', model: 'anthropic/claude-sonnet' })).toBe(true)
-    expect(cardStore.updateActiveCardVision({ provider: 'ollama', model: 'llava' })).toBe(true)
-    expect(cardStore.updateActiveCardSpeech({ provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria' })).toBe(true)
+    expect(cardStore.updateActiveCardConsciousness({ model: 'anthropic/claude-sonnet', provider: 'openrouter-ai' })).toBe(true)
+    expect(cardStore.updateActiveCardVision({ model: 'llava', provider: 'ollama' })).toBe(true)
+    expect(cardStore.updateActiveCardSpeech({ model: 'eleven_multilingual_v2', provider: 'elevenlabs', voice_id: 'aria' })).toBe(true)
     expect(cardStore.activeCard?.extensions.airi.modules).toMatchObject({
+      consciousness: { model: 'anthropic/claude-sonnet', provider: 'openrouter-ai' },
       displayModelId: 'display-model-iru-v2',
-      consciousness: { provider: 'openrouter-ai', model: 'anthropic/claude-sonnet' },
-      vision: { provider: 'ollama', model: 'llava' },
-      speech: { provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria' },
+      speech: { model: 'eleven_multilingual_v2', provider: 'elevenlabs', voice_id: 'aria' },
+      vision: { model: 'llava', provider: 'ollama' },
     })
     expect(stageModelStore.stageModelSelected).toBe('preset-live2d-1')
   })
@@ -113,10 +113,10 @@ describe('airi-card store', () => {
     const cardStore = useAiriCardStore()
     cardStore.initialize()
 
-    expect(cardStore.updateActiveCardSpeech({ provider: 'elevenlabs', model: 'eleven_multilingual_v2', voice_id: 'aria' })).toBe(true)
+    expect(cardStore.updateActiveCardSpeech({ model: 'eleven_multilingual_v2', provider: 'elevenlabs', voice_id: 'aria' })).toBe(true)
     expect(cardStore.activeCard?.extensions.airi.modules.speech).toMatchObject({
-      provider: 'elevenlabs',
       model: 'eleven_multilingual_v2',
+      provider: 'elevenlabs',
       voice_id: 'aria',
     })
   })

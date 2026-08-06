@@ -3,6 +3,7 @@ import type { MaybeRefOrGetter } from 'vue'
 import type { VoiceInputRecordingSegment, VoiceInputSessionTrigger } from './voice-input-segment'
 import type { VoiceInputTranscriptionTicket } from './voice-input-transcription-chain'
 
+import { toWav } from '@proj-airi/audio'
 import { computed, ref, shallowRef, toRef } from 'vue'
 
 import workletUrl from '../../workers/vad/process.worklet?worker&url'
@@ -19,74 +20,64 @@ import { startVoiceInputVadDetectionSafely } from './voice-input-vad-startup'
 
 export type { VoiceInputSessionTrigger } from './voice-input-segment'
 
-export type VoiceInputSessionLogLevel = 'info' | 'warn' | 'error'
-
-export interface VoiceInputSessionGate {
-  skip?: boolean
-  reason?: string
-  details?: Record<string, unknown>
-}
-
 export interface VoiceInputSessionEvent {
-  trigger: VoiceInputSessionTrigger
+  error?: unknown
+  gate?: VoiceInputSessionGate
+  metadata?: Record<string, unknown>
   recording?: Blob
   text?: string
-  error?: unknown
-  metadata?: Record<string, unknown>
-  gate?: VoiceInputSessionGate
+  trigger: VoiceInputSessionTrigger
+}
+
+export interface VoiceInputSessionGate {
+  details?: Record<string, unknown>
+  reason?: string
+  skip?: boolean
+}
+
+export type VoiceInputSessionLogLevel = 'error' | 'info' | 'warn'
+
+export interface VoiceInputSessionOptions {
+  canStartSegment?: (event: VoiceInputSessionEvent) => boolean | Promise<boolean>
+  inspectAfterTranscription?: (event: VoiceInputSessionEvent) => Promise<undefined | VoiceInputSessionGate> | undefined | VoiceInputSessionGate
+  inspectBeforeTranscription?: (event: VoiceInputSessionEvent) => Promise<undefined | VoiceInputSessionGate> | undefined | VoiceInputSessionGate
+  onLog?: (level: VoiceInputSessionLogLevel, event: string, message: string, details?: Record<string, unknown>) => void
+  onRecordingReady?: (event: VoiceInputSessionEvent) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void
+  onRecordingSkipped?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  onSegmentStart?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  onSegmentStarted?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  onSegmentStop?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  onSegmentStopped?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  onTranscriptionEmpty?: (event: VoiceInputSessionEvent & { text: string }) => Promise<void> | void
+  onTranscriptionError?: (event: VoiceInputSessionEvent & { error: unknown }) => Promise<void> | void
+  onTranscriptionResult?: (event: VoiceInputSessionEvent & { text: string }) => Promise<void> | void
+  onTranscriptionStart?: (event: VoiceInputSessionEvent) => Promise<void> | void
+  shouldUseStreamInput?: MaybeRefOrGetter<boolean>
+  vad?: VoiceInputSessionVadOptions
+  volumeFallback?: VoiceInputSessionVolumeFallbackOptions
 }
 
 export interface VoiceInputSessionVadOptions {
-  threshold?: MaybeRefOrGetter<number>
   minSilenceDurationMs?: MaybeRefOrGetter<number>
-  speechPadMs?: MaybeRefOrGetter<number>
   minSpeechDurationMs?: MaybeRefOrGetter<number>
+  speechPadMs?: MaybeRefOrGetter<number>
+  threshold?: MaybeRefOrGetter<number>
 }
 
 export interface VoiceInputSessionVolumeFallbackOptions {
   enabled?: MaybeRefOrGetter<boolean>
-  startThreshold?: number
-  stopThreshold?: number
-  startFrames?: number
-  stopDelayMs?: number
   logIntervalMs?: number
+  startFrames?: number
+  startThreshold?: number
+  stopDelayMs?: number
+  stopThreshold?: number
 }
 
-export interface VoiceInputSessionOptions {
-  shouldUseStreamInput?: MaybeRefOrGetter<boolean>
-  vad?: VoiceInputSessionVadOptions
-  volumeFallback?: VoiceInputSessionVolumeFallbackOptions
-  canStartSegment?: (event: VoiceInputSessionEvent) => boolean | Promise<boolean>
-  inspectBeforeTranscription?: (event: VoiceInputSessionEvent) => VoiceInputSessionGate | Promise<VoiceInputSessionGate | undefined> | undefined
-  inspectAfterTranscription?: (event: VoiceInputSessionEvent) => VoiceInputSessionGate | Promise<VoiceInputSessionGate | undefined> | undefined
-  onLog?: (level: VoiceInputSessionLogLevel, event: string, message: string, details?: Record<string, unknown>) => void
-  onSegmentStart?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onSegmentStarted?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onSegmentStop?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onSegmentStopped?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onRecordingReady?: (event: VoiceInputSessionEvent) => Record<string, unknown> | void | Promise<Record<string, unknown> | void>
-  onRecordingSkipped?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onTranscriptionStart?: (event: VoiceInputSessionEvent) => void | Promise<void>
-  onTranscriptionResult?: (event: VoiceInputSessionEvent & { text: string }) => void | Promise<void>
-  onTranscriptionEmpty?: (event: VoiceInputSessionEvent & { text: string }) => void | Promise<void>
-  onTranscriptionError?: (event: VoiceInputSessionEvent & { error: unknown }) => void | Promise<void>
-}
-
-const DEFAULT_VOLUME_FALLBACK_START_THRESHOLD = 10
-const DEFAULT_VOLUME_FALLBACK_STOP_THRESHOLD = 6
-const DEFAULT_VOLUME_FALLBACK_START_FRAMES = 4
+const DEFAULT_VOLUME_FALLBACK_START_THRESHOLD = 6
+const DEFAULT_VOLUME_FALLBACK_STOP_THRESHOLD = 3
+const DEFAULT_VOLUME_FALLBACK_START_FRAMES = 2
 const DEFAULT_VOLUME_FALLBACK_STOP_DELAY_MS = 900
 const DEFAULT_VOLUME_FALLBACK_LOG_INTERVAL_MS = 2000
-
-function calculateTimeDomainVolumeLevel(dataArray: Uint8Array<ArrayBuffer>) {
-  let sum = 0
-  for (let i = 0; i < dataArray.length; i++) {
-    const centered = (dataArray[i] - 128) / 128
-    sum += centered * centered
-  }
-
-  return Math.min(100, Math.sqrt(sum / dataArray.length) * 100 * 3)
-}
 
 /**
  * Shared voice-input session for both manual STT tests and always-on stage listening.
@@ -120,27 +111,29 @@ export function useVoiceInputSession(
   let nextRecordingSegmentId = 0
   let discardNextRecording = false
   let activeTranscriptionCount = 0
+  let vadSegmentGeneration = 0
+  let pendingVadSegmentStart: Promise<undefined | VoiceInputRecordingSegment> | undefined
 
   const {
-    init: initVAD,
     dispose: disposeVAD,
-    start: startVAD,
-    loaded: vadLoaded,
-    isSpeech: isSpeechVAD,
-    isSpeechProb,
-    isSpeechHistory,
     inferenceError: vadError,
+    init: initVAD,
+    isSpeech: isSpeechVAD,
+    isSpeechHistory,
+    isSpeechProb,
+    loaded: vadLoaded,
+    start: startVAD,
   } = useVAD(workletUrl, {
-    threshold: options.vad?.threshold,
     minSilenceDurationMs: options.vad?.minSilenceDurationMs,
-    speechPadMs: options.vad?.speechPadMs,
     minSpeechDurationMs: options.vad?.minSpeechDurationMs,
+    onSpeechReady: (event) => {
+      void finishBufferedVadSegment(event)
+    },
     onSpeechStart: () => {
-      void startSegment('vad')
+      pendingVadSegmentStart = startBufferedVadSegment()
     },
-    onSpeechEnd: () => {
-      void stopSegment('vad')
-    },
+    speechPadMs: options.vad?.speechPadMs,
+    threshold: options.vad?.threshold,
   })
 
   let volumeFallbackAudioContext: AudioContext | undefined
@@ -174,8 +167,8 @@ export function useVoiceInputSession(
       return false
 
     log('info', 'recording-drop-stale-session', 'Dropping stale recorder-backed transcription work after the listening session changed.', {
-      trigger,
       phase,
+      trigger,
     })
     return true
   }
@@ -200,8 +193,8 @@ export function useVoiceInputSession(
 
     if (isRecording.value || activeRecordingSegment.value) {
       log('info', 'segment-start-skipped-active', 'Recorder segment start skipped because another segment is already active.', {
-        trigger,
         activeRecordingTrigger: activeRecordingTrigger.value,
+        trigger,
       })
       return false
     }
@@ -220,8 +213,8 @@ export function useVoiceInputSession(
       catch (error) {
         activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
         lastError.value = error
-        log('error', 'segment-start-gate-failed', 'Recorder segment start gate failed.', { trigger, error })
-        await options.onTranscriptionError?.({ trigger, error })
+        log('error', 'segment-start-gate-failed', 'Recorder segment start gate failed.', { error, trigger })
+        await options.onTranscriptionError?.({ error, trigger })
         return false
       }
     }
@@ -243,8 +236,8 @@ export function useVoiceInputSession(
     catch (error) {
       activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
       lastError.value = error
-      log('error', 'segment-start-failed', 'Failed to start recorder-backed voice input segment.', { trigger, error })
-      await options.onTranscriptionError?.({ trigger, error })
+      log('error', 'segment-start-failed', 'Failed to start recorder-backed voice input segment.', { error, trigger })
+      await options.onTranscriptionError?.({ error, trigger })
       return false
     }
   }
@@ -260,8 +253,8 @@ export function useVoiceInputSession(
 
     if (segment && segment.trigger !== trigger) {
       log('info', 'segment-stop-skipped-trigger-mismatch', 'Recorder segment stop skipped because another detector owns the active segment.', {
-        trigger,
         activeRecordingTrigger: activeRecordingTrigger.value,
+        trigger,
       })
       return
     }
@@ -278,8 +271,8 @@ export function useVoiceInputSession(
     }
     catch (error) {
       lastError.value = error
-      log('error', 'segment-stop-hook-failed', 'Caller stop hook failed; finalizing recorder segment anyway.', { trigger, error })
-      await options.onTranscriptionError?.({ trigger, error })
+      log('error', 'segment-stop-hook-failed', 'Caller stop hook failed; finalizing recorder segment anyway.', { error, trigger })
+      await options.onTranscriptionError?.({ error, trigger })
     }
 
     try {
@@ -293,8 +286,8 @@ export function useVoiceInputSession(
       if (queuedIndex !== -1)
         stoppedRecordingSegments.splice(queuedIndex, 1)
       lastError.value = error
-      log('error', 'segment-stop-failed', 'Failed to stop recorder-backed voice input segment.', { trigger, error })
-      await options.onTranscriptionError?.({ trigger, error })
+      log('error', 'segment-stop-failed', 'Failed to stop recorder-backed voice input segment.', { error, trigger })
+      await options.onTranscriptionError?.({ error, trigger })
     }
     finally {
       activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, stoppedSegment)
@@ -302,13 +295,13 @@ export function useVoiceInputSession(
   }
 
   async function processRecording(recording: Blob | undefined, trigger: VoiceInputSessionTrigger, ticket: VoiceInputTranscriptionTicket) {
-    const event: VoiceInputSessionEvent = { trigger, recording }
+    const event: VoiceInputSessionEvent = { recording, trigger }
 
     if (isStaleTranscriptionTicket(ticket, trigger, 'recording-start'))
       return
 
     if (!recording || recording.size <= 0) {
-      log('warn', 'recording-drop-empty', 'Dropping empty recorder-backed voice input segment.', { trigger, recording })
+      log('warn', 'recording-drop-empty', 'Dropping empty recorder-backed voice input segment.', { recording, trigger })
       await options.onRecordingSkipped?.(event)
       return
     }
@@ -324,8 +317,8 @@ export function useVoiceInputSession(
 
     if (beforeGate?.skip) {
       log('info', 'recording-drop-before-asr', 'Skipping recorder-backed segment before transcription request.', {
-        trigger,
         gate: beforeGate,
+        trigger,
       })
       await options.onRecordingSkipped?.({ ...readyEvent, gate: beforeGate })
       return
@@ -346,7 +339,7 @@ export function useVoiceInputSession(
         return
 
       lastError.value = error
-      log('error', 'recording-transcription-error', 'Transcription provider threw while processing recorder-backed segment.', { trigger, error })
+      log('error', 'recording-transcription-error', 'Transcription provider threw while processing recorder-backed segment.', { error, trigger })
       await options.onTranscriptionError?.({ ...readyEvent, error })
       return
     }
@@ -364,22 +357,98 @@ export function useVoiceInputSession(
 
     if (afterGate?.skip) {
       log('info', 'recording-drop-after-asr', 'Dropping stale transcription result after transcription request.', {
-        trigger,
         gate: afterGate,
         text,
+        trigger,
       })
       await options.onRecordingSkipped?.({ ...resultEvent, gate: afterGate })
       return
     }
 
     if (!text || !text.trim()) {
-      log('warn', 'recording-transcription-empty', 'Transcription provider returned empty text for recorder-backed segment.', { trigger, text })
+      log('warn', 'recording-transcription-empty', 'Transcription provider returned empty text for recorder-backed segment.', { text, trigger })
       await options.onTranscriptionEmpty?.(resultEvent)
       return
     }
 
     lastTranscriptionText.value = text
     await options.onTranscriptionResult?.(resultEvent)
+  }
+
+  /**
+   * Reserves a VAD-owned segment without starting a second recorder.
+   *
+   * The VAD worker continuously buffers microphone samples and includes audio
+   * from before its speech-start decision. Using that buffer preserves sentence
+   * openings and keeps capture independent from slow ASR network requests.
+   */
+  async function startBufferedVadSegment() {
+    const trigger = 'vad' as const
+    const event: VoiceInputSessionEvent = { trigger }
+    if (shouldUseStreamInput.value || isRecording.value || activeRecordingSegment.value)
+      return undefined
+
+    const generation = vadSegmentGeneration
+    const segment = createVoiceInputRecordingSegment(++nextRecordingSegmentId, trigger)
+    activeRecordingSegment.value = segment
+
+    try {
+      if (options.canStartSegment && !await options.canStartSegment(event)) {
+        activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
+        return undefined
+      }
+
+      await options.onSegmentStart?.(event)
+      if (generation !== vadSegmentGeneration) {
+        activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
+        return undefined
+      }
+
+      await options.onSegmentStarted?.(event)
+      return segment
+    }
+    catch (error) {
+      activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
+      lastError.value = error
+      log('error', 'vad-segment-start-failed', 'Failed to start buffered VAD voice input segment.', { error })
+      await options.onTranscriptionError?.({ error, trigger })
+      return undefined
+    }
+  }
+
+  async function finishBufferedVadSegment(event: { buffer: Float32Array, duration: number }) {
+    const segmentStart = pendingVadSegmentStart
+    pendingVadSegmentStart = undefined
+    const segment = await segmentStart
+    if (!segment || activeRecordingSegment.value?.id !== segment.id)
+      return
+
+    const trigger = 'vad' as const
+    const sessionEvent: VoiceInputSessionEvent = { trigger }
+    try {
+      await options.onSegmentStop?.(sessionEvent)
+    }
+    catch (error) {
+      lastError.value = error
+      log('error', 'vad-segment-stop-hook-failed', 'Caller stop hook failed; processing the buffered VAD segment anyway.', { error })
+      await options.onTranscriptionError?.({ error, trigger })
+    }
+
+    activeRecordingSegment.value = resolveActiveVoiceInputRecordingSegmentAfterStop(activeRecordingSegment.value, segment)
+    await options.onSegmentStopped?.(sessionEvent)
+
+    // The VAD worker emits mono Float32 PCM at 16 kHz. Encode that complete,
+    // pre-padded segment as WAV because recorder-backed ASR providers expect a file.
+    const recording = new Blob([toWav(event.buffer.buffer, 16000)], { type: 'audio/wav' })
+    await transcriptionChain
+      .enqueue(ticket => processRecording(recording, trigger, ticket))
+      .catch((error) => {
+        lastError.value = error
+        log('error', 'vad-recording-processing-error', 'Buffered VAD voice input processing failed.', {
+          duration: event.duration,
+          error,
+        })
+      })
   }
 
   recorder.onStopRecord(async (recording) => {
@@ -394,7 +463,7 @@ export function useVoiceInputSession(
       .enqueue(ticket => processRecording(recording, trigger, ticket))
       .catch((error) => {
         lastError.value = error
-        log('error', 'recording-processing-error', 'Voice input recording processing failed.', { trigger, error })
+        log('error', 'recording-processing-error', 'Voice input recording processing failed.', { error, trigger })
       })
   })
 
@@ -451,8 +520,8 @@ export function useVoiceInputSession(
 
       log('info', 'volume-fallback-started', 'Volume-based recorder fallback started for record-then-transcribe voice input.', {
         startThreshold,
-        stopThreshold,
         stopDelayMs,
+        stopThreshold,
       })
 
       const analyze = () => {
@@ -466,9 +535,9 @@ export function useVoiceInputSession(
         if (now - volumeFallbackLastLogAt >= logIntervalMs) {
           volumeFallbackLastLogAt = now
           log('info', 'volume-fallback-level', 'Volume fallback sampled microphone input.', {
-            level: Number(level.toFixed(1)),
-            isRecording: isRecording.value,
             activeRecordingTrigger: activeRecordingTrigger.value,
+            isRecording: isRecording.value,
+            level: Number(level.toFixed(1)),
             startThreshold,
             stopThreshold,
           })
@@ -481,7 +550,10 @@ export function useVoiceInputSession(
         }
 
         if (!isRecording.value) {
-          if (level >= startThreshold) {
+          if (activeRecordingSegment.value) {
+            volumeFallbackSpeechFrames = 0
+          }
+          else if (level >= startThreshold) {
             volumeFallbackSpeechFrames += 1
             if (volumeFallbackSpeechFrames >= startFrames) {
               volumeFallbackLastSpeechAt = now
@@ -532,20 +604,29 @@ export function useVoiceInputSession(
     if (!stream)
       throw new Error('No microphone stream available for voice input')
 
-    await startVoiceInputVadDetectionSafely({
+    const vadStarted = await startVoiceInputVadDetectionSafely({
+      getError: () => vadError.value,
       init: initVAD,
       loaded: () => vadLoaded.value,
+      log,
       start: startVAD,
       stream,
-      getError: () => vadError.value,
-      log,
     })
-    await startVolumeFallback(stream)
+
+    // The fallback is intentionally exclusive. Starting it alongside model VAD
+    // lets its low-latency volume trigger claim the recorder first, which drops
+    // the VAD worker's pre-padded complete segment and recreates clipped speech.
+    if (vadStarted)
+      stopVolumeFallback()
+    else
+      await startVolumeFallback(stream)
   }
 
   async function stop(options: { flushActiveRecording?: boolean } = {}) {
     stopVolumeFallback()
     disposeVAD()
+    vadSegmentGeneration += 1
+    pendingVadSegmentStart = undefined
     transcriptionChain.reset()
     stoppedRecordingSegments.length = 0
 
@@ -570,20 +651,30 @@ export function useVoiceInputSession(
   }
 
   return {
-    isRecording,
-    isTranscribing,
-    lastTranscriptionText,
-    lastError,
     activeRecordingTrigger,
-    isSpeechVAD,
-    isSpeechProb,
+    isRecording,
     isSpeechHistory,
-    vadLoaded,
-    vadError,
-
-    startSegment,
-    stopSegment,
+    isSpeechProb,
+    isSpeechVAD,
+    isTranscribing,
+    lastError,
+    lastTranscriptionText,
     startAutoSegmentation,
+    startSegment,
+
     stop,
+    stopSegment,
+    vadError,
+    vadLoaded,
   }
+}
+
+function calculateTimeDomainVolumeLevel(dataArray: Uint8Array<ArrayBuffer>) {
+  let sum = 0
+  for (let i = 0; i < dataArray.length; i++) {
+    const centered = (dataArray[i] - 128) / 128
+    sum += centered * centered
+  }
+
+  return Math.min(100, Math.sqrt(sum / dataArray.length) * 100 * 3)
 }

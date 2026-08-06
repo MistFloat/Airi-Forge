@@ -9,9 +9,9 @@ describe('parseCaptureCliArguments', () => {
       '--output-dir',
       './artifacts/manual-run',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
       format: 'png',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 
@@ -21,9 +21,9 @@ describe('parseCaptureCliArguments', () => {
       '-o',
       './artifacts/manual-run',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
       format: 'png',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 
@@ -32,9 +32,9 @@ describe('parseCaptureCliArguments', () => {
       'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
       '--output-dir=./artifacts/manual-run',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
       format: 'png',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 
@@ -46,14 +46,14 @@ describe('parseCaptureCliArguments', () => {
       '--format',
       'avif',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
-      format: 'avif',
       avif: {
         maxWidth: 1920,
         quality: 50,
         speed: 6,
       },
+      format: 'avif',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 
@@ -71,14 +71,14 @@ describe('parseCaptureCliArguments', () => {
       '--avif-speed',
       '4',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
-      format: 'avif',
       avif: {
         maxWidth: 1200,
         quality: 35,
         speed: 4,
       },
+      format: 'avif',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 
@@ -90,14 +90,14 @@ describe('parseCaptureCliArguments', () => {
       '--format',
       'avif',
     ])).toEqual({
-      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
-      outputDir: './artifacts/manual-run',
-      format: 'avif',
       avif: {
         maxWidth: 1920,
         quality: 50,
         speed: 6,
       },
+      format: 'avif',
+      outputDir: './artifacts/manual-run',
+      scenarioPath: 'packages/scenarios-stage-tamagotchi-electron/src/scenarios/settings-connection.ts',
     })
   })
 

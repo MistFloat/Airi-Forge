@@ -666,12 +666,240 @@ pages:
               注意：如果您的提供商不支持 verbose_json 结果处理，此设置将不会有任何效果。
             verbose-json-unsupported: >-
               如果您的提供商没有返回 verbose_json 结果。置信度阈值将不会影响转录。
+    instructions:
+      description: 常驻指令设置与管理
+      title: 指令
+      estimated-tokens: '每轮请求约注入 {tokens} 个 token。'
+      create: 新建指令
+      empty: 还没有指令，创建一条即可向每轮对话注入固定规则。
+      edit: 编辑
+      delete: 删除
+      confirm-delete: 删除这条指令？
+      cancel: 取消
+      priority-value: '优先级：{value}'
+      scopes:
+        global: 全局
+        chat: 对话
+        speech: 语音
+        memory: 记忆
+        vision: 视觉
+        artistry: 创作
+      statuses:
+        active: 激活中
+        archived: 已归档
+        superseded: 已取代
+      editor:
+        create-title: 新建指令
+        edit-title: 编辑指令
+        cancel: 取消
+        save: 保存
+        fields:
+          title: 标题
+          content: 内容
+          content-description: 将原样注入到每次 LLM 请求中的文本。
+          instruction-scope: 作用域
+          instruction-priority: 优先级
+          instruction-rule-key: 规则键
+          instruction-rule-key-description: 可选的唯一键，新指令可用它取代（supersede）本指令。
+          status: 状态
+          effective-from: 生效时间
+          effective-until: 失效时间
+        scopes:
+          global: 全局
+          chat: 对话
+          speech: 语音
+          memory: 记忆
+          vision: 视觉
+          artistry: 创作
+        statuses:
+          active: 激活中
+          archived: 已归档
+          superseded: 已取代
     memory-long-term:
       description: 长期记忆
       title: 长期记忆
+      page:
+        description: 长期记忆将会话嵌入向量存储在 PostgreSQL + pgvector 数据库中，用于语义检索。
+      enable: 启用长期记忆
+      enable-description: 使用向量相似度搜索存储和检索对话历史
+      connection-string: PostgreSQL 连接字符串
+      connection-string-description: 启用了 pgvector 扩展的 PostgreSQL 数据库连接字符串
+      namespace: 记忆命名空间
+      namespace-description: 使用相同命名空间的会话会共享长期记忆
+      embedding-source: Embedding 来源
+      embedding-sources:
+        airi-provider: 已配置的 AIRI 提供商
+        jina-api: Jina API（API Key）
+      embedding-provider: Embedding 提供商
+      embedding-provider-description: 用于生成文本嵌入向量的 LLM 提供商
+      embedding-provider-placeholder: 例如 openai
+      embedding-model: Embedding 模型
+      embedding-model-description: 用于生成嵌入向量的模型（例如 text-embedding-3-small）
+      embedding-model-placeholder: 例如 text-embedding-3-small
+      jina-api-key: Jina API Key
+      jina-api-key-description: 仅用于直接请求 api.jina.ai，并保存在当前本地应用配置中。
+      jina-dimensions: Jina 向量维度
+      jina-dimensions-description: 可选 32 到 1024 的 Matryoshka 输出维度；写入记忆后请勿更改。
+      similarity-threshold: 相似度阈值
+      similarity-threshold-description: 记忆检索的最小余弦相似度分数（0-1）
+      max-results: 最大结果数
+      max-results-description: 每次查询检索的最大记忆数量
+      instruction-token-budget: 常驻指令 Token 预算
+      instruction-token-budget-description: 每次 LLM 请求为确定性常驻用户指令保留的最大估算 Token 数量。
+      extractor-provider: 候选提取 LLM 提供商
+      extractor-provider-description: API Key 留空时复用这里填写的 AIRI 提供商 ID；填写独立 API Key 时忽略此项。
+      extractor-api-key: 候选提取 API Key
+      extractor-api-key-description: 用于独立的 OpenAI-compatible 候选提取接口，仅保存在当前本地应用配置中；填写后优先于 AIRI 提供商。
+      extractor-base-url: 候选提取 Base URL
+      extractor-base-url-description: OpenAI-compatible API 地址，例如 https://api.openai.com/v1/。
+      extractor-model: 候选提取低成本模型
+      extractor-model-description: 使用便宜文本模型生成结构化 Fact/Preference 候选；留空则仅保存 Evidence，不自动提取。
+      configured: 长期 pgvector 记忆已配置；首次召回或写入时会检查数据库连接。
+      health:
+        database-success: PostgreSQL 连接成功 · pgvector {version} · 共 {count} 条记忆
+        embedding-success: Embedding 测试成功 · {dimensions} 维
+        extractor-success: 候选提取 LLM 测试成功 · 返回 {count} 条 Claim · 示例：{sample}
+        failed: 连接测试失败
+        test-database: 测试数据库
+        test-embedding: 测试 Embedding
+        test-extractor: 测试候选 LLM
+      lab:
+        title: 长时记忆向量召回实验室
+        description: 将正向 Golden Memory 写入独立的 evaluation 命名空间，绕过候选提取 LLM；随后输入任意语句查看 Embedding 最相近的前 10 条测试记忆，不再污染真实聊天召回。
+        dataset-file: 长时记忆评测集 JSON
+        dataset-file-description: 支持 longttermmemorytest.json 格式。导入 should_recall_memory_ids 与可解析的 must_not_recall_memory_ids（标记为 forbidden），用于测量召回率与错误召回率。
+        inspect: 检查文件
+        import: 导入并编码 {count} 条
+        import-progress: 正在写入并生成 Embedding：{completed}/{total}
+        dataset-ready: 文件有效，将导入 {count} 条人工记忆。每条记忆会产生一次 Embedding 请求，重复导入会更新相同 ID。
+        dataset-invalid: 评测集文件格式无效
+        import-success: 已写入并编码 {count} 条人工记忆。
+        import-failed: 测试集导入失败
+        query: 测试查询
+        query-scope: 查询记忆空间
+        query-scopes:
+          memory: 真实长期记忆
+          evaluation: 隔离评测记忆
+        query-description: 使用当前 Embedding 模型编码该文本，并直接显示相似度最高的记忆；实验室固定使用 0 阈值，不受聊天召回阈值影响。
+        query-placeholder: 例如：我平时使用什么音乐服务？
+        search: 计算最近记忆
+        search-failed: 向量召回测试失败
+        no-results: 命名空间 {namespace} 没有可召回的向量记忆。若选择隔离评测记忆，请先重新导入评测集。
+        evaluate-title: 短词召回效果评估
+        evaluate-description: 对 {count} 个用例分别用「短词分词召回」与「原句召回」查询，与 Golden Truth 比对，量化应召回率与错误召回率。
+        evaluate-run: 运行评估
+        evaluate-progress: 正在评估：{completed}/{total}
+        evaluate-failed: 评估失败
+        evaluate-metric: 指标
+        evaluate-terms: 短词召回
+        evaluate-original: 原句召回
+        evaluate-recall: 应召回率 (recall@K)
+        evaluate-forbidden: 错误召回率
+        evaluate-fully-recalled: 全量命中率
+        evaluate-clean: 无泄露率
+      governance:
+        activate: 原子切换为 Active
+        accept-candidate: 接受候选
+        archive-evidence: 归档 90 天以上旧证据
+        archive-fallback: 归档旧 Fallback
+        changes: 审计变更
+        claims: 候选 Claim
+        conflicts: 冲突隔离区
+        create-schema: 建立当前 Embedding Schema
+        description: 查看不可变证据、候选命题、正式记忆的治理任务、冲突和向量版本。
+        dismiss: 忽略
+        embeddings: Embedding Schema 与迁移
+        evidence: 原始证据
+        jobs: 后台任务
+        keep-left: 保留现有记忆
+        keep-right: 保留右侧记忆
+        process-jobs: 处理当前模型任务
+        scan-conflicts: 扫描语义冲突
+        promote: 校验并晋升
+        rollback: 回滚整批事务
+        title: 记忆证据与治理
+      manager:
+        cancel: 取消
+        confidence-value: 可信度 {value}
+        confirm-delete: 确认删除
+        create: 新建记忆
+        create-title: 新建知识记忆
+        delete: 删除
+        description: 浏览和维护当前命名空间中的 {count} 条记忆。
+        edit: 编辑
+        edit-title: 编辑知识记忆
+        feedback:
+          outdated: 已过期
+          useful: 有帮助
+          wrong: 错误
+        empty: 当前筛选条件下没有记忆。
+        embedding-required: 保存语义记忆前需要配置 Embedding 模型；指令无需 Embedding 即可保存。
+        fields:
+          confidence: 可信度
+          content: 知识内容
+          content-description: 填写希望 Agent 长期召回的事实、偏好、指令或摘要。
+          importance: 重要性
+          instruction-priority: 指令优先级
+          instruction-rule-key: 规则键
+          instruction-rule-key-description: 相同规则键的指令会发生冲突；仅注入优先级最高且最新的生效规则。
+          instruction-scope: 指令作用域
+          effective-from: 生效时间
+          effective-until: 失效时间
+          kind: 记忆类型
+          status: 状态
+          supersedes: 被替代记忆 ID
+          supersedes-description: 可选；填写这条记忆所替代的旧记忆 ID。
+          tags: 标签
+          tags-description: 多个标签使用逗号分隔。
+          title: 标题
+        importance-value: 重要性 {value}
+        instruction-help: 指令不会经过 Embedding 检索，而会按作用域和优先级确定性注入每一次匹配的 LLM 请求。
+        priority-value: 优先级 {value}
+        scope-value: 作用域 {scope}
+        kinds:
+          conversation: 对话
+          fact: 事实
+          instruction: 指令
+          preference: 偏好
+          summary: 摘要
+        scopes:
+          artistry: 绘画
+          chat: 聊天
+          global: 全局
+          memory: 记忆
+          speech: 语音
+          vision: 视觉
+        next: 下一页
+        page: 第 {page} / {pages} 页
+        previous: 上一页
+        refresh: 搜索
+        save-memory: 保存记忆
+        search: 搜索记忆
+        search-placeholder: 搜索标题、内容和标签
+        statuses:
+          active: 生效中
+          all: 全部
+          archived: 已归档
+          disputed: 有争议
+          expired: 已过期
+          quarantined: 隔离中
+          stale: 待重建
+          superseded: 已被替代
+        title: 知识记忆管理
     memory-short-term:
       description: 短期记忆
       title: 短期记忆
+      page:
+        description: 短期记忆将最近的对话记录存储在浏览器本地 DuckDB WASM 数据库中，实现快速且私密的记忆召回。
+      enable: 启用短期记忆
+      enable-description: 在浏览器中缓存最近的对话上下文
+      max-items: 最大记忆数量
+      max-items-description: 短期记忆中保留的最大对话轮数
+      context-items: 注入上下文的对话轮数
+      context-items-description: 每次 LLM 请求最多注入的最近对话轮数
+      context-character-budget: 上下文字符预算
+      context-character-budget-description: 单次提示词最多注入的短期记忆字符数
+      configured: 短期记忆已在浏览器本地 DuckDB 数据库中启用。
     messaging-discord:
       description: Discord 发消息和语音聊天
       title: Discord
@@ -1267,6 +1495,14 @@ pages:
         title: MiniMax Speech
       mimo:
         description: api.xiaomimimo.com
+        fields:
+          language:
+            description: 中英文混合语音建议使用自动检测；短录音可指定语言以提高准确率。
+            label: 识别语言
+            options:
+              auto: 自动检测
+              en: 英文
+              zh: 中文
         title: Xiaomi MiMo
       mistral:
         description: mistral.ai
@@ -1322,6 +1558,9 @@ pages:
       featherless:
         description: featherless.ai
         title: Featherless AI
+      knowlez-tts:
+        description: api-tts.knowlez.com
+        title: Knowlez TTS
       lm-studio:
         description: lmstudio.ai
         title: LM Studio

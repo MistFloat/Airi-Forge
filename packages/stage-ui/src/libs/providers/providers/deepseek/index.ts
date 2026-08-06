@@ -17,32 +17,32 @@ const deepSeekConfigSchema = z.object({
 type DeepSeekConfig = z.input<typeof deepSeekConfigSchema>
 
 export const providerDeepSeek = defineProvider<DeepSeekConfig>({
-  id: 'deepseek',
-  order: 4,
-  name: 'DeepSeek',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.deepseek.title'),
-  description: 'deepseek.com',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.deepseek.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:deepseek',
-  iconColor: 'i-lobe-icons:deepseek-color',
-
+  createProvider(config) {
+    return createDeepSeek(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => deepSeekConfigSchema.extend({
     apiKey: deepSeekConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: deepSeekConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createDeepSeek(config.apiKey, config.baseUrl)
-  },
+  description: 'deepseek.com',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.deepseek.description'),
+  icon: 'i-lobe-icons:deepseek',
+  iconColor: 'i-lobe-icons:deepseek-color',
+  id: 'deepseek',
+  name: 'DeepSeek',
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.deepseek.title'),
+
+  order: 4,
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

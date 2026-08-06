@@ -6,20 +6,6 @@ import { computed, nextTick, onScopeDispose, readonly, shallowRef, watch } from 
 // font swaps, and late content growth do not falsely disengage follow mode.
 const TAIL_THRESHOLD = 24
 
-function scheduleAfterLayoutSettles(task: () => void) {
-  const requestFrame = globalThis.requestAnimationFrame?.bind(globalThis)
-  if (!requestFrame) {
-    queueMicrotask(task)
-    return
-  }
-
-  requestFrame(() => {
-    requestFrame(() => {
-      task()
-    })
-  })
-}
-
 interface ChatHistoryScrollOptions<TMessage> {
   /**
    * The scroll container that owns the chat history viewport.
@@ -43,6 +29,21 @@ interface ChatHistoryScrollOptions<TMessage> {
    */
   containerRef: Ref<HTMLDivElement | undefined>
   /**
+   * Returns the stable rendered identity for a message at a given index.
+   *
+   * Use this when messages have IDs, timestamps, or another stable identity that
+   * matches the DOM node's `data-chat-message-key`. The composable relies on this
+   * key for two behaviors:
+   *
+   * - detecting whether the tail changed between updates
+   * - locating the newly inserted tail element to align it into view
+   *
+   * The returned key should be stable for the lifetime of a rendered message.
+   * If the key changes while representing the same message, the composable will
+   * treat that as a new tail insertion and may scroll unexpectedly.
+   */
+  getKey: (message: TMessage, index: number) => number | string
+  /**
    * The ordered chat history currently rendered inside the container.
    *
    * Use this when the message list is reactive and new items or streaming updates
@@ -57,21 +58,6 @@ interface ChatHistoryScrollOptions<TMessage> {
    */
   messages: Ref<TMessage[]>
   /**
-   * Returns the stable rendered identity for a message at a given index.
-   *
-   * Use this when messages have IDs, timestamps, or another stable identity that
-   * matches the DOM node's `data-chat-message-key`. The composable relies on this
-   * key for two behaviors:
-   *
-   * - detecting whether the tail changed between updates
-   * - locating the newly inserted tail element to align it into view
-   *
-   * The returned key should be stable for the lifetime of a rendered message.
-   * If the key changes while representing the same message, the composable will
-   * treat that as a new tail insertion and may scroll unexpectedly.
-   */
-  getKey: (message: TMessage, index: number) => string | number
-  /**
    * Optional policy hook for vetoing auto-scroll on new tail insertions.
    *
    * Use this when product behavior needs one more decision layer beyond the
@@ -85,11 +71,11 @@ interface ChatHistoryScrollOptions<TMessage> {
    * Return `false` to block the auto-scroll. Any other return value allows it.
    */
   shouldScroll?: (context: {
-    reason: 'new-message'
-    messageKey: string | number
-    role?: string
     isFollowingTail: boolean
     isInspectingHistory: boolean
+    messageKey: number | string
+    reason: 'new-message'
+    role?: string
   }) => boolean
 }
 
@@ -125,8 +111,8 @@ interface ChatHistoryScrollOptions<TMessage> {
  */
 export function useChatHistoryScroll<TMessage extends { role?: string }>({
   containerRef,
-  messages,
   getKey,
+  messages,
   shouldScroll,
 }: ChatHistoryScrollOptions<TMessage>) {
   const isFollowingTail = shallowRef(true)
@@ -134,9 +120,9 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
   const isInspectingOlderMessage = shallowRef(false)
   const isSelectionInspectingHistory = shallowRef(false)
   const isInspectingHistory = computed(() => !isFollowingTail.value || isInspectingOlderMessage.value || isSelectionInspectingHistory.value)
-  const pendingScrollKey = shallowRef<string | number | null>(null)
+  const pendingScrollKey = shallowRef<null | number | string>(null)
   const pendingStreamingFollow = shallowRef(false)
-  const previousLastMessageKey = shallowRef<string | number | null>(null)
+  const previousLastMessageKey = shallowRef<null | number | string>(null)
   const stopListening = shallowRef<(() => void) | null>(null)
   const didInitialScroll = shallowRef(false)
   const isProgrammaticScroll = shallowRef(false)
@@ -242,7 +228,7 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
     })
   }
 
-  function findMessageElementByKey(key: string | number) {
+  function findMessageElementByKey(key: number | string) {
     const container = getContainer()
     if (!container)
       return null
@@ -369,11 +355,11 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
     }
 
     const shouldScrollResult = shouldScroll?.({
-      reason: 'new-message',
-      messageKey: currentLastKey,
-      role: currentLastMessage.role,
       isFollowingTail: isFollowingConversation.value,
       isInspectingHistory: isInspectingOlderMessage.value || isSelectionInspectingHistory.value,
+      messageKey: currentLastKey,
+      reason: 'new-message',
+      role: currentLastMessage.role,
     })
     if (shouldScrollResult === false) {
       pendingScrollKey.value = null
@@ -424,4 +410,18 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
     isInspectingHistory: readonly(isInspectingHistory),
     scrollToBottom,
   }
+}
+
+function scheduleAfterLayoutSettles(task: () => void) {
+  const requestFrame = globalThis.requestAnimationFrame?.bind(globalThis)
+  if (!requestFrame) {
+    queueMicrotask(task)
+    return
+  }
+
+  requestFrame(() => {
+    requestFrame(() => {
+      task()
+    })
+  })
 }

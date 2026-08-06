@@ -22,32 +22,62 @@ import { imageJournalTools } from './tools/builtin/image-journal'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
 
-type ChatSyncMode = 'inactive' | 'authority' | 'follower'
-type ToolsetId = 'widgets' | 'artistry'
-
 interface AttachmentPayload {
-  type: 'image'
   data: string
   mimeType: string
+  type: 'image'
+}
+interface ChatCommandMessage<C extends string = string, P = unknown> {
+  authorityId?: string
+  command: C
+  payload: P
+  requestId: string
+  senderId: string
+  type: 'command'
+}
+
+type ChatResponsePayload
+  = | { error?: string, ok: false }
+    | { ok: true, result?: SpotlightIngestResult }
+
+type ChatSyncMessage
+  = | ChatCommandMessage<'cleanup', { sessionId?: string }>
+    | ChatCommandMessage<'delete-message', { index?: number, messageId?: string, sessionId?: string }>
+    | ChatCommandMessage<'ingest', IngestCommandPayload>
+    | ChatCommandMessage<'retry', RetryCommandPayload>
+    | ChatCommandMessage<'spotlight-ingest', SpotlightIngestPayload>
+    | ChatCommandMessage<'tool-call-rerun', ToolCallRerunPayload<ToolsetId>>
+    | (ChatResponsePayload & { authorityId: string, requestId: string, type: 'response' })
+    | { authorityId: string, sentAt: number, type: 'authority-announcement' }
+    | { authorityId: string, snapshot: SessionSnapshotPayload, type: 'session-snapshot' }
+    | { authorityId: string, snapshot: StreamSnapshotPayload, type: 'stream-snapshot' }
+    | { requestId: string, senderId: string, type: 'request-snapshot' }
+
+type ChatSyncMode = 'authority' | 'follower' | 'inactive'
+
+interface IngestCommandPayload {
+  attachments?: AttachmentPayload[]
+  input?: WebSocketEventInputs
+  sessionId?: string
+  text: string
+  toolset?: ToolsetId
+}
+
+interface PendingRequest {
+  reject: (error: Error) => void
+  resolve: (result?: unknown) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+interface RetryCommandPayload {
+  index: number
+  sessionId?: string
 }
 
 interface SessionSnapshotPayload {
   activeSessionId: string
   sessionMessages: Record<string, ChatHistoryItem[]>
   sessionMetas: Record<string, ChatSessionMeta>
-}
-
-interface StreamSnapshotPayload {
-  sending: boolean
-  streamingMessage: StreamingAssistantMessage
-}
-
-interface IngestCommandPayload {
-  text: string
-  attachments?: AttachmentPayload[]
-  input?: WebSocketEventInputs
-  sessionId?: string
-  toolset?: ToolsetId
 }
 
 interface SpotlightIngestPayload {
@@ -59,53 +89,30 @@ interface SpotlightIngestResult {
   visibleText: string
 }
 
-interface ChatCommandMessage<C extends string = string, P = unknown> {
-  type: 'command'
-  authorityId?: string
-  requestId: string
-  senderId: string
-  command: C
-  payload: P
+interface StreamSnapshotPayload {
+  sending: boolean
+  streamingMessage: StreamingAssistantMessage
 }
 
-interface RetryCommandPayload {
-  sessionId?: string
-  index: number
-}
-
-type ChatResponsePayload
-  = | { ok: true, result?: SpotlightIngestResult }
-    | { ok: false, error?: string }
-
-type ChatSyncMessage
-  = | { type: 'authority-announcement', authorityId: string, sentAt: number }
-    | { type: 'request-snapshot', requestId: string, senderId: string }
-    | { type: 'session-snapshot', authorityId: string, snapshot: SessionSnapshotPayload }
-    | { type: 'stream-snapshot', authorityId: string, snapshot: StreamSnapshotPayload }
-    | ChatCommandMessage<'ingest', IngestCommandPayload>
-    | ChatCommandMessage<'spotlight-ingest', SpotlightIngestPayload>
-    | ChatCommandMessage<'retry', RetryCommandPayload>
-    | ChatCommandMessage<'tool-call-rerun', ToolCallRerunPayload<ToolsetId>>
-    | ChatCommandMessage<'cleanup', { sessionId?: string }>
-    | ChatCommandMessage<'delete-message', { sessionId?: string, messageId?: string, index?: number }>
-    | ({ type: 'response', requestId: string, authorityId: string } & ChatResponsePayload)
-
-interface PendingRequest {
-  resolve: (result?: unknown) => void
-  reject: (error: Error) => void
-  timeout: ReturnType<typeof setTimeout>
-}
+type ToolsetId = 'artistry' | 'widgets'
 
 const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
+// Fast commands (delete/cleanup) never touch the LLM and must settle quickly.
 const REQUEST_TIMEOUT_MS = 30000
+// Commands that run a full LLM turn (including tool-call rounds) can take many
+// minutes; a short timeout would reject the client while the authority is
+// still streaming and drop the rest of the reply. The turn's end is signalled
+// by the stream itself (finish/error/abort), so this only guards against a
+// hung authority, hence the generous ceiling.
+const LLM_COMMAND_TIMEOUT_MS = 30 * 60 * 1000
 const SPOTLIGHT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000
 
 function createRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-function getRetryText(message: ChatHistoryItem | undefined): string | null {
+function getRetryText(message: ChatHistoryItem | undefined): null | string {
   if (!message || message.role !== 'user')
     return null
 
@@ -131,6 +138,31 @@ function getRetryText(message: ChatHistoryItem | undefined): string | null {
   return text || null
 }
 
+function logChatSyncError(message: string, error: unknown, details: Record<string, unknown>) {
+  console.error(`[chat-sync] ${message}`, {
+    ...details,
+    error,
+    errorMessage: errorMessageFromValue(error),
+  })
+}
+
+function previewChatSyncPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') {
+    return payload
+  }
+
+  const record = payload as Record<string, unknown>
+  const text = typeof record.text === 'string' ? record.text : undefined
+
+  return {
+    ...record,
+    attachments: Array.isArray(record.attachments)
+      ? `[${record.attachments.length} attachment(s)]`
+      : record.attachments,
+    text: text && text.length > 160 ? `${text.slice(0, 160)}...` : text,
+  }
+}
+
 function resolveRetrySourceIndex(messages: ChatHistoryItem[], index: number): number {
   const targetMessage = messages[index]
   if (!targetMessage)
@@ -149,35 +181,10 @@ function resolveRetrySourceIndex(messages: ChatHistoryItem[], index: number): nu
   return -1
 }
 
-function previewChatSyncPayload(payload: unknown): unknown {
-  if (!payload || typeof payload !== 'object') {
-    return payload
-  }
-
-  const record = payload as Record<string, unknown>
-  const text = typeof record.text === 'string' ? record.text : undefined
-
-  return {
-    ...record,
-    text: text && text.length > 160 ? `${text.slice(0, 160)}...` : text,
-    attachments: Array.isArray(record.attachments)
-      ? `[${record.attachments.length} attachment(s)]`
-      : record.attachments,
-  }
-}
-
-function logChatSyncError(message: string, error: unknown, details: Record<string, unknown>) {
-  console.error(`[chat-sync] ${message}`, {
-    ...details,
-    error,
-    errorMessage: errorMessageFromValue(error),
-  })
-}
-
 export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => {
   const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   const mode = ref<ChatSyncMode>('inactive')
-  const authorityId = ref<string | null>(null)
+  const authorityId = ref<null | string>(null)
 
   const chatSession = useChatSessionStore()
   const chatStream = useChatStreamStore()
@@ -185,7 +192,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   const { cleanupMessages } = useChatMaintenanceStore()
   const providersStore = useProvidersStore()
   const consciousnessStore = useConsciousnessStore()
-  const { activeProvider, activeModel } = storeToRefs(consciousnessStore)
+  const { activeModel, activeProvider } = storeToRefs(consciousnessStore)
   const { activeSessionId, sessionMessages, sessionMetas } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
   const { sending } = storeToRefs(chatOrchestrator)
@@ -215,9 +222,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return
 
     post({
-      type: 'authority-announcement',
       authorityId: instanceId,
       sentAt: Date.now(),
+      type: 'authority-announcement',
     })
   }
 
@@ -226,9 +233,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return
 
     post({
-      type: 'session-snapshot',
       authorityId: instanceId,
       snapshot: buildSessionSnapshot(),
+      type: 'session-snapshot',
     })
   }
 
@@ -237,9 +244,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return
 
     post({
-      type: 'stream-snapshot',
       authorityId: instanceId,
       snapshot: buildStreamSnapshot(),
+      type: 'stream-snapshot',
     })
   }
 
@@ -295,10 +302,6 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
-      widgets: async () => {
-        const [w, we] = await Promise.all([widgetsTools(), weatherTools()])
-        return [...w, ...we]
-      },
       artistry: async () => {
         const [ai, wi, we] = await Promise.all([
           imageJournalTools(),
@@ -306,6 +309,10 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           weatherTools(),
         ])
         return [...ai, ...wi, ...we]
+      },
+      widgets: async () => {
+        const [w, we] = await Promise.all([widgetsTools(), weatherTools()])
+        return [...w, ...we]
       },
     }
 
@@ -337,10 +344,10 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     await chatOrchestrator.ingest(payload.text, {
-      model: modelId,
-      chatProvider,
       attachments: payload.attachments,
+      chatProvider,
       input: payload.input,
+      model: modelId,
       tools: resolveTools(payload.toolset),
     }, payload.sessionId)
   }
@@ -352,9 +359,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     const previousMessageCount = chatSession.getSessionMessages(sessionId).length
 
     await executeIngest({
+      sessionId,
       text: payload.text,
       toolset: 'artistry',
-      sessionId,
     })
 
     const visibleText = readNewAssistantVisibleText(sessionId, previousMessageCount)
@@ -382,8 +389,8 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     chatSession.setSessionMessages(sessionId, nextMessages)
 
     await executeIngest({
-      text,
       sessionId,
+      text,
       toolset: 'widgets',
     })
   }
@@ -398,7 +405,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     chatSession.setSessionMessages(sessionId, nextMessages)
   }
 
-  function executeDeleteMessage(payload: { sessionId?: string, messageId?: string, index?: number }) {
+  function executeDeleteMessage(payload: { index?: number, messageId?: string, sessionId?: string }) {
     const sessionId = payload.sessionId || activeSessionId.value
     const nextMessages = chatSession.getSessionMessages(sessionId).filter((message, index) => {
       if (payload.messageId)
@@ -416,21 +423,21 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     const nextMessages = [
       ...chatSession.getSessionMessages(sessionId),
       {
-        role: 'error',
         content: message,
+        role: 'error',
       } satisfies ChatHistoryItem,
     ]
     chatSession.setSessionMessages(sessionId, nextMessages)
   }
 
-  function authorityCommandMeta(message: { requestId: string, senderId: string, command: string, payload: unknown }) {
+  function authorityCommandMeta(message: { command: string, payload: unknown, requestId: string, senderId: string }) {
     return {
-      mode: mode.value,
       authorityId: authorityId.value,
+      command: message.command,
+      mode: mode.value,
+      payload: previewChatSyncPayload(message.payload),
       requestId: message.requestId,
       senderId: message.senderId,
-      command: message.command,
-      payload: previewChatSyncPayload(message.payload),
     }
   }
 
@@ -440,32 +447,32 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
     const respond = (response: ChatResponsePayload) => {
       post({
-        type: 'response',
-        requestId: message.requestId,
         authorityId: instanceId,
+        requestId: message.requestId,
+        type: 'response',
         ...response,
       })
     }
 
     try {
       switch (message.command) {
-        case 'ingest':
-          await executeIngest(message.payload)
-          break
-        case 'spotlight-ingest':
-          respond({ ok: true, result: await executeSpotlightIngest(message.payload) })
-          return
-        case 'retry':
-          await executeRetry(message.payload)
-          break
-        case 'tool-call-rerun':
-          await executeToolCallRerunCommand(message.payload)
-          break
         case 'cleanup':
           cleanupMessages(message.payload.sessionId)
           break
         case 'delete-message':
           executeDeleteMessage(message.payload)
+          break
+        case 'ingest':
+          await executeIngest(message.payload)
+          break
+        case 'retry':
+          await executeRetry(message.payload)
+          break
+        case 'spotlight-ingest':
+          respond({ ok: true, result: await executeSpotlightIngest(message.payload) })
+          return
+        case 'tool-call-rerun':
+          await executeToolCallRerunCommand(message.payload)
           break
       }
 
@@ -481,13 +488,13 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       }
       else if (message.command === 'spotlight-ingest') {
         appendIngestErrorMessage({
+          sessionId: activeSessionId.value,
           text: message.payload.text,
           toolset: 'artistry',
-          sessionId: activeSessionId.value,
         }, errorMessage)
       }
 
-      respond({ ok: false, error: errorMessage })
+      respond({ error: errorMessage, ok: false })
     }
   }
 
@@ -523,7 +530,10 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       case 'authority-announcement':
         authorityId.value = message.authorityId
         if (mode.value === 'follower')
-          post({ type: 'request-snapshot', requestId: createRequestId(), senderId: instanceId })
+          post({ requestId: createRequestId(), senderId: instanceId, type: 'request-snapshot' })
+        return
+      case 'command':
+        void handleCommand(message)
         return
       case 'request-snapshot':
         if (mode.value === 'authority')
@@ -540,9 +550,6 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           return
         authorityId.value = message.authorityId
         applyStreamSnapshot(message.snapshot)
-        return
-      case 'command':
-        void handleCommand(message)
         return
       case 'response':
         settleResponse(message)
@@ -590,7 +597,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return
     }
 
-    post({ type: 'request-snapshot', requestId: createRequestId(), senderId: instanceId })
+    post({ requestId: createRequestId(), senderId: instanceId, type: 'request-snapshot' })
   }
 
   function dispatch<T>(
@@ -607,8 +614,8 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       }, timeoutMs)
 
       pendingRequests.set(message.requestId, {
-        resolve: result => resolve(result as T),
         reject,
+        resolve: result => resolve(result as T),
         timeout,
       })
       post(message)
@@ -622,12 +629,12 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     return await dispatch<void>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'ingest',
       payload,
-    })
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
+    }, LLM_COMMAND_TIMEOUT_MS, () => new Error('Timed out waiting for chat authority response'))
   }
 
   async function requestSpotlightIngest(payload: SpotlightIngestPayload) {
@@ -635,11 +642,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return executeSpotlightIngest(payload)
 
     return dispatch<SpotlightIngestResult>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'spotlight-ingest',
       payload,
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
     }, SPOTLIGHT_REQUEST_TIMEOUT_MS, () => new Error('Spotlight response timed out'))
   }
 
@@ -650,12 +657,12 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     return await dispatch<void>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'retry',
       payload,
-    })
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
+    }, LLM_COMMAND_TIMEOUT_MS, () => new Error('Timed out waiting for chat authority response'))
   }
 
   async function requestToolCallRerun(payload: ToolCallRerunPayload<ToolsetId>) {
@@ -665,12 +672,12 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     return await dispatch<void>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'tool-call-rerun',
       payload,
-    })
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
+    }, LLM_COMMAND_TIMEOUT_MS, () => new Error('Timed out waiting for chat authority response'))
   }
 
   async function requestCleanup(sessionId?: string) {
@@ -680,26 +687,26 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     return await dispatch<void>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'cleanup',
       payload: { sessionId },
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
     })
   }
 
-  async function requestDeleteMessage(payload: { sessionId?: string, messageId?: string, index?: number }) {
+  async function requestDeleteMessage(payload: { index?: number, messageId?: string, sessionId?: string }) {
     if (mode.value === 'authority') {
       executeDeleteMessage(payload)
       return
     }
 
     return await dispatch<void>({
-      type: 'command',
-      requestId: createRequestId(),
-      senderId: instanceId,
       command: 'delete-message',
       payload,
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
     })
   }
 
@@ -714,14 +721,14 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   return {
     authorityId,
-    mode,
-    initialize,
     dispose,
-    requestIngest,
-    requestSpotlightIngest,
-    requestRetry,
-    requestToolCallRerun,
+    initialize,
+    mode,
     requestCleanup,
     requestDeleteMessage,
+    requestIngest,
+    requestRetry,
+    requestSpotlightIngest,
+    requestToolCallRerun,
   }
 })

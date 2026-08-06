@@ -8,8 +8,8 @@ import {
 
 describe('airi websocket liveness policy', () => {
   it('uses the AIRI default heartbeat TTL', () => {
-    expect(serverWsDefaultHeartbeatTtlMs).toBe(60_000)
-    expect(resolveHealthCheckIntervalMs(serverWsDefaultHeartbeatTtlMs)).toBe(12_000)
+    expect(serverWsDefaultHeartbeatTtlMs).toBe(120_000)
+    expect(resolveHealthCheckIntervalMs(serverWsDefaultHeartbeatTtlMs)).toBe(24_000)
   })
 
   it('keeps health checks at least five seconds apart', () => {

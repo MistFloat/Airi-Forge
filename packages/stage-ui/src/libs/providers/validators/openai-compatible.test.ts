@@ -25,13 +25,13 @@ vi.mock('@xsai/model', () => ({
 
 const mockT = vi.fn((key: string) => key) as unknown as ComposerTranslation
 
+interface TestConfig { apiKey?: string, baseUrl?: string }
+
 function getProviderValidators(options?: Parameters<typeof createOpenAICompatibleValidators>[0]) {
   const validators = createOpenAICompatibleValidators(options)
 
   return (validators?.validateProvider || []).map(create => create({ t: mockT }))
 }
-
-interface TestConfig { apiKey?: string, baseUrl?: string }
 
 describe('createOpenAICompatibleValidators', () => {
   const config: TestConfig = {
@@ -107,8 +107,8 @@ describe('createOpenAICompatibleValidators', () => {
     listModelsMock.mockResolvedValue([])
 
     const [connectivityValidator, chatValidator] = getProviderValidators({
-      checks: [ProviderValidationCheck.Connectivity, ProviderValidationCheck.ChatCompletions],
       allowValidationWithoutModel: true,
+      checks: [ProviderValidationCheck.Connectivity, ProviderValidationCheck.ChatCompletions],
     })
 
     const connectivityResult = await connectivityValidator.validator(config, provider, providerExtra, { t: mockT })

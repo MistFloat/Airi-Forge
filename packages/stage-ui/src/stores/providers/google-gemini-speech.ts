@@ -45,40 +45,52 @@ const GOOGLE_GEMINI_TTS_VOICES: [string, string][] = [
   ['Sulafat', 'Warm'],
 ]
 
-/** Wraps raw PCM16 mono data in a minimal WAV container. */
-function wrapPCM16InWAV(pcmBytes: Uint8Array, sampleRate = 24000): Uint8Array {
-  const numChannels = 1
-  const bitsPerSample = 16
-  const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
-  const blockAlign = numChannels * (bitsPerSample / 8)
-  const header = new ArrayBuffer(44)
-  const view = new DataView(header)
+export function buildGoogleGeminiSpeechProvider(
+  baseUrlValidator: (baseUrl: unknown) => null | undefined | { errors: unknown[], reason: string, valid: boolean },
+): ProviderMetadata {
+  return {
+    capabilities: {
+      listModels: async () => listModels(),
+      listVoices: async () => listVoices(),
+    },
+    category: 'speech',
+    createProvider: async (config: Record<string, unknown>) => {
+      const apiKey = normalizeApiKey(config.apiKey)
+      const baseUrl = normalizeBaseUrl(config.baseUrl)
+      return createSpeechProvider(apiKey, baseUrl)
+    },
+    defaultOptions: () => ({
+      baseUrl: `${DEFAULT_BASE_URL}/`,
+    }),
+    description: 'aistudio.google.com',
+    descriptionKey: 'settings.pages.providers.provider.google-gemini-audio-speech.description',
+    icon: 'i-lobe-icons:gemini',
+    iconColor: 'i-lobe-icons:gemini-color',
+    id: PROVIDER_ID,
+    name: 'Google Gemini',
+    nameKey: 'settings.pages.providers.provider.google-gemini-audio-speech.title',
+    tasks: ['text-to-speech', 'tts'],
+    validators: {
+      chatPingCheckAvailable: false,
+      validateProviderConfig: (config: Record<string, unknown>) => {
+        const errors: Error[] = []
+        if (!normalizeApiKey(config.apiKey))
+          errors.push(new Error('API Key is required.'))
 
-  const writeStr = (offset: number, str: string) => {
-    for (let i = 0; i < str.length; i++)
-      view.setUint8(offset + i, str.charCodeAt(i))
+        if (config.baseUrl) {
+          const res = baseUrlValidator(config.baseUrl)
+          if (res)
+            return res
+        }
+
+        return {
+          errors,
+          reason: errors.map(e => e.message).join(', '),
+          valid: errors.length === 0,
+        }
+      },
+    },
   }
-
-  writeStr(0, 'RIFF')
-  view.setUint32(4, 36 + pcmBytes.length, true)
-  writeStr(8, 'WAVE')
-
-  writeStr(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, numChannels, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, byteRate, true)
-  view.setUint16(32, blockAlign, true)
-  view.setUint16(34, bitsPerSample, true)
-
-  writeStr(36, 'data')
-  view.setUint32(40, pcmBytes.length, true)
-
-  const wav = new Uint8Array(44 + pcmBytes.length)
-  wav.set(new Uint8Array(header), 0)
-  wav.set(pcmBytes, 44)
-  return wav
 }
 
 /** Decodes a base64 string into a Uint8Array. */
@@ -88,19 +100,6 @@ function base64ToBytes(base64: string): Uint8Array {
   for (let i = 0; i < binaryString.length; i++)
     bytes[i] = binaryString.charCodeAt(i)
   return bytes
-}
-
-function normalizeBaseUrl(value: unknown): string {
-  let base = typeof value === 'string' ? value.trim() : ''
-  if (!base)
-    base = DEFAULT_BASE_URL
-  if (!base.endsWith('/'))
-    base += '/'
-  return base
-}
-
-function normalizeApiKey(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
 }
 
 /**
@@ -137,11 +136,6 @@ function createAudioFetch(apiKey: string, baseUrl: string) {
     }
 
     const response = await globalThis.fetch(`${baseUrl}models/${model}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
         contents: [
           {
@@ -152,6 +146,11 @@ function createAudioFetch(apiKey: string, baseUrl: string) {
         ],
         generationConfig: buildGenerationConfig(),
       }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      method: 'POST',
     })
 
     if (!response.ok) {
@@ -175,8 +174,8 @@ function createAudioFetch(apiKey: string, baseUrl: string) {
     // backing ArrayBuffer (not a subarray view into a larger buffer). The `as ArrayBuffer`
     // cast is needed because .buffer returns ArrayBufferLike in newer TypeScript.
     return new Response(wavBytes.buffer as ArrayBuffer, {
-      status: 200,
       headers: { 'Content-Type': 'audio/wav' },
+      status: 200,
     })
   }
 }
@@ -194,72 +193,73 @@ function createSpeechProvider(apiKey: string, baseUrl: string): SpeechProviderWi
 
 function listModels(): ModelInfo[] {
   return GOOGLE_GEMINI_TTS_MODELS.map(id => ({
+    capabilities: ['text-to-speech'],
+    description: 'Gemini API text-to-speech model',
     id,
     name: id
       .split('-')
       .map(w => w.charAt(0).toUpperCase() + w.slice(1))
       .join(' '),
     provider: PROVIDER_ID,
-    description: 'Gemini API text-to-speech model',
-    capabilities: ['text-to-speech'],
   } satisfies ModelInfo))
 }
 
 function listVoices(): VoiceInfo[] {
   return GOOGLE_GEMINI_TTS_VOICES.map(([voiceName, style]) => ({
+    compatibleModels: [...GOOGLE_GEMINI_TTS_MODELS],
+    description: style,
     id: voiceName,
+    languages: [{ code: 'auto', title: 'Auto' }],
     name: voiceName,
     provider: PROVIDER_ID,
-    description: style,
-    languages: [{ code: 'auto', title: 'Auto' }],
-    compatibleModels: [...GOOGLE_GEMINI_TTS_MODELS],
   } satisfies VoiceInfo))
 }
 
-export function buildGoogleGeminiSpeechProvider(
-  baseUrlValidator: (baseUrl: unknown) => { errors: unknown[], reason: string, valid: boolean } | null | undefined,
-): ProviderMetadata {
-  return {
-    id: PROVIDER_ID,
-    category: 'speech',
-    tasks: ['text-to-speech', 'tts'],
-    nameKey: 'settings.pages.providers.provider.google-gemini-audio-speech.title',
-    name: 'Google Gemini',
-    descriptionKey: 'settings.pages.providers.provider.google-gemini-audio-speech.description',
-    description: 'aistudio.google.com',
-    icon: 'i-lobe-icons:gemini',
-    iconColor: 'i-lobe-icons:gemini-color',
-    defaultOptions: () => ({
-      baseUrl: `${DEFAULT_BASE_URL}/`,
-    }),
-    createProvider: async (config: Record<string, unknown>) => {
-      const apiKey = normalizeApiKey(config.apiKey)
-      const baseUrl = normalizeBaseUrl(config.baseUrl)
-      return createSpeechProvider(apiKey, baseUrl)
-    },
-    capabilities: {
-      listModels: async () => listModels(),
-      listVoices: async () => listVoices(),
-    },
-    validators: {
-      chatPingCheckAvailable: false,
-      validateProviderConfig: (config: Record<string, unknown>) => {
-        const errors: Error[] = []
-        if (!normalizeApiKey(config.apiKey))
-          errors.push(new Error('API Key is required.'))
+function normalizeApiKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
 
-        if (config.baseUrl) {
-          const res = baseUrlValidator(config.baseUrl)
-          if (res)
-            return res
-        }
+function normalizeBaseUrl(value: unknown): string {
+  let base = typeof value === 'string' ? value.trim() : ''
+  if (!base)
+    base = DEFAULT_BASE_URL
+  if (!base.endsWith('/'))
+    base += '/'
+  return base
+}
 
-        return {
-          errors,
-          reason: errors.map(e => e.message).join(', '),
-          valid: errors.length === 0,
-        }
-      },
-    },
+/** Wraps raw PCM16 mono data in a minimal WAV container. */
+function wrapPCM16InWAV(pcmBytes: Uint8Array, sampleRate = 24000): Uint8Array {
+  const numChannels = 1
+  const bitsPerSample = 16
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8)
+  const blockAlign = numChannels * (bitsPerSample / 8)
+  const header = new ArrayBuffer(44)
+  const view = new DataView(header)
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++)
+      view.setUint8(offset + i, str.charCodeAt(i))
   }
+
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + pcmBytes.length, true)
+  writeStr(8, 'WAVE')
+
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, numChannels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, byteRate, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, bitsPerSample, true)
+
+  writeStr(36, 'data')
+  view.setUint32(40, pcmBytes.length, true)
+
+  const wav = new Uint8Array(44 + pcmBytes.length)
+  wav.set(new Uint8Array(header), 0)
+  wav.set(pcmBytes, 44)
+  return wav
 }

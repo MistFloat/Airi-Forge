@@ -29,10 +29,10 @@ const provider = {
 
 function createMockStreamResult(steps: Promise<unknown[]> = Promise.resolve([])) {
   return {
-    steps,
     messages: Promise.resolve([]),
-    usage: Promise.resolve(undefined),
+    steps,
     totalUsage: Promise.resolve(undefined),
+    usage: Promise.resolve(undefined),
   }
 }
 
@@ -45,15 +45,15 @@ describe('streamFrom tool error capture', () => {
     let resolveSteps: ((steps: unknown[]) => void) | undefined
     const events: unknown[] = []
     const failingTool = {
-      type: 'function',
-      function: {
-        name: 'play_chess',
-        description: 'Start chess.',
-        parameters: { type: 'object', properties: {} },
-      },
       execute: vi.fn(() => {
         throw new Error('Focus mode does not accept game-state mutation inputs.')
       }),
+      function: {
+        description: 'Start chess.',
+        name: 'play_chess',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
     } satisfies Tool
 
     streamTextMock.mockImplementationOnce((options: {
@@ -72,13 +72,13 @@ describe('streamFrom tool error capture', () => {
         })
 
         await options.onEvent({
-          type: 'tool-result',
           args: {},
           result,
           toolCallId: 'call-1',
           toolName: 'play_chess',
+          type: 'tool-result',
         })
-        await options.onEvent({ type: 'finish', finishReason: 'stop' })
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
         resolveSteps?.([])
       })
 
@@ -86,15 +86,15 @@ describe('streamFrom tool error capture', () => {
     })
 
     await streamFrom({
-      model: 'model-a',
       chatProvider: provider,
-      messages: [{ role: 'user', content: 'play chess' }] as Message[],
+      messages: [{ content: 'play chess', role: 'user' }] as Message[],
+      model: 'model-a',
       options: {
         captureToolErrors: true,
-        tools: [failingTool],
         onStreamEvent: (event) => {
           events.push(event)
         },
+        tools: [failingTool],
       },
     })
 
@@ -103,11 +103,11 @@ describe('streamFrom tool error capture', () => {
     expect(streamOptions.tools?.[0]).not.toBe(failingTool)
     expect(failingTool.execute).toHaveBeenCalledTimes(1)
     expect(events).toContainEqual(expect.objectContaining({
-      type: 'tool-error',
       isError: true,
+      result: expect.stringContaining('Focus mode does not accept game-state mutation inputs.'),
       toolCallId: 'call-1',
       toolName: 'play_chess',
-      result: expect.stringContaining('Focus mode does not accept game-state mutation inputs.'),
+      type: 'tool-error',
     }))
   })
 })
@@ -119,9 +119,9 @@ describe('sanitizeMessages', () => {
      * sanitizeMessages([{ role: 'error', content: 'Remote sent 400' }])
      * // -> [{ role: 'user', content: 'User encountered error: Remote sent 400' }]
      */
-    const out = sanitizeMessages([{ role: 'error', content: 'Remote sent 400' }])
+    const out = sanitizeMessages([{ content: 'Remote sent 400', role: 'error' }])
     expect(out).toEqual([
-      { role: 'user', content: 'User encountered error: Remote sent 400' },
+      { content: 'User encountered error: Remote sent 400', role: 'user' },
     ])
   })
 
@@ -135,13 +135,13 @@ describe('sanitizeMessages', () => {
      * // -> [{ role: 'user', content: 'hi there' }]
      */
     const out = sanitizeMessages([{
-      role: 'user',
       content: [
-        { type: 'text', text: 'hi' },
-        { type: 'text', text: ' there' },
+        { text: 'hi', type: 'text' },
+        { text: ' there', type: 'text' },
       ],
+      role: 'user',
     }])
-    expect(out).toEqual([{ role: 'user', content: 'hi there' }])
+    expect(out).toEqual([{ content: 'hi there', role: 'user' }])
   })
 
   it('preserves multimodal arrays when supportsContentArray is true (default)', () => {
@@ -151,11 +151,11 @@ describe('sanitizeMessages', () => {
      * // -> unchanged: image_url part stays so vision-capable providers receive the image
      */
     const message = {
-      role: 'user',
       content: [
-        { type: 'text', text: 'see this' },
-        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+        { text: 'see this', type: 'text' },
+        { image_url: { url: 'data:image/png;base64,AAA' }, type: 'image_url' },
       ],
+      role: 'user',
     }
     const out = sanitizeMessages([message])
     expect(out[0]).toEqual(message)
@@ -185,14 +185,14 @@ describe('sanitizeMessages', () => {
      */
     const out = sanitizeMessages([
       {
-        role: 'user',
         content: [
-          { type: 'text', text: 'hi' },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+          { text: 'hi', type: 'text' },
+          { image_url: { url: 'data:image/png;base64,AAA' }, type: 'image_url' },
         ],
+        role: 'user',
       },
     ], false)
-    expect(out).toEqual([{ role: 'user', content: 'hi' }])
+    expect(out).toEqual([{ content: 'hi', role: 'user' }])
   })
 
   it('issue #1500: drops audio/file parts when supportsContentArray=false', () => {
@@ -203,22 +203,22 @@ describe('sanitizeMessages', () => {
      */
     const out = sanitizeMessages([
       {
-        role: 'user',
         content: [
-          { type: 'text', text: 'q' },
-          { type: 'input_audio', input_audio: { data: 'AAA', format: 'wav' } },
-          { type: 'file', file: { file_id: 'f_1' } },
+          { text: 'q', type: 'text' },
+          { input_audio: { data: 'AAA', format: 'wav' }, type: 'input_audio' },
+          { file: { file_id: 'f_1' }, type: 'file' },
         ],
+        role: 'user',
       },
     ], false)
-    expect(out).toEqual([{ role: 'user', content: 'q' }])
+    expect(out).toEqual([{ content: 'q', role: 'user' }])
   })
 
   it('passes string content through untouched regardless of the flag', () => {
-    expect(sanitizeMessages([{ role: 'user', content: 'plain' }], true))
-      .toEqual([{ role: 'user', content: 'plain' }])
-    expect(sanitizeMessages([{ role: 'user', content: 'plain' }], false))
-      .toEqual([{ role: 'user', content: 'plain' }])
+    expect(sanitizeMessages([{ content: 'plain', role: 'user' }], true))
+      .toEqual([{ content: 'plain', role: 'user' }])
+    expect(sanitizeMessages([{ content: 'plain', role: 'user' }], false))
+      .toEqual([{ content: 'plain', role: 'user' }])
   })
 })
 

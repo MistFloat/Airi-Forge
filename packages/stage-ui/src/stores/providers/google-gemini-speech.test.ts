@@ -216,7 +216,7 @@ describe('googleGeminiSpeech request construction', () => {
   it('fetch adapter constructs correct Gemini URL', async () => {
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ inlineData: { data: 'AAAA' } }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -225,17 +225,17 @@ describe('googleGeminiSpeech request construction', () => {
     const fetchFn = speechResult.fetch!
 
     await fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Hello', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Hello', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
       'https://example.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent',
       expect.objectContaining({
-        method: 'POST',
         headers: expect.objectContaining({
-          'x-goog-api-key': 'test-key',
           'Content-Type': 'application/json',
+          'x-goog-api-key': 'test-key',
         }),
+        method: 'POST',
       }),
     )
   })
@@ -243,7 +243,7 @@ describe('googleGeminiSpeech request construction', () => {
   it('fetch adapter sends correct Gemini request body', async () => {
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ inlineData: { data: 'AAAA' } }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -252,7 +252,7 @@ describe('googleGeminiSpeech request construction', () => {
     const fetchFn = speechResult.fetch!
 
     await fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Hello from AIRI', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Hello from AIRI', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })
 
     const callArg = (globalThis.fetch as any).mock.calls[0][1]
@@ -266,7 +266,7 @@ describe('googleGeminiSpeech request construction', () => {
   it('includes temperature in generationConfig when provided', async () => {
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ inlineData: { data: 'AAAA' } }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -275,7 +275,7 @@ describe('googleGeminiSpeech request construction', () => {
     const fetchFn = speechResult.fetch!
 
     await fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Test', voice: 'Kore', temperature: 0.7 }),
+      body: JSON.stringify({ input: 'Test', model: 'gemini-2.5-flash-preview-tts', temperature: 0.7, voice: 'Kore' }),
     })
 
     const callArg = (globalThis.fetch as any).mock.calls[0][1]
@@ -287,7 +287,7 @@ describe('googleGeminiSpeech request construction', () => {
   it('omits temperature from generationConfig when not provided', async () => {
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ inlineData: { data: 'AAAA' } }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -296,7 +296,7 @@ describe('googleGeminiSpeech request construction', () => {
     const fetchFn = speechResult.fetch!
 
     await fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Test', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Test', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })
 
     const callArg = (globalThis.fetch as any).mock.calls[0][1]
@@ -311,7 +311,7 @@ describe('googleGeminiSpeech audio conversion', () => {
     const pcmBase64 = btoa('\x00\x00\x00\x00')
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ inlineData: { data: pcmBase64 } }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -320,7 +320,7 @@ describe('googleGeminiSpeech audio conversion', () => {
     const fetchFn = speechResult.fetch!
 
     const response = await fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Test', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Test', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })
 
     expect(response.headers.get('Content-Type')).toBe('audio/wav')
@@ -344,7 +344,7 @@ describe('googleGeminiSpeech audio conversion', () => {
   it('throws when Gemini response has no audio data', async () => {
     const mockResponse = new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: 'no audio here' }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })
 
     globalThis.fetch = vi.fn().mockResolvedValue(mockResponse)
 
@@ -353,7 +353,7 @@ describe('googleGeminiSpeech audio conversion', () => {
     const fetchFn = speechResult.fetch!
 
     await expect(fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Test', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Test', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })).rejects.toThrow('Gemini TTS response missing audio data')
   })
 
@@ -366,7 +366,7 @@ describe('googleGeminiSpeech audio conversion', () => {
     const fetchFn = speechResult.fetch!
 
     await expect(fetchFn(new URL('http://test'), {
-      body: JSON.stringify({ model: 'gemini-2.5-flash-preview-tts', input: 'Test', voice: 'Kore' }),
+      body: JSON.stringify({ input: 'Test', model: 'gemini-2.5-flash-preview-tts', voice: 'Kore' }),
     })).rejects.toThrow('Gemini TTS request failed: 401')
   })
 })

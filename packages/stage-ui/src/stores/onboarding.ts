@@ -86,16 +86,16 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   }
 
   return {
+    forceShowSetup,
     hasCompletedSetup,
-    hasSkippedSetup,
-    showingSetup,
     hasEssentialProviderConfigured,
     hasEssentialProviderCredentialConfigured,
-    needsOnboarding,
-
+    hasSkippedSetup,
     markSetupCompleted,
+
     markSetupSkipped,
+    needsOnboarding,
     resetSetupState,
-    forceShowSetup,
+    showingSetup,
   }
 })

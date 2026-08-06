@@ -4,28 +4,28 @@ import { InvalidToolCallError, InvalidToolInputError, ToolExecutionError } from 
 import { executeTool } from '@xsai/shared-chat'
 import { describe, expect, it, vi } from 'vitest'
 
+function createTool(name: string, execute: Tool['execute']): Tool {
+  return {
+    execute,
+    function: { description: '', name, parameters: {} },
+    type: 'function',
+  }
+}
+
 function createToolCall(overrides: Partial<ToolCall> & {
-  function?: Partial<ToolCall['function']> & { name?: string, arguments?: string }
+  function?: Partial<ToolCall['function']> & { arguments?: string, name?: string }
 } = {}): ToolCall {
   const fn = overrides.function ?? {}
   return {
-    id: 'call_1',
-    type: 'function',
     function: {
-      name: 'myTool',
       arguments: '{}',
+      name: 'myTool',
       ...fn,
     },
+    id: 'call_1',
+    type: 'function',
     ...overrides,
   } as ToolCall
-}
-
-function createTool(name: string, execute: Tool['execute']): Tool {
-  return {
-    type: 'function',
-    function: { name, description: '', parameters: {} },
-    execute,
-  }
 }
 
 const emptyMessages: Message[] = []
@@ -50,7 +50,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
 
   it('captures unknown tool as error result instead of throwing', async () => {
     const tools = [createTool('other', async () => 'x')]
-    const toolCall = createToolCall({ function: { name: 'missingTool', arguments: '{}' } })
+    const toolCall = createToolCall({ function: { arguments: '{}', name: 'missingTool' } })
 
     const out = await executeTool({
       captureToolErrors: true,
@@ -68,7 +68,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
 
   it('captures invalid JSON arguments as error result', async () => {
     const tools = [createTool('myTool', async () => 'x')]
-    const toolCall = createToolCall({ function: { name: 'myTool', arguments: '{broken' } })
+    const toolCall = createToolCall({ function: { arguments: '{broken', name: 'myTool' } })
 
     const out = await executeTool({
       captureToolErrors: true,
@@ -128,14 +128,14 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
     const tools = [
       createTool('goodTool', async () => 'repaired'),
     ]
-    const toolCall = createToolCall({ function: { name: 'badTool', arguments: '{}' } })
+    const toolCall = createToolCall({ function: { arguments: '{}', name: 'badTool' } })
 
     const out = await executeTool({
       messages: emptyMessages,
       repairToolCall: async () => ({
+        function: { arguments: '{}', name: 'goodTool' },
         id: 'call_1',
         type: 'function',
-        function: { name: 'goodTool', arguments: '{}' },
       }),
       toolCall,
       tools,
@@ -147,7 +147,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
 
   it('returns error when repairToolCall returns null', async () => {
     const tools = [createTool('goodTool', async () => 'x')]
-    const toolCall = createToolCall({ function: { name: 'badTool', arguments: '{}' } })
+    const toolCall = createToolCall({ function: { arguments: '{}', name: 'badTool' } })
 
     const out = await executeTool({
       captureToolErrors: true,
@@ -192,7 +192,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
     onToolCallStart.mockClear()
     onToolCallFinish.mockClear()
 
-    const badCall = createToolCall({ function: { name: 'nope', arguments: '{}' } })
+    const badCall = createToolCall({ function: { arguments: '{}', name: 'nope' } })
     await executeTool({
       captureToolErrors: true,
       messages: emptyMessages,
@@ -212,7 +212,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
   describe('without captureToolErrors (default upstream behavior)', () => {
     it('throws InvalidToolCallError for unknown tool', async () => {
       const tools = [createTool('other', async () => 'x')]
-      const toolCall = createToolCall({ function: { name: 'missingTool', arguments: '{}' } })
+      const toolCall = createToolCall({ function: { arguments: '{}', name: 'missingTool' } })
 
       let thrown: unknown
       try {
@@ -231,7 +231,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
 
     it('throws InvalidToolInputError for invalid JSON arguments', async () => {
       const tools = [createTool('myTool', async () => 'x')]
-      const toolCall = createToolCall({ function: { name: 'myTool', arguments: '{broken' } })
+      const toolCall = createToolCall({ function: { arguments: '{broken', name: 'myTool' } })
 
       let thrown: unknown
       try {
@@ -273,7 +273,7 @@ describe('executeTool (patched @xsai/shared-chat)', () => {
 
     it('throws InvalidToolCallError when repairToolCall returns null', async () => {
       const tools = [createTool('goodTool', async () => 'x')]
-      const toolCall = createToolCall({ function: { name: 'badTool', arguments: '{}' } })
+      const toolCall = createToolCall({ function: { arguments: '{}', name: 'badTool' } })
 
       let thrown: unknown
       try {

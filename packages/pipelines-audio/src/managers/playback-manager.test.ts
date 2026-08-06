@@ -6,17 +6,17 @@ import { createPlaybackManager } from './playback-manager'
 
 function createPlaybackItem(id: string, priority: number, intentId: string, ownerId?: string): PlaybackItem<unknown> {
   return {
-    id,
-    streamId: 'stream-1',
-    intentId,
-    segmentId: `${id}-segment`,
-    sequence: 1,
-    ownerId,
-    priority,
-    text: `${id} text`,
-    special: null,
     audio: { id },
     createdAt: Date.now(),
+    id,
+    intentId,
+    ownerId,
+    priority,
+    segmentId: `${id}-segment`,
+    sequence: 1,
+    special: null,
+    streamId: 'stream-1',
+    text: `${id} text`,
   }
 }
 
@@ -143,7 +143,10 @@ describe('createPlaybackManager', () => {
     let resolvePlayback: (() => void) | undefined
     const play = vi.fn((_item, signal) => new Promise<void>((resolve) => {
       resolvePlayback = () => {
-        signal.aborted ? resolve() : signal.addEventListener('abort', () => resolve(), { once: true })
+        if (signal.aborted)
+          resolve()
+        else
+          signal.addEventListener('abort', () => resolve(), { once: true })
         resolve()
       }
     }))

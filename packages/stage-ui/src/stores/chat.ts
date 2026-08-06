@@ -23,22 +23,25 @@ import { useLlmToolsetPromptsStore } from './llm-toolset-prompts'
 import { useAiriCardStore } from './modules/airi-card'
 import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
+import { useInstructionStore } from './modules/instruction-store'
+import { useMemoryLongTermStore } from './modules/memory-long-term'
+import { useMemoryShortTermStore } from './modules/memory-short-term'
 
 interface ForkOptions {
-  fromSessionId?: string
   atIndex?: number
-  reason?: string
+  fromSessionId?: string
   hidden?: boolean
+  reason?: string
 }
 
 type ProviderHistoryMessage = Exclude<ChatHistoryItem, { role: 'error' }>
 
-function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
-  return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
-}
-
 function isTextDelta(event: StreamEvent): event is Extract<StreamEvent, { type: 'text-delta' }> {
   return event.type === 'text-delta'
+}
+
+function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
+  return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
 }
 
 export type { QueuedSendSnapshot, ChatOrchestratorSendOptions as SendOptions } from '@proj-airi/core-agent'
@@ -48,19 +51,25 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const llmToolsetPromptsStore = useLlmToolsetPromptsStore()
   const consciousnessStore = useConsciousnessStore()
   const artistryAutonomousStore = useAutonomousArtistryStore()
+  const longTermMemoryStore = useMemoryLongTermStore()
+  const shortTermMemoryStore = useMemoryShortTermStore()
+  const instructionStore = useInstructionStore()
+  // Standing rules (ACT / DELAY / CALL policy etc.) must be present even when
+  // long-term memory is not configured, so seed them at runtime start.
+  instructionStore.seedStageControl()
   const { activeModel, activeProvider } = storeToRefs(consciousnessStore)
   const {
-    trackFirstMessage,
-    trackMessageSendStarted,
-    trackMessageSent,
-    trackLlmRequestStarted,
-    trackLlmFirstToken,
     trackAssistantResponseRendered,
-    trackMessageRound,
-    trackMessageRoundFailed,
+    trackChatActivationFailed,
     trackChatActivationStarted,
     trackChatActivationSucceeded,
-    trackChatActivationFailed,
+    trackFirstMessage,
+    trackLlmFirstToken,
+    trackLlmRequestStarted,
+    trackMessageRound,
+    trackMessageRoundFailed,
+    trackMessageSendStarted,
+    trackMessageSent,
     trackSecondTurnStarted,
   } = useAnalytics()
 
@@ -92,8 +101,8 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     }
 
     const llmSpan = startSpan(IOSpanNames.LLMInference, activeTurnSpan.value, {
-      [IOAttributes.Subsystem]: IOSubsystems.LLM,
       [IOAttributes.GenAIRequestModel]: model,
+      [IOAttributes.Subsystem]: IOSubsystems.LLM,
     })
     const llmRequestTs = performance.now()
     let llmFirstTokenEmitted = false
@@ -141,7 +150,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   /**
    * Classifies configured chat providers into low-cardinality product analytics buckets.
    */
-  function providerMode(providerId: string | undefined): 'official' | 'custom' | 'unknown' {
+  function providerMode(providerId: string | undefined): 'custom' | 'official' | 'unknown' {
     if (!providerId)
       return 'unknown'
     return providerId.startsWith('official-provider') ? 'official' : 'custom'
@@ -150,150 +159,189 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   let lastSendSource: 'text' | 'voice' = 'text'
 
   const runtime = createChatOrchestratorRuntime({
-    session: {
-      ensureSession: sessionId => chatSession.ensureSession(sessionId),
-      getSessionMessages: sessionId => chatSession.getSessionMessages(sessionId).map(message => toRaw(message)),
-      appendSessionMessage: (sessionId, message) => chatSession.appendSessionMessage(sessionId, message),
-      getSessionGeneration: sessionId => chatSession.getSessionGeneration(sessionId),
-    },
     context: {
       ingest: envelope => chatContext.ingestContextMessage(envelope),
       snapshot: () => chatContext.getContextsSnapshot(),
     },
+    createId: nanoid,
     foregroundStream: {
       patch: (message) => {
         streamingMessage.value = message
       },
       reset: () => {
-        streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
+        streamingMessage.value = { content: '', role: 'assistant', slices: [], tool_results: [] }
       },
     },
+    getActiveProvider: () => activeProvider.value,
+    getActiveSessionId: () => activeSessionId.value,
+    getSystemPrompt: () => cardStore.systemPrompt,
+    getSystemPromptSupplement: () => [
+      llmToolsetPromptsStore.activeToolsetPrompt,
+      instructionStore.compiled.prompt,
+    ].filter((value): value is string => !!value).join('\n\n'),
     llm: {
       stream: streamWithStageAdapters,
     },
-    getActiveSessionId: () => activeSessionId.value,
-    getActiveProvider: () => activeProvider.value,
-    getSystemPromptSupplement: () => llmToolsetPromptsStore.activeToolsetPrompt,
-    runtimeContextProviders: [
-      createMinecraftContext,
-    ],
-    createId: nanoid,
-    unwrapMessage: message => toRaw(message),
-    onStateChange: syncRuntimeState,
-    onSendSettled: settleOwnedActiveTurnSpan,
-    onTrackFirstMessage: trackFirstMessage,
-    onMessageSendStarted: ({ conversationId, roundId, turnIndex, source, model }) => {
-      lastSendSource = source
-      trackMessageSendStarted({
-        conversation_id: conversationId,
-        round_id: roundId,
-        turn_index: turnIndex,
-        source,
-        model,
-      })
+    memory: {
+      async recall(sessionId, query) {
+        const prompts = await Promise.allSettled([
+          shortTermMemoryStore.recallPrompt(sessionId),
+          longTermMemoryStore.recallPrompt(sessionId, query),
+        ])
+        return prompts
+          .filter((result): result is PromiseFulfilledResult<string | undefined> => result.status === 'fulfilled')
+          .map(result => result.value?.trim())
+          .filter((value): value is string => !!value)
+          .join('\n\n') || undefined
+      },
+      async rememberTurn(turn) {
+        const results = await Promise.allSettled([
+          shortTermMemoryStore.rememberTurn(turn.sessionId, turn.userText, turn.assistantText),
+          longTermMemoryStore.rememberTurn(turn.sessionId, turn.userText, turn.assistantText),
+        ])
+        const longTermResult = results[1]
+        if (longTermResult?.status === 'rejected') {
+          // NOTICE:
+          // Long-term memory persistence is OPTIONAL — the chat flow must never
+          // die because the database or gateway is unavailable. Previously this
+          // re-threw the rejection "for diagnostics", but when PostgreSQL is
+          // persistently down, every turn's rememberTurn rejects, the re-throw
+          // aborts the orchestrator's turn, and the conversation dies.
+          // The memory store's circuit breaker already logs a warning when it
+          // opens; this boundary captures the rejection for observability only.
+          console.warn('Long-term memory rememberTurn rejected (fail-open):', longTermResult.reason)
+        }
+      },
     },
-    onLlmRequestStarted: ({ conversationId, roundId, turnIndex, model, provider, hasVoice }) => trackLlmRequestStarted({
-      conversation_id: conversationId,
-      round_id: roundId,
-      turn_index: turnIndex,
-      model,
-      provider,
-      has_voice: hasVoice,
-    }),
-    onLlmFirstToken: ({ conversationId, roundId, turnIndex, model, ttfbMs }) => trackLlmFirstToken({
-      conversation_id: conversationId,
-      round_id: roundId,
-      turn_index: turnIndex,
-      model,
-      ttfb_ms: ttfbMs,
-    }),
-    onAssistantResponseRendered: ({ conversationId, roundId, turnIndex, model, latencyMs }) => {
+    onAssistantMessageAppended: ({ message, sessionId }) => {
+      if (isCloudSyncableMessage(message) && message.id) {
+        void chatSession.pushMessageToCloud(sessionId, {
+          content: extractMessageText(message),
+          id: message.id,
+          role: 'assistant',
+        })
+      }
+    },
+    onAssistantResponseRendered: ({ conversationId, latencyMs, model, roundId, turnIndex }) => {
       trackAssistantResponseRendered({
         conversation_id: conversationId,
+        latency_ms: latencyMs,
+        model,
         round_id: roundId,
         turn_index: turnIndex,
-        model,
-        latency_ms: latencyMs,
       })
     },
-    onMessageRound: ({ conversationId, roundId, turnIndex, durationMs, hasVoice, model }) => trackMessageRound({
-      conversation_id: conversationId,
-      round_id: roundId,
-      turn_index: turnIndex,
-      duration_ms: durationMs,
-      has_voice: hasVoice,
-      model,
-    }),
-    onMessageRoundFailed: ({ conversationId, roundId, turnIndex, model, provider, errorCode, failureStage, source }) => trackMessageRoundFailed({
-      conversation_id: conversationId,
-      round_id: roundId,
-      turn_index: turnIndex,
-      provider_id: provider || 'unknown',
-      model_id: model || 'unknown',
-      source,
-      error_code: errorCode,
-      failure_stage: failureStage,
-    }),
-    onChatActivationStarted: ({ conversationId, roundId, turnIndex, model, provider, source }) => {
+    onAssistantTurnReady: ({ messageText, sessionMessages }) => {
+      const artistry = cardStore.activeCard?.extensions?.airi?.modules?.artistry
+      if (artistry?.autonomousEnabled && artistry?.autonomousTarget === 'assistant')
+        void artistryAutonomousStore.runArtistTask(messageText, toProviderHistory(sessionMessages))
+    },
+    onChatActivationFailed: ({ conversationId, errorCode, failureStage, model, provider, roundId, source, turnIndex }) => {
+      trackChatActivationFailed({
+        conversation_id: conversationId,
+        error_code: errorCode,
+        failure_stage: failureStage,
+        model_id: model || 'unknown',
+        provider_id: provider || 'unknown',
+        provider_mode: providerMode(provider),
+        round_id: roundId,
+        source,
+        turn_index: turnIndex,
+      })
+    },
+    onChatActivationStarted: ({ conversationId, model, provider, roundId, source, turnIndex }) => {
       const mode = providerMode(provider)
       const providerId = provider || 'unknown'
       const modelId = model || 'unknown'
 
       trackChatActivationStarted({
         conversation_id: conversationId,
-        provider_mode: mode,
-        provider_id: providerId,
         model_id: modelId,
+        provider_id: providerId,
+        provider_mode: mode,
         round_id: roundId,
         source,
         turn_index: turnIndex,
       })
     },
-    onChatActivationSucceeded: ({ conversationId, roundId, turnIndex, model, provider, durationMs, source }) => trackChatActivationSucceeded({
+    onChatActivationSucceeded: ({ conversationId, durationMs, model, provider, roundId, source, turnIndex }) => trackChatActivationSucceeded({
       conversation_id: conversationId,
-      provider_mode: providerMode(provider),
-      provider_id: provider || 'unknown',
       model_id: model || 'unknown',
+      provider_id: provider || 'unknown',
+      provider_mode: providerMode(provider),
       round_id: roundId,
+      source,
       time_to_first_message_ms: durationMs,
+      turn_index: turnIndex,
+    }),
+    onLifecycle: record => contextObservability.recordLifecycle(record),
+    onLlmFirstToken: ({ conversationId, model, roundId, ttfbMs, turnIndex }) => trackLlmFirstToken({
+      conversation_id: conversationId,
+      model,
+      round_id: roundId,
+      ttfb_ms: ttfbMs,
+      turn_index: turnIndex,
+    }),
+    onLlmRequestStarted: ({ conversationId, hasVoice, model, provider, roundId, turnIndex }) => trackLlmRequestStarted({
+      conversation_id: conversationId,
+      has_voice: hasVoice,
+      model,
+      provider,
+      round_id: roundId,
+      turn_index: turnIndex,
+    }),
+    onMessageRound: ({ conversationId, durationMs, hasVoice, model, roundId, turnIndex }) => trackMessageRound({
+      conversation_id: conversationId,
+      duration_ms: durationMs,
+      has_voice: hasVoice,
+      model,
+      round_id: roundId,
+      turn_index: turnIndex,
+    }),
+    onMessageRoundFailed: ({ conversationId, errorCode, failureStage, model, provider, roundId, source, turnIndex }) => trackMessageRoundFailed({
+      conversation_id: conversationId,
+      error_code: errorCode,
+      failure_stage: failureStage,
+      model_id: model || 'unknown',
+      provider_id: provider || 'unknown',
+      round_id: roundId,
       source,
       turn_index: turnIndex,
     }),
-    onChatActivationFailed: ({ conversationId, roundId, turnIndex, model, provider, errorCode, failureStage, source }) => {
-      trackChatActivationFailed({
+    onMessageSendStarted: ({ conversationId, model, roundId, source, turnIndex }) => {
+      lastSendSource = source
+      trackMessageSendStarted({
         conversation_id: conversationId,
-        provider_mode: providerMode(provider),
-        provider_id: provider || 'unknown',
-        model_id: model || 'unknown',
+        model,
         round_id: roundId,
-        error_code: errorCode,
-        failure_stage: failureStage,
         source,
         turn_index: turnIndex,
       })
     },
-    onLifecycle: record => contextObservability.recordLifecycle(record),
     onPromptProjection: payload => contextObservability.capturePromptProjection(payload),
-    onUserMessageAppended: ({ sessionId, message, messageText, source, model, provider, roundId, turnIndex }) => {
+    onSendSettled: settleOwnedActiveTurnSpan,
+    onStateChange: syncRuntimeState,
+    onTrackFirstMessage: trackFirstMessage,
+    onUserMessageAppended: ({ message, messageText, model, provider, roundId, sessionId, source, turnIndex }) => {
       trackMessageSent({
         conversation_id: sessionId,
-        provider_type: providerMode(activeProvider.value),
-        provider_name: activeProvider.value || 'unknown',
-        model: activeModel.value || 'unknown',
+        has_attachment: false,
         message_id: message.id,
-        round_id: roundId,
-        turn_index: turnIndex,
         message_index: chatSession.getSessionMessages(sessionId).length,
         message_length: messageText.length,
-        has_attachment: false,
         mode: lastSendSource,
+        model: activeModel.value || 'unknown',
+        provider_name: activeProvider.value || 'unknown',
+        provider_type: providerMode(activeProvider.value),
+        round_id: roundId,
+        turn_index: turnIndex,
       })
       if (turnIndex === 2) {
         trackSecondTurnStarted({
           conversation_id: sessionId,
-          provider_mode: providerMode(provider),
-          provider_id: provider || 'unknown',
           model_id: model || 'unknown',
+          provider_id: provider || 'unknown',
+          provider_mode: providerMode(provider),
           round_id: roundId,
           source,
           turn_index: turnIndex,
@@ -302,18 +350,9 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
       if (isCloudSyncableMessage(message)) {
         void chatSession.pushMessageToCloud(sessionId, {
+          content: messageText,
           id: message.id,
           role: 'user',
-          content: messageText,
-        })
-      }
-    },
-    onAssistantMessageAppended: ({ sessionId, message }) => {
-      if (isCloudSyncableMessage(message) && message.id) {
-        void chatSession.pushMessageToCloud(sessionId, {
-          id: message.id,
-          role: 'assistant',
-          content: extractMessageText(message),
         })
       }
     },
@@ -322,11 +361,16 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       if (autonomousTarget === 'user')
         void artistryAutonomousStore.runArtistTask(messageText, toProviderHistory(sessionMessages))
     },
-    onAssistantTurnReady: ({ messageText, sessionMessages }) => {
-      const artistry = cardStore.activeCard?.extensions?.airi?.modules?.artistry
-      if (artistry?.autonomousEnabled && artistry?.autonomousTarget === 'assistant')
-        void artistryAutonomousStore.runArtistTask(messageText, toProviderHistory(sessionMessages))
+    runtimeContextProviders: [
+      createMinecraftContext,
+    ],
+    session: {
+      appendSessionMessage: (sessionId, message) => chatSession.appendSessionMessage(sessionId, message),
+      ensureSession: sessionId => chatSession.ensureSession(sessionId),
+      getSessionGeneration: sessionId => chatSession.getSessionGeneration(sessionId),
+      getSessionMessages: sessionId => chatSession.getSessionMessages(sessionId).map(message => toRaw(message)),
     },
+    unwrapMessage: message => toRaw(message),
   })
 
   watch(sending, (next) => {
@@ -352,10 +396,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       return ingest(sendingMessage, options, baseSessionId)
 
     const forkSessionId = await chatSession.forkSession({
-      fromSessionId: baseSessionId,
       atIndex: forkOptions.atIndex,
-      reason: forkOptions.reason,
+      fromSessionId: baseSessionId,
       hidden: forkOptions.hidden,
+      reason: forkOptions.reason,
     })
     return ingest(sendingMessage, options, forkSessionId || baseSessionId)
   }
@@ -369,36 +413,36 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   }
 
   return {
-    sending,
-    pendingQueuedSendCount,
-
-    ingest,
-    ingestOnFork,
     cancelPendingSends,
-    getPendingQueuedSendSnapshot,
-
     clearHooks: runtime.hooks.clearHooks,
 
-    emitBeforeMessageComposedHooks: runtime.hooks.emitBeforeMessageComposedHooks,
     emitAfterMessageComposedHooks: runtime.hooks.emitAfterMessageComposedHooks,
-    emitBeforeSendHooks: runtime.hooks.emitBeforeSendHooks,
     emitAfterSendHooks: runtime.hooks.emitAfterSendHooks,
+    emitAssistantMessageHooks: runtime.hooks.emitAssistantMessageHooks,
+    emitAssistantResponseEndHooks: runtime.hooks.emitAssistantResponseEndHooks,
+
+    emitBeforeMessageComposedHooks: runtime.hooks.emitBeforeMessageComposedHooks,
+
+    emitBeforeSendHooks: runtime.hooks.emitBeforeSendHooks,
+    emitChatTurnCompleteHooks: runtime.hooks.emitChatTurnCompleteHooks,
+    emitStreamEndHooks: runtime.hooks.emitStreamEndHooks,
     emitTokenLiteralHooks: runtime.hooks.emitTokenLiteralHooks,
     emitTokenSpecialHooks: runtime.hooks.emitTokenSpecialHooks,
-    emitStreamEndHooks: runtime.hooks.emitStreamEndHooks,
-    emitAssistantResponseEndHooks: runtime.hooks.emitAssistantResponseEndHooks,
-    emitAssistantMessageHooks: runtime.hooks.emitAssistantMessageHooks,
-    emitChatTurnCompleteHooks: runtime.hooks.emitChatTurnCompleteHooks,
-
-    onBeforeMessageComposed: runtime.hooks.onBeforeMessageComposed,
+    getPendingQueuedSendSnapshot,
+    ingest,
+    ingestOnFork,
     onAfterMessageComposed: runtime.hooks.onAfterMessageComposed,
-    onBeforeSend: runtime.hooks.onBeforeSend,
     onAfterSend: runtime.hooks.onAfterSend,
+
+    onAssistantMessage: runtime.hooks.onAssistantMessage,
+    onAssistantResponseEnd: runtime.hooks.onAssistantResponseEnd,
+    onBeforeMessageComposed: runtime.hooks.onBeforeMessageComposed,
+    onBeforeSend: runtime.hooks.onBeforeSend,
+    onChatTurnComplete: runtime.hooks.onChatTurnComplete,
+    onStreamEnd: runtime.hooks.onStreamEnd,
     onTokenLiteral: runtime.hooks.onTokenLiteral,
     onTokenSpecial: runtime.hooks.onTokenSpecial,
-    onStreamEnd: runtime.hooks.onStreamEnd,
-    onAssistantResponseEnd: runtime.hooks.onAssistantResponseEnd,
-    onAssistantMessage: runtime.hooks.onAssistantMessage,
-    onChatTurnComplete: runtime.hooks.onChatTurnComplete,
+    pendingQueuedSendCount,
+    sending,
   }
 })

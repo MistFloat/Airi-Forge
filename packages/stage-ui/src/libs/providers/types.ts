@@ -15,36 +15,6 @@ import type { MaybePromise } from 'clustr'
 import type { ComposerTranslation } from 'vue-i18n'
 import type { $ZodType } from 'zod/v4/core'
 
-export type ProviderInstance
-  = | ChatProvider
-    | ChatProviderWithExtraOptions
-    | EmbedProvider
-    | EmbedProviderWithExtraOptions
-    | SpeechProvider
-    | SpeechProviderWithExtraOptions
-    | TranscriptionProvider
-    | TranscriptionProviderWithExtraOptions
-    | ModelProvider
-    | ModelProviderWithExtraOptions
-
-export function isModelProvider(providerInstance: ProviderInstance): providerInstance is ModelProvider | ModelProviderWithExtraOptions {
-  if ('model' in providerInstance && typeof providerInstance.model === 'function') {
-    return true
-  }
-
-  return false
-}
-
-export interface ProviderOnboardingField {
-  key: string
-  type: 'text' | 'password'
-  label: string
-  description?: string
-  placeholder?: string
-  required?: boolean
-  defaultValue?: string
-}
-
 export interface ProviderExtraMethods<TConfig> {
   listModels?: (config: TConfig, provider: ProviderInstance) => Promise<ModelInfo[]>
   /**
@@ -56,11 +26,41 @@ export interface ProviderExtraMethods<TConfig> {
   loadModel?: (config: TConfig, provider: ProviderInstance, hooks?: { onProgress?: (progress: ProgressInfo) => Promise<void> | void }) => Promise<void>
 }
 
+export type ProviderInstance
+  = | ChatProvider
+    | ChatProviderWithExtraOptions
+    | EmbedProvider
+    | EmbedProviderWithExtraOptions
+    | ModelProvider
+    | ModelProviderWithExtraOptions
+    | SpeechProvider
+    | SpeechProviderWithExtraOptions
+    | TranscriptionProvider
+    | TranscriptionProviderWithExtraOptions
+
+export interface ProviderOnboardingField {
+  defaultValue?: string
+  description?: string
+  key: string
+  label: string
+  placeholder?: string
+  required?: boolean
+  type: 'password' | 'text'
+}
+
 export interface ProviderValidationResult {
   errors: Array<{ error: unknown, errorKey?: string }>
   reason: string
   reasonKey: string
   valid: boolean
+}
+
+export function isModelProvider(providerInstance: ProviderInstance): providerInstance is ModelProvider | ModelProviderWithExtraOptions {
+  if ('model' in providerInstance && typeof providerInstance.model === 'function') {
+    return true
+  }
+
+  return false
 }
 
 /**
@@ -71,12 +71,10 @@ export interface ProviderValidationResult {
 export const CHAT_COMPLETIONS_VALIDATOR_ID = 'check-chat-completions'
 
 export enum ProviderValidationCheck {
-  /** Lightweight GET to /models endpoint to check reachability (definition system) */
-  Connectivity = 'connectivity',
-  /** Fetch model list and verify non-empty */
-  ModelList = 'model_list',
   /** Send generateText ping with fine-grained error handling and caching (definition system) */
   ChatCompletions = 'chat_completions',
+  /** Lightweight GET to /models endpoint to check reachability (definition system) */
+  Connectivity = 'connectivity',
   /**
    * @deprecated
    * Being used in builder system (a deprecated provider creation protocol),
@@ -84,61 +82,82 @@ export enum ProviderValidationCheck {
    * Send generateText ping with simple pass/fail, fallback to 'test' model (builder system)
    */
   Health = 'health',
+  /** Fetch model list and verify non-empty */
+  ModelList = 'model_list',
 }
 
-export interface ProviderValidatorSchedule {
-  mode: 'once' | 'interval'
-  intervalMs?: number
+export interface ModelInfo {
+  capabilities?: string[]
+  contextLength?: number
+  deprecated?: boolean
+  description?: string
+  id: string
+  name: string
+  provider: string
 }
 
 export interface ProviderConfigValidator<TConfig> {
   id: string
   name: string
+  schedule?: ProviderValidatorSchedule
   validator: (config: TConfig, contextOptions: { t: ComposerTranslation }) => MaybePromise<ProviderValidationResult>
-  schedule?: ProviderValidatorSchedule
-}
-
-export interface ProviderRuntimeValidator<TConfig> {
-  id: string
-  name: string
-  validator: (config: TConfig, provider: ProviderInstance, providerExtra: ProviderExtraMethods<TConfig>, contextOptions: { t: ComposerTranslation }) => MaybePromise<ProviderValidationResult>
-  schedule?: ProviderValidatorSchedule
-}
-
-export interface ModelInfo {
-  id: string
-  name: string
-  provider: string
-  description?: string
-  capabilities?: string[]
-  contextLength?: number
-  deprecated?: boolean
-}
-
-export interface VoiceInfo {
-  id: string
-  name: string
-  provider: string
-  compatibleModels?: string[]
-  description?: string
-  gender?: string
-  deprecated?: boolean
-  previewURL?: string
-  languages: {
-    code: string
-    title: string
-  }[]
 }
 
 // eslint-disable-next-line ts/no-unnecessary-type-constraint
 export interface ProviderDefinition<TConfig extends any = any> {
-  id: string
-  order?: number
-  tasks: string[]
-  nameLocalize: (ctx: { t: (input: string) => string }) => string // i18n key for provider name
-  name: string // Default name (fallback)
-  descriptionLocalize: (ctx: { t: (input: string) => string }) => string // i18n key for provider description
+  business?: (contextOptions: { t: ComposerTranslation }) => {
+    troubleshooting?: {
+      validators?: {
+        openaiCompatibleCheckConnectivity?: {
+          content?: string
+          label?: string
+        }
+      }
+    }
+  }
+  capabilities?: {
+    /**
+     * Declares the TTS transport this provider speaks. Drives Stage's TTS
+     * session adapter selection (`@proj-airi/stage-ui/libs/speech/tts-session`):
+     *
+     * - `rest` (default when this whole block is absent): the host opens
+     *   a `pipelines-audio` IntentHandle and the provider's `speech()` is
+     *   called per-segment by the speech-pipeline `tts()` callback. This
+     *   matches every OpenAI-shaped HTTP TTS provider.
+     * - `bidirectional-ws`: the host opens one streaming TTS WebSocket
+     *   for the whole LLM intent and forwards raw token chunks without
+     *   client-side segmentation. The provider's `speech()` is unused
+     *   for synthesis on this path (kept only for legacy fallback).
+     *
+     * Designed so a future provider (ElevenLabs streaming, OpenAI Realtime
+     * Voice, etc.) only needs to set this flag — Stage and the session
+     * factory do not need to know each provider's id.
+     */
+    speech?: {
+      transport: 'bidirectional-ws' | 'rest'
+    }
+    transcription?: {
+      generateOutput: boolean
+      protocol: 'http' | 'websocket'
+      streamInput: boolean
+      streamOutput: boolean
+    }
+  }
+  createProvider: (config: TConfig) => ProviderInstance
+  createProviderConfig: (contextOptions: { t: ComposerTranslation }) => $ZodType<TConfig>
   description: string // Default description (fallback)
+  descriptionLocalize: (ctx: { t: (input: string) => string }) => string // i18n key for provider description
+  /**
+   * When true, hides the "skip chat ping check" checkbox in the UI even
+   * when the provider defines a ChatCompletions validator.
+   *
+   * By default, the checkbox is shown automatically whenever a provider
+   * includes a ChatCompletions runtime validator. Set this to `true` for
+   * providers where skipping that check is not meaningful or has not been
+   * verified yet.
+   */
+  disableChatPingCheckUI?: boolean
+  extraMethods?: ProviderExtraMethods<TConfig>
   /**
    * Iconify JSON icon name for the provider.
    *
@@ -146,10 +165,13 @@ export interface ProviderDefinition<TConfig extends any = any> {
    */
   icon?: string
   iconColor?: string
+
   /**
    * In case of having image instead of icon, you can specify the image URL here.
    */
   iconImage?: string
+
+  id: string
 
   /**
    * Indicates whether the provider is available.
@@ -171,69 +193,47 @@ export interface ProviderDefinition<TConfig extends any = any> {
    * - may requires significant amount of memory to run, especially for those
    *   non-WebGPU supported environments.
    */
-  isAvailableBy?: () => Promise<boolean> | boolean
-
+  isAvailableBy?: () => boolean | Promise<boolean>
+  name: string // Default name (fallback)
+  nameLocalize: (ctx: { t: (input: string) => string }) => string // i18n key for provider name
+  onboardingFields?: (ctx: { t: ComposerTranslation }) => ProviderOnboardingField[]
+  order?: number
   /**
    * If false, the provider does not require user-provided credentials (e.g. API keys).
    * Used for built-in providers that authenticate via JWT Bearer tokens.
    */
   requiresCredentials?: boolean
-
-  createProviderConfig: (contextOptions: { t: ComposerTranslation }) => $ZodType<TConfig>
-  onboardingFields?: (ctx: { t: ComposerTranslation }) => ProviderOnboardingField[]
-  createProvider: (config: TConfig) => ProviderInstance
-  extraMethods?: ProviderExtraMethods<TConfig>
+  tasks: string[]
   validationRequiredWhen?: (config: TConfig) => boolean
   validators?: {
     validateConfig?: Array<(contextOptions: { t: ComposerTranslation }) => ProviderConfigValidator<TConfig>>
     validateProvider?: Array<(contextOptions: { t: ComposerTranslation }) => ProviderRuntimeValidator<TConfig>>
   }
-  capabilities?: {
-    transcription?: {
-      protocol: 'websocket' | 'http'
-      generateOutput: boolean
-      streamOutput: boolean
-      streamInput: boolean
-    }
-    /**
-     * Declares the TTS transport this provider speaks. Drives Stage's TTS
-     * session adapter selection (`@proj-airi/stage-ui/libs/speech/tts-session`):
-     *
-     * - `rest` (default when this whole block is absent): the host opens
-     *   a `pipelines-audio` IntentHandle and the provider's `speech()` is
-     *   called per-segment by the speech-pipeline `tts()` callback. This
-     *   matches every OpenAI-shaped HTTP TTS provider.
-     * - `bidirectional-ws`: the host opens one streaming TTS WebSocket
-     *   for the whole LLM intent and forwards raw token chunks without
-     *   client-side segmentation. The provider's `speech()` is unused
-     *   for synthesis on this path (kept only for legacy fallback).
-     *
-     * Designed so a future provider (ElevenLabs streaming, OpenAI Realtime
-     * Voice, etc.) only needs to set this flag — Stage and the session
-     * factory do not need to know each provider's id.
-     */
-    speech?: {
-      transport: 'rest' | 'bidirectional-ws'
-    }
-  }
-  /**
-   * When true, hides the "skip chat ping check" checkbox in the UI even
-   * when the provider defines a ChatCompletions validator.
-   *
-   * By default, the checkbox is shown automatically whenever a provider
-   * includes a ChatCompletions runtime validator. Set this to `true` for
-   * providers where skipping that check is not meaningful or has not been
-   * verified yet.
-   */
-  disableChatPingCheckUI?: boolean
-  business?: (contextOptions: { t: ComposerTranslation }) => {
-    troubleshooting?: {
-      validators?: {
-        openaiCompatibleCheckConnectivity?: {
-          label?: string
-          content?: string
-        }
-      }
-    }
-  }
+}
+
+export interface ProviderRuntimeValidator<TConfig> {
+  id: string
+  name: string
+  schedule?: ProviderValidatorSchedule
+  validator: (config: TConfig, provider: ProviderInstance, providerExtra: ProviderExtraMethods<TConfig>, contextOptions: { t: ComposerTranslation }) => MaybePromise<ProviderValidationResult>
+}
+
+export interface ProviderValidatorSchedule {
+  intervalMs?: number
+  mode: 'interval' | 'once'
+}
+
+export interface VoiceInfo {
+  compatibleModels?: string[]
+  deprecated?: boolean
+  description?: string
+  gender?: string
+  id: string
+  languages: {
+    code: string
+    title: string
+  }[]
+  name: string
+  previewURL?: string
+  provider: string
 }

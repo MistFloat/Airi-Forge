@@ -17,19 +17,20 @@ export interface BuiltInServer {
  * - Each server follows the `ServerManager` lifecycle contract
  *
  * Returns:
- * - A lifecycle service with ordered startup/shutdown behavior
+ * - A started lifecycle service with ordered, idempotent startup/shutdown behavior
  */
-export function setupBuiltInServer(params: {
+export async function setupBuiltInServer(params: {
   authServer?: ServerManager
-  staticAssetServer?: ServerManager
   servers?: ServerManager[]
-}): BuiltInServer {
+  staticAssetServer?: ServerManager
+}): Promise<BuiltInServer> {
   const servers = [
     ...(params.authServer ? [params.authServer] : []),
     ...(params.staticAssetServer ? [params.staticAssetServer] : []),
     ...(params.servers ?? []),
   ]
   const manager = createHttpServerManager(servers)
+  await manager.start()
 
   return {
     start: manager.start,

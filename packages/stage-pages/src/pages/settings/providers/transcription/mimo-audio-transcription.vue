@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RemovableRef } from '@vueuse/core'
-import type { TranscriptionProviderWithExtraOptions } from '@xsai-ext/providers/utils'
+import type { TranscriptionProvider } from '@xsai-ext/providers/utils'
 
 import {
   Alert,
@@ -20,9 +20,20 @@ import { storeToRefs } from 'pinia'
 import { computed, onMounted } from 'vue'
 
 const providerId = 'mimo-audio-transcription'
+const defaultModel = 'mimo-v2.5-asr'
+
+type MimoAsrLanguage = 'auto' | 'en' | 'zh'
+
+interface MimoAudioTranscriptionConfig {
+  apiKey?: string
+  baseUrl?: string
+  language?: MimoAsrLanguage
+  model?: string
+}
+
 const hearingStore = useHearingStore()
 const providersStore = useProvidersStore()
-const { providers } = storeToRefs(providersStore) as { providers: RemovableRef<Record<string, any>> }
+const { providers } = storeToRefs(providersStore) as { providers: RemovableRef<Record<string, MimoAudioTranscriptionConfig | undefined>> }
 
 const apiKey = computed({
   get: () => providers.value[providerId]?.apiKey || '',
@@ -43,11 +54,23 @@ const baseUrl = computed({
 })
 
 const model = computed({
-  get: () => providers.value[providerId]?.model || 'mimo-v2-omni',
+  get: () => {
+    const configuredModel = providers.value[providerId]?.model
+    return configuredModel?.endsWith('-asr') ? configuredModel : defaultModel
+  },
   set: (value) => {
     if (!providers.value[providerId])
       providers.value[providerId] = {}
     providers.value[providerId].model = value
+  },
+})
+
+const language = computed<MimoAsrLanguage>({
+  get: () => providers.value[providerId]?.language || 'auto',
+  set: (value) => {
+    if (!providers.value[providerId])
+      providers.value[providerId] = {}
+    providers.value[providerId].language = value
   },
 })
 
@@ -58,12 +81,14 @@ const providerModels = computed(() => providersStore.getModelsForProvider(provid
 const isLoadingModels = computed(() => providersStore.isLoadingModels[providerId] || false)
 
 onMounted(async () => {
+  if (!providers.value[providerId]?.model?.endsWith('-asr'))
+    model.value = defaultModel
   await providersStore.loadModelsForConfiguredProviders()
   await providersStore.fetchModelsForProvider(providerId)
 })
 
 async function handleGenerateTranscription(file: File) {
-  const provider = await providersStore.getProviderInstance<TranscriptionProviderWithExtraOptions<string, any>>(providerId)
+  const provider = await providersStore.getProviderInstance<TranscriptionProvider>(providerId)
   if (!provider)
     throw new Error('Failed to initialize transcription provider')
 
@@ -111,6 +136,16 @@ const {
           :options="providerModels.map(m => ({ value: m.id, label: m.name }))"
           :disabled="isLoadingModels || providerModels.length === 0"
           placeholder="Select a model..."
+        />
+        <FieldCombobox
+          v-model="language"
+          :label="t('settings.pages.providers.provider.mimo.fields.language.label')"
+          :description="t('settings.pages.providers.provider.mimo.fields.language.description')"
+          :options="[
+            { value: 'auto', label: t('settings.pages.providers.provider.mimo.fields.language.options.auto') },
+            { value: 'zh', label: t('settings.pages.providers.provider.mimo.fields.language.options.zh') },
+            { value: 'en', label: t('settings.pages.providers.provider.mimo.fields.language.options.en') },
+          ]"
         />
       </ProviderBasicSettings>
 

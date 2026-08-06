@@ -173,7 +173,10 @@ function createFullStageRuntime() {
         globals: JSON.parse(JSON.stringify(artistryGlobals.value)),
         model: activeModel.value,
         promptPrefix: defaultPromptPrefix.value,
-        options: providerOptions.value,
+        // NOTICE: `providerOptions` is a VueUse localStorage ref (reactive proxy);
+        // structured-cloning it over Electron IPC throws "An object could not be
+        // cloned". Normalize to a plain object first, like `globals` above.
+        options: providerOptions.value == null ? null : JSON.parse(JSON.stringify(providerOptions.value)),
       })
     }
   }, { deep: true, immediate: true })

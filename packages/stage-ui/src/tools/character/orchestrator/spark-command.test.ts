@@ -10,30 +10,14 @@ import { toJsonSchema } from 'xsschema'
 import { createSparkCommandTool } from './spark-command'
 import { normalizeNullableAnyOf, sparkNotifyCommandItemSchema } from './spark-command-shared'
 
-function isJsonSchema(value: JsonSchema | boolean | undefined): value is JsonSchema {
-  return Boolean(value && typeof value === 'object')
-}
-
-function getObjectSchema(schema?: JsonSchema) {
-  if (!schema)
-    return undefined
-
-  if (schema.type === 'object')
-    return schema
-
-  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])].filter(isJsonSchema)
-  return candidates.find(candidate => candidate?.type === 'object')
-}
-
-function getArraySchema(schema?: JsonSchema) {
-  if (!schema)
-    return undefined
-
-  if (schema.type === 'array')
-    return schema
-
-  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])].filter(isJsonSchema)
-  return candidates.find(candidate => candidate?.type === 'array')
+/**
+ * Asserts array membership ignoring order. JSON Schema `required` order is not
+ * contractual — xsschema/zod emit it in their own (dependency-versioned) key
+ * order, so the assertions in this file only pin down the key set.
+ */
+function expectSameMembers(actual: readonly string[] | undefined, expected: readonly string[]) {
+  expect(actual).toBeDefined()
+  expect([...(actual as string[])].sort()).toEqual([...expected].sort())
 }
 
 function findObjectSchema(schema: JsonSchema | undefined, predicate: (schema: JsonSchema) => boolean): JsonSchema | undefined {
@@ -51,6 +35,32 @@ function findObjectSchema(schema: JsonSchema | undefined, predicate: (schema: Js
   }
 
   return undefined
+}
+
+function getArraySchema(schema?: JsonSchema) {
+  if (!schema)
+    return undefined
+
+  if (schema.type === 'array')
+    return schema
+
+  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])].filter(isJsonSchema)
+  return candidates.find(candidate => candidate?.type === 'array')
+}
+
+function getObjectSchema(schema?: JsonSchema) {
+  if (!schema)
+    return undefined
+
+  if (schema.type === 'object')
+    return schema
+
+  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])].filter(isJsonSchema)
+  return candidates.find(candidate => candidate?.type === 'object')
+}
+
+function isJsonSchema(value: boolean | JsonSchema | undefined): value is JsonSchema {
+  return Boolean(value && typeof value === 'object')
 }
 
 describe('tools/character/orchestrator/spark-command', () => {
@@ -78,38 +88,38 @@ describe('tools/character/orchestrator/spark-command', () => {
 
   it('removes required keys that are not declared in sibling properties', () => {
     const normalized = normalizeNullableAnyOf({
-      type: 'object',
       properties: {
         contexts: {
           anyOf: [
             {
-              type: 'array',
               items: {
-                type: 'object',
                 properties: {
                   metadata: {
                     anyOf: [
                       {
-                        type: 'array',
                         items: {
-                          type: 'object',
                           properties: {
                             key: { type: 'string' },
                           },
                           required: ['key', 'value'],
+                          type: 'object',
                         },
+                        type: 'array',
                       },
                       { type: 'null' },
                     ],
                   },
                 },
+                type: 'object',
               },
+              type: 'array',
             },
             { type: 'null' },
           ],
         },
       },
       required: ['contexts'],
+      type: 'object',
     } as JsonSchema)
 
     const contexts = getArraySchema(normalized.properties?.contexts as JsonSchema)
@@ -125,10 +135,10 @@ describe('tools/character/orchestrator/spark-command', () => {
     const normalized = normalizeNullableAnyOf(schemaTest as JsonSchema)
 
     const res = rawTool({
-      name: 'test_tool',
-      strict: true,
-      parameters: normalized,
       execute: () => ({ success: true }),
+      name: 'test_tool',
+      parameters: normalized,
+      strict: true,
     })
     expect(res.function.parameters).toStrictEqual(normalized)
   })
@@ -164,7 +174,7 @@ describe('tools/character/orchestrator/spark-command', () => {
     })
 
     const schema = tools[0].function.parameters as JsonSchema
-    expect(schema.required).toEqual([
+    expectSameMembers(schema.required, [
       'destinations',
       'interrupt',
       'priority',
@@ -185,12 +195,12 @@ describe('tools/character/orchestrator/spark-command', () => {
       candidate => Boolean(candidate.properties?.include || candidate.properties?.exclude),
     )
 
-    expect(guidance?.required).toEqual([
+    expectSameMembers(guidance?.required, [
       'type',
       'persona',
       'options',
     ])
-    expect(optionItem.required).toEqual([
+    expectSameMembers(optionItem.required, [
       'label',
       'steps',
       'rationale',
@@ -199,7 +209,7 @@ describe('tools/character/orchestrator/spark-command', () => {
       'fallback',
       'triggers',
     ])
-    expect(contextItem.required).toEqual([
+    expectSameMembers(contextItem.required, [
       'lane',
       'ideas',
       'hints',
@@ -208,7 +218,7 @@ describe('tools/character/orchestrator/spark-command', () => {
       'destinations',
       'metadata',
     ])
-    expect(destinationsFilter?.required).toEqual([
+    expectSameMembers(destinationsFilter?.required, [
       'include',
       'exclude',
     ])
@@ -221,74 +231,74 @@ describe('tools/character/orchestrator/spark-command', () => {
     })
 
     const result = await tools[0].execute({
-      destinations: ['minecraft'],
-      interrupt: 'soft',
-      priority: 'high',
-      intent: 'proposal',
       ack: 'check this',
-      parentEventId: 'parent-1',
-      guidance: {
-        type: 'instruction',
-        persona: [
-          { traits: 'bravery', strength: 'high' },
-        ],
-        options: [{
-          label: 'Move',
-          steps: ['Walk forward'],
-          rationale: 'Closer inspection',
-          possibleOutcome: null,
-          risk: null,
-          fallback: null,
-          triggers: null,
-        }],
-      },
       contexts: [{
-        lane: 'game',
-        ideas: null,
-        hints: null,
-        strategy: ContextUpdateStrategy.AppendSelf,
-        text: 'Zombie nearby',
         destinations: ['memory'],
+        hints: null,
+        ideas: null,
+        lane: 'game',
         metadata: [
           { key: 'threat', value: 'zombie' },
           { key: 'urgent', value: true },
         ],
+        strategy: ContextUpdateStrategy.AppendSelf,
+        text: 'Zombie nearby',
       }],
+      destinations: ['minecraft'],
+      guidance: {
+        options: [{
+          fallback: null,
+          label: 'Move',
+          possibleOutcome: null,
+          rationale: 'Closer inspection',
+          risk: null,
+          steps: ['Walk forward'],
+          triggers: null,
+        }],
+        persona: [
+          { strength: 'high', traits: 'bravery' },
+        ],
+        type: 'instruction',
+      },
+      intent: 'proposal',
+      interrupt: 'soft',
+      parentEventId: 'parent-1',
+      priority: 'high',
     }, { messages: [], toolCallId: 'tool-call-id' })
 
     expect(sendSparkCommand).toHaveBeenCalledTimes(1)
     expect(sendSparkCommand).toHaveBeenCalledWith(expect.objectContaining({
-      parentEventId: 'parent-1',
-      interrupt: 'soft',
-      priority: 'high',
-      intent: 'proposal',
       ack: 'check this',
-      destinations: ['minecraft'],
-      guidance: {
-        type: 'instruction',
-        persona: {
-          bravery: 'high',
-        },
-        options: [{
-          label: 'Move',
-          steps: ['Walk forward'],
-          rationale: 'Closer inspection',
-          possibleOutcome: undefined,
-          risk: undefined,
-          fallback: undefined,
-          triggers: undefined,
-        }],
-      },
       contexts: [expect.objectContaining({
-        lane: 'game',
-        strategy: ContextUpdateStrategy.AppendSelf,
-        text: 'Zombie nearby',
         destinations: ['memory'],
+        lane: 'game',
         metadata: {
           threat: 'zombie',
           urgent: true,
         },
+        strategy: ContextUpdateStrategy.AppendSelf,
+        text: 'Zombie nearby',
       })],
+      destinations: ['minecraft'],
+      guidance: {
+        options: [{
+          fallback: undefined,
+          label: 'Move',
+          possibleOutcome: undefined,
+          rationale: 'Closer inspection',
+          risk: undefined,
+          steps: ['Walk forward'],
+          triggers: undefined,
+        }],
+        persona: {
+          bravery: 'high',
+        },
+        type: 'instruction',
+      },
+      intent: 'proposal',
+      interrupt: 'soft',
+      parentEventId: 'parent-1',
+      priority: 'high',
     }))
 
     const command = sendSparkCommand.mock.calls[0][0]
@@ -310,14 +320,14 @@ describe('tools/character/orchestrator/spark-command', () => {
     const tools = await createSparkCommandTool({ sendSparkCommand })
 
     const result = await tools[0].execute({
-      destinations: [],
-      interrupt: 'soft',
-      priority: 'normal',
-      intent: 'action',
       ack: null,
-      parentEventId: null,
-      guidance: null,
       contexts: null,
+      destinations: [],
+      guidance: null,
+      intent: 'action',
+      interrupt: 'soft',
+      parentEventId: null,
+      priority: 'normal',
     }, { messages: [], toolCallId: 'tool-call-id' })
 
     expect(sendSparkCommand).toHaveBeenCalledOnce()

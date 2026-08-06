@@ -20,9 +20,9 @@ export function useIOTraceBridge(pipeline: ReturnType<typeof createSpeechPipelin
   cleanupFns.push(pipeline.on('onTtsRequest', (request) => {
     const ttsSynthesisSpan = startSpan(IOSpanNames.TTSSynthesis, activeTurnSpan.value, {
       [IOAttributes.Subsystem]: IOSubsystems.TTS,
+      [IOAttributes.TTSChunkReason]: segmentReasons.get(request.segmentId) ?? '',
       [IOAttributes.TTSSegmentId]: request.segmentId,
       [IOAttributes.TTSText]: request.text,
-      [IOAttributes.TTSChunkReason]: segmentReasons.get(request.segmentId) ?? '',
     })
     segmentReasons.delete(request.segmentId)
     synthesisSpans.set(request.segmentId, ttsSynthesisSpan)

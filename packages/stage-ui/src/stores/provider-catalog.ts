@@ -11,15 +11,15 @@ import { client } from '../composables/api'
 import { inferenceServiceProvidersModel as model } from '../models/inference-service-providers'
 import { inferenceServiceProvidersService as service } from '../services/inference-service-providers'
 
+interface StoreMutation<TVars, TData> {
+  error: Ref<Error | null>
+  mutateAsync: (vars: TVars) => Promise<TData>
+}
+
 interface StoreQuery<TData> {
   error: Ref<Error | null>
   isLoading: Ref<boolean>
   refetch: (force?: boolean) => Promise<{ data?: TData }>
-}
-
-interface StoreMutation<TVars, TData> {
-  error: Ref<Error | null>
-  mutateAsync: (vars: TVars) => Promise<TData>
 }
 
 export function createProviderCatalogListQueryOptions(params: {
@@ -28,19 +28,19 @@ export function createProviderCatalogListQueryOptions(params: {
   service: Pick<typeof service, 'fetchRemote'>
 }) {
   return {
+    enabled: false,
     key: ['inference-service-providers'],
     query: async (context: { signal: AbortSignal }) => {
       const remote = await params.service.fetchRemote(params.client, { abortSignal: context.signal })
       await params.model.saveAll(remote, { abortSignal: context.signal })
       return remote
     },
-    enabled: false,
   }
 }
 
 export function createProviderCatalogStoreController(params: {
   addProviderMutation: StoreMutation<InferenceServiceProvider, InferenceServiceProvider>
-  commitProviderConfigMutation: StoreMutation<{ providerId: string, config: Record<string, unknown>, options: PatchConfigParams }, InferenceServiceProvider>
+  commitProviderConfigMutation: StoreMutation<{ config: Record<string, unknown>, options: PatchConfigParams, providerId: string }, InferenceServiceProvider>
   configs: Ref<Record<string, InferenceServiceProvider>>
   model: typeof model
   providersQuery: StoreQuery<Record<string, InferenceServiceProvider>>
@@ -126,7 +126,7 @@ export function createProviderCatalogStoreController(params: {
     await model.upsert(localProvider)
 
     try {
-      const remote = await commitProviderConfigMutation.mutateAsync({ providerId, config: newConfig, options })
+      const remote = await commitProviderConfigMutation.mutateAsync({ config: newConfig, options, providerId })
       configs.value[remote.id] = remote
       await model.upsert(remote)
       return remote
@@ -137,17 +137,17 @@ export function createProviderCatalogStoreController(params: {
   }
 
   return {
+    addProvider,
+    commitProviderConfig,
     configs,
     defs,
+    error: computed(() => providersQuery.error.value),
+    fetchList,
+
     getDefinedProvider: service.getDefinition,
     isLoading: computed(() => providersQuery.isLoading.value),
-    error: computed(() => providersQuery.error.value),
     mutationError,
-
-    fetchList,
-    addProvider,
     removeProvider,
-    commitProviderConfig,
   }
 }
 
@@ -177,9 +177,9 @@ export const useProviderCatalogStore = defineStore('provider-catalog', () => {
 
   const commitProviderConfigMutation = useMutation({
     mutation: async (payload: {
-      providerId: string
       config: Record<string, unknown>
       options: PatchConfigParams
+      providerId: string
     }) => service.patchConfigRemote(client, payload.providerId, payload.config, payload.options),
     async onSettled() {
       await queryCache.invalidateQueries({ key: ['inference-service-providers'] })

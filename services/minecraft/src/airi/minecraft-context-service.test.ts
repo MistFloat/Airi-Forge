@@ -5,13 +5,13 @@ import { MinecraftContextService } from './minecraft-context-service'
 /** Minimal bot stub exposing only the fields refreshStatusSnapshot reads. */
 function fakeBot(): any {
   return {
-    username: 'Airi',
     bot: {
       entity: { position: { x: 1, y: 2, z: 3 } },
-      health: 20,
       game: { gameMode: 'survival' },
-      players: { Airi: {}, dssadg: {}, Bob: {} },
+      health: 20,
+      players: { Airi: {}, Bob: {}, dssadg: {} },
     },
+    username: 'Airi',
   }
 }
 
@@ -23,16 +23,16 @@ function makeService(masterUsername?: string) {
   }
   const service = new MinecraftContextService({
     airiBridge: airiBridge as any,
+    masterUsername,
     serverHost: '127.0.0.1',
     serverPort: 25565,
-    masterUsername,
   })
-  return { service, captured }
+  return { captured, service }
 }
 
 describe('minecraftContextService master identity', () => {
   it('surfaces the configured master username in the status text only', () => {
-    const { service, captured } = makeService('dssadg')
+    const { captured, service } = makeService('dssadg')
     service.bindBot(fakeBot())
     const update = captured[0]
     expect(update.lane).toBe('minecraft:status')
@@ -46,7 +46,7 @@ describe('minecraftContextService master identity', () => {
   })
 
   it('omits the master line when no master username is configured', () => {
-    const { service, captured } = makeService(undefined)
+    const { captured, service } = makeService(undefined)
     service.bindBot(fakeBot())
     const update = captured[0]
     expect(update.hints.some((hint: string) => hint.startsWith('master:'))).toBe(false)

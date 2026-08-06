@@ -2,28 +2,6 @@ import { useChatSyncStore } from './chat-sync'
 
 type ChatSyncWindowRole = 'authority' | 'follower'
 
-function normalizeRoutePath(routePath: string) {
-  const [path = ''] = routePath.split(/[?#]/)
-  return path || '/'
-}
-
-/**
- * Resolves hash routes before Vue Router hydrates `route.path`.
- */
-export function resolveInitialChatSyncRoutePath(routePath: string, hash = globalThis.location?.hash ?? '') {
-  const hashPath = hash.startsWith('#') ? hash.slice(1) : ''
-  return normalizeRoutePath(hashPath || routePath)
-}
-
-function resolveChatSyncWindowRole(routePath: string): ChatSyncWindowRole | null {
-  const path = normalizeRoutePath(routePath)
-  if (path === '/')
-    return 'authority'
-  if (path === '/chat' || path === '/spotlight')
-    return 'follower'
-  return null
-}
-
 /**
  * Owns chat-sync BroadcastChannel lifecycle for one Electron renderer window.
  *
@@ -36,14 +14,36 @@ export function createChatSyncWindowLifecycle(routePath: string, hash?: string) 
   const role = resolveChatSyncWindowRole(resolveInitialChatSyncRoutePath(routePath, hash))
 
   return {
-    role,
-    initialize() {
-      if (role)
-        chatSyncStore.initialize(role)
-    },
     dispose() {
       if (role)
         chatSyncStore.dispose()
     },
+    initialize() {
+      if (role)
+        chatSyncStore.initialize(role)
+    },
+    role,
   }
+}
+
+/**
+ * Resolves hash routes before Vue Router hydrates `route.path`.
+ */
+export function resolveInitialChatSyncRoutePath(routePath: string, hash = globalThis.location?.hash ?? '') {
+  const hashPath = hash.startsWith('#') ? hash.slice(1) : ''
+  return normalizeRoutePath(hashPath || routePath)
+}
+
+function normalizeRoutePath(routePath: string) {
+  const [path = ''] = routePath.split(/[?#]/)
+  return path || '/'
+}
+
+function resolveChatSyncWindowRole(routePath: string): ChatSyncWindowRole | null {
+  const path = normalizeRoutePath(routePath)
+  if (path === '/')
+    return 'authority'
+  if (path === '/chat' || path === '/spotlight')
+    return 'follower'
+  return null
 }

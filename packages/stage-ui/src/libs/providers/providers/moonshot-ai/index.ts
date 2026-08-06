@@ -17,30 +17,30 @@ const moonshotConfigSchema = z.object({
 type MoonshotConfig = z.input<typeof moonshotConfigSchema>
 
 export const providerMoonshotAI = defineProvider<MoonshotConfig>({
-  id: 'moonshot-ai',
-  name: 'Moonshot AI',
-  nameLocalize: ({ t }) => t('settings.pages.providers.provider.moonshot.title'),
-  description: 'moonshot.ai',
-  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.moonshot.description'),
-  tasks: ['chat'],
-  icon: 'i-lobe-icons:moonshot',
-
+  createProvider(config) {
+    return createMoonshotai(config.apiKey, config.baseUrl)
+  },
   createProviderConfig: ({ t }) => moonshotConfigSchema.extend({
     apiKey: moonshotConfigSchema.shape.apiKey.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.placeholder'),
       type: 'password',
     }),
     baseUrl: moonshotConfigSchema.shape.baseUrl.meta({
-      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.description'),
+      labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.label'),
       placeholderLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.base-url.placeholder'),
     }),
   }),
-  createProvider(config) {
-    return createMoonshotai(config.apiKey, config.baseUrl)
-  },
+  description: 'moonshot.ai',
+  descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.moonshot.description'),
+  icon: 'i-lobe-icons:moonshot',
+  id: 'moonshot-ai',
+  name: 'Moonshot AI',
+
+  nameLocalize: ({ t }) => t('settings.pages.providers.provider.moonshot.title'),
+  tasks: ['chat'],
 
   validationRequiredWhen(config) {
     return !!config.apiKey?.trim()

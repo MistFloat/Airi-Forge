@@ -5,7 +5,7 @@ import type { SourcesOptions } from 'electron'
 import { errorMessageFrom } from '@moeru/std'
 import { ProcessingMeter } from '@proj-airi/stage-ui/components'
 import { VISION_WORKLOADS } from '@proj-airi/stage-ui/composables'
-import { useVisionOrchestratorStore, useVisionProcessingStore, useVisionStore } from '@proj-airi/stage-ui/stores/modules/vision'
+import { calculateFrameChange, shouldBlockCaptureSource, useVisionOrchestratorStore, useVisionProcessingStore, useVisionStore } from '@proj-airi/stage-ui/stores/modules/vision'
 import { Button, FieldCheckbox, FieldCombobox, FieldRange, SelectTab } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { computed, onBeforeUnmount, ref } from 'vue'
@@ -22,19 +22,27 @@ const visionOrchestratorStore = useVisionOrchestratorStore()
 const { activeModel } = storeToRefs(visionStore)
 const {
   captureIntervalMs,
+  changeThreshold,
+  privacyMode,
   isRunning,
   isProcessing,
   captureCount,
-  contextUpdateCount,
   lastProcessingDurationMs,
   captureRatePerMinute,
   contextUpdateRatePerMinute,
   processingHistoryMs,
+  sampleCount,
+  unchangedSampleCount,
+  lastChangeScore,
+  currentPollDelayMs,
 } = storeToRefs(visionProcessingStore)
 const {
   lastResultText,
   lastResultAt,
   lastError,
+  isInferenceRunning,
+  droppedCaptureCount,
+  publishedContextCount,
 } = storeToRefs(visionOrchestratorStore)
 
 const sourcesOptions = ref<SourcesOptions>({
@@ -50,6 +58,7 @@ const captureDownscalePercent = ref(100)
 const selectedWorkload = ref<VisionWorkloadId>(VISION_WORKLOADS[0]?.id || 'screen:interpret')
 
 const videoRef = ref<HTMLVideoElement | null>(null)
+let previousFrameSample: Uint8Array | undefined
 
 const {
   sources,
@@ -62,7 +71,7 @@ const {
   startStream,
   stopStream,
   cleanup,
-  captureFrame,
+  captureFrameSnapshot,
 } = useVisionScreenCapture(sourcesOptions)
 
 const categoryOptions = [
@@ -97,7 +106,7 @@ function getShareLabel(source: { id: string }) {
 
 const statusLabel = computed(() => {
   if (isRunning.value)
-    return isProcessing.value ? 'Processing...' : 'Streaming'
+    return isInferenceRunning.value ? 'Interpreting latest change...' : isProcessing.value ? 'Sampling...' : 'Watching for changes'
   return activeStream.value ? 'Ready' : 'Idle'
 })
 
@@ -171,27 +180,40 @@ async function handleVisionTick() {
     if (!video)
       return
 
-    const dataUrl = captureFrame(
+    const selectedSourceName = activeSource.value?.name ?? ''
+    if (privacyMode.value && shouldBlockCaptureSource(selectedSourceName)) {
+      errorMessage.value = `Privacy mode blocked capture of “${selectedSourceName}”.`
+      return { sampledAt: Date.now(), meaningfulChange: false, changeScore: 0 }
+    }
+
+    const snapshot = captureFrameSnapshot(
       video,
       0.82,
       captureInputBounds.value.maxWidth,
       captureInputBounds.value.maxHeight,
     )
-    if (!dataUrl)
+    if (!snapshot)
       return
 
-    screenshotDataUrl.value = dataUrl
+    const changeScore = calculateFrameChange(previousFrameSample, snapshot.luminanceSample)
+    previousFrameSample = snapshot.luminanceSample
     const capturedAt = Date.now()
+    const meaningfulChange = changeScore >= Number(changeThreshold.value)
+    if (!meaningfulChange)
+      return { sampledAt: capturedAt, meaningfulChange, changeScore }
 
-    const result = await visionOrchestratorStore.processCapture({
-      imageDataUrl: dataUrl,
+    screenshotDataUrl.value = snapshot.dataUrl
+
+    visionOrchestratorStore.enqueueCapture({
+      imageDataUrl: snapshot.dataUrl,
       workloadId: selectedWorkload.value,
       sourceId: activeSourceId.value,
       capturedAt,
       publishContext: sendContextUpdates.value,
+      onProcessed: result => visionProcessingStore.recordContextUpdates(result.contextUpdates),
     })
 
-    return { capturedAt, contextUpdates: result.contextUpdates }
+    return { sampledAt: capturedAt, capturedAt, meaningfulChange, changeScore }
   }
   catch (error) {
     visionOrchestratorStore.recordError(error)
@@ -232,6 +254,7 @@ function stopActiveCapture() {
 }
 
 function selectSource(sourceId: string) {
+  previousFrameSample = undefined
   activeSourceId.value = sourceId
   if (isRunning.value) {
     void ensureVideoStream().catch((error) => {
@@ -243,6 +266,7 @@ function selectSource(sourceId: string) {
 async function shareSource(sourceId: string) {
   errorMessage.value = ''
   activeSourceId.value = sourceId
+  previousFrameSample = undefined
 
   try {
     await ensureVideoStream()
@@ -496,6 +520,16 @@ onBeforeUnmount(() => {
                   :format-value="value => `${value}%`"
                 />
 
+                <FieldRange
+                  v-model="changeThreshold"
+                  label="Meaningful change threshold"
+                  description="Frames below this local luminance difference are not uploaded to the vision model."
+                  :min="0.005"
+                  :max="0.12"
+                  :step="0.005"
+                  :format-value="value => `${(value * 100).toFixed(1)}%`"
+                />
+
                 <div :class="['text-xs', 'text-neutral-400']">
                   Vision input max size: {{ captureInputBounds.maxWidth }} × {{ captureInputBounds.maxHeight }}
                 </div>
@@ -525,6 +559,11 @@ onBeforeUnmount(() => {
                     label="Publish to character"
                     description="Send interpreted results as context updates."
                   />
+                  <FieldCheckbox
+                    v-model="privacyMode"
+                    label="Privacy protection"
+                    description="Block known password-manager and private-browsing window titles."
+                  />
                 </div>
               </div>
             </div>
@@ -551,7 +590,9 @@ onBeforeUnmount(() => {
             <div :class="['rounded-xl', 'bg-neutral-100', 'p-4', 'dark:bg-[rgba(0,0,0,0.3)]']">
               <div :class="['flex', 'items-center', 'justify-between', 'text-xs', 'uppercase', 'tracking-wide', 'text-neutral-400']">
                 <span>Snapshot</span>
-                <span>{{ captureCount }} captures, {{ contextUpdateCount }} context updates</span>
+                <span>{{ sampleCount }} local samples, {{ captureCount }} model submissions, {{ publishedContextCount }} context updates</span>
+                <span>{{ unchangedSampleCount }} unchanged frames skipped, {{ droppedCaptureCount }} stale queued frames replaced</span>
+                <span>Next check {{ (currentPollDelayMs / 1000).toFixed(2) }}s, last change {{ ((lastChangeScore || 0) * 100).toFixed(2) }}%</span>
               </div>
               <div
                 v-if="screenshotDataUrl"

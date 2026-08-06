@@ -24,7 +24,7 @@ import { useAnalytics } from './use-analytics'
  * skipped: hot path, no analytical value, would torch PostHog quota.
  */
 export function useSpeechPipelineAnalytics() {
-  const { trackTtsIntentStarted, trackTtsIntentEnded, trackTtsIntentCancelled } = useAnalytics()
+  const { trackTtsIntentCancelled, trackTtsIntentEnded, trackTtsIntentStarted } = useAnalytics()
   const ctx = getSpeechBusContext()
 
   // Intents that never end (process killed mid-response) leak entries
@@ -60,9 +60,9 @@ export function useSpeechPipelineAnalytics() {
     intentStartedAt.delete(payload.intentId)
     safeForward('intent-end', () => {
       trackTtsIntentEnded({
+        duration_ms: startedAt ? Date.now() - startedAt : 0,
         intent_id: payload.intentId,
         turn_id: payload.turnId,
-        duration_ms: startedAt ? Date.now() - startedAt : 0,
       })
     })
   }))
@@ -75,8 +75,8 @@ export function useSpeechPipelineAnalytics() {
     safeForward('intent-cancel', () => {
       trackTtsIntentCancelled({
         intent_id: payload.intentId,
-        turn_id: payload.turnId,
         reason: payload.reason,
+        turn_id: payload.turnId,
       })
     })
   }))

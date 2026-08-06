@@ -666,6 +666,55 @@ pages:
               Note: If your provider does not support verbose_json responses, this setting will have no effect.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
+    instructions:
+      description: Configuración y gestión de instrucciones persistentes inyectadas en cada solicitud
+      title: Instrucciones
+      estimated-tokens: 'Alrededor de {tokens} tokens se inyectan en cada solicitud.'
+      create: Nueva instrucción
+      empty: Aún no hay instrucciones. Crea una para inyectar reglas fijas en cada conversación.
+      edit: Editar
+      delete: Eliminar
+      confirm-delete: ¿Eliminar esta instrucción?
+      cancel: Cancelar
+      priority-value: 'Prioridad: {value}'
+      scopes:
+        global: Global
+        chat: Conversación
+        speech: Habla
+        memory: Memoria
+        vision: Visión
+        artistry: Creatividad
+      statuses:
+        active: Activa
+        archived: Archivada
+        superseded: Reemplazada
+      editor:
+        create-title: Nueva instrucción
+        edit-title: Editar instrucción
+        cancel: Cancelar
+        save: Guardar
+        fields:
+          title: Título
+          content: Contenido
+          content-description: Texto inyectado literalmente en cada solicitud al LLM.
+          instruction-scope: Alcance
+          instruction-priority: Prioridad
+          instruction-rule-key: Clave de regla
+          instruction-rule-key-description: Clave única opcional para que una instrucción nueva pueda reemplazar (supersede) esta.
+          status: Estado
+          effective-from: Vigente desde
+          effective-until: Vigente hasta
+        scopes:
+          global: Global
+          chat: Conversación
+          speech: Habla
+          memory: Memoria
+          vision: Visión
+          artistry: Creatividad
+        statuses:
+          active: Activa
+          archived: Archivada
+          superseded: Reemplazada
     memory-long-term:
       description: Configuraciones específicas y gestión de memoria a largo plazo
       title: Memoria a Largo Plazo

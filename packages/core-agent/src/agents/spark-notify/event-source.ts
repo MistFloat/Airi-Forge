@@ -1,19 +1,8 @@
 import type { MetadataEventSource } from '@proj-airi/server-sdk'
 
 interface EventSourcePayload {
-  source?: string
   metadata?: { source?: MetadataEventSource }
-}
-
-function formatMetadataSource(source?: MetadataEventSource) {
-  if (!source)
-    return undefined
-
-  if ('extension' in source) {
-    return `${source.extension.id}:${source.id}`
-  }
-
-  return source.id
+  source?: string
 }
 
 /**
@@ -33,4 +22,15 @@ export function getEventSourceKey(event: EventSourcePayload, fallback = 'unknown
     ?? event.source
     ?? fallback
   )
+}
+
+function formatMetadataSource(source?: MetadataEventSource) {
+  if (!source)
+    return undefined
+
+  if ('extension' in source) {
+    return `${source.extension.id}:${source.id}`
+  }
+
+  return source.id
 }

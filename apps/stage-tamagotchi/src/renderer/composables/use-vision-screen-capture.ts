@@ -7,6 +7,11 @@ import { computed, ref, shallowRef, watch } from 'vue'
 
 import { createObjectUrlFromBytes } from '../utils/create-object-url-from-bytes'
 
+export interface VisionFrameSnapshot {
+  dataUrl: string
+  luminanceSample: Uint8Array
+}
+
 interface ScreenCaptureSource extends SerializableDesktopCapturerSource {
   appIconURL?: string
   thumbnailURL?: string
@@ -129,7 +134,7 @@ export function useVisionScreenCapture(sourcesOptions: MaybeRefOrGetter<SourcesO
 
     const stream = await selectWithSource(
       () => sourceId,
-      async () => await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }),
+      async () => await navigator.mediaDevices.getDisplayMedia({ audio: false, video: true }),
     )
     if (!isActiveStream(stream)) {
       stream.getTracks().forEach(track => track.stop())
@@ -174,17 +179,57 @@ export function useVisionScreenCapture(sourcesOptions: MaybeRefOrGetter<SourcesO
     return canvas.toDataURL('image/jpeg', quality)
   }
 
+  /**
+   * Captures one upload-ready frame and a tiny luminance sample used for local
+   * change detection. The sample is intentionally independent of upload size
+   * so lowering model resolution does not alter change sensitivity.
+   */
+  function captureFrameSnapshot(video: HTMLVideoElement, quality = 0.82, maxWidth = 1280, maxHeight = 720): null | VisionFrameSnapshot {
+    if (!video || video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0)
+      return null
+
+    const canvas = document.createElement('canvas')
+    const scale = Math.min(maxWidth / video.videoWidth, maxHeight / video.videoHeight, 1)
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+    const context = canvas.getContext('2d', { alpha: false })
+    if (!context)
+      throw new Error('Failed to create capture canvas context')
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    const sampleCanvas = document.createElement('canvas')
+    sampleCanvas.width = 32
+    sampleCanvas.height = 18
+    const sampleContext = sampleCanvas.getContext('2d', { alpha: false, willReadFrequently: true })
+    if (!sampleContext)
+      throw new Error('Failed to create frame analysis context')
+    sampleContext.drawImage(canvas, 0, 0, sampleCanvas.width, sampleCanvas.height)
+    const rgba = sampleContext.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data
+    const luminanceSample = new Uint8Array(sampleCanvas.width * sampleCanvas.height)
+
+    // Integer-weighted Rec. 601 luma avoids floating point work in the hot
+    // sampling path while preserving perceptual sensitivity to UI changes.
+    for (let source = 0, target = 0; source < rgba.length; source += 4, target += 1)
+      luminanceSample[target] = (rgba[source]! * 77 + rgba[source + 1]! * 150 + rgba[source + 2]! * 29) >> 8
+
+    return {
+      dataUrl: canvas.toDataURL('image/jpeg', quality),
+      luminanceSample,
+    }
+  }
+
   return {
-    sources,
-    activeSourceId,
     activeSource,
+    activeSourceId,
     activeStream,
-    isRefetching,
+    captureFrame,
+    captureFrameSnapshot,
+    cleanup,
     hasFetchedOnce,
+    isRefetching,
     refetchSources,
+    sources,
     startStream,
     stopStream,
-    cleanup,
-    captureFrame,
   }
 }

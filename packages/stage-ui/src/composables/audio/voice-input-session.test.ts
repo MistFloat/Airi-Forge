@@ -7,6 +7,18 @@ const audioRecorderMock = vi.hoisted(() => ({
   stopRecord: vi.fn(),
 }))
 
+const vadMock = vi.hoisted(() => ({
+  loaded: true,
+  options: undefined as undefined | {
+    onSpeechReady?: (event: { buffer: Float32Array, duration: number }) => void
+    onSpeechStart?: () => void
+  },
+}))
+
+const hearingPipelineMock = vi.hoisted(() => ({
+  transcribeForRecording: vi.fn<(recording: Blob) => Promise<string>>(async () => ''),
+}))
+
 vi.mock('../../workers/vad/process.worklet?worker&url', () => ({
   default: 'vad-worklet-url',
 }))
@@ -15,22 +27,25 @@ vi.mock('../../stores/ai/models/vad', async () => {
   const vue = await vi.importActual<typeof import('vue')>('vue')
 
   return {
-    useVAD: () => ({
-      init: vi.fn(),
-      dispose: vi.fn(),
-      start: vi.fn(),
-      loaded: vue.ref(true),
-      isSpeech: vue.ref(false),
-      isSpeechProb: vue.ref(0),
-      isSpeechHistory: vue.ref([]),
-      inferenceError: vue.ref(),
-    }),
+    useVAD: (_workerUrl: string, options: typeof vadMock.options) => {
+      vadMock.options = options
+      return {
+        dispose: vi.fn(),
+        inferenceError: vue.ref(),
+        init: vi.fn(),
+        isSpeech: vue.ref(false),
+        isSpeechHistory: vue.ref([]),
+        isSpeechProb: vue.ref(0),
+        loaded: vue.computed(() => vadMock.loaded),
+        start: vi.fn(),
+      }
+    },
   }
 })
 
 vi.mock('../../stores/modules/hearing', () => ({
   useHearingSpeechInputPipeline: () => ({
-    transcribeForRecording: vi.fn(async () => ''),
+    transcribeForRecording: hearingPipelineMock.transcribeForRecording,
   }),
 }))
 
@@ -41,9 +56,9 @@ vi.mock('./audio-recorder', async () => {
   return {
     useAudioRecorder: () => ({
       isRecording: audioRecorderMock.isRecording,
+      onStopRecord: vi.fn(),
       startRecord: audioRecorderMock.startRecord,
       stopRecord: audioRecorderMock.stopRecord,
-      onStopRecord: vi.fn(),
     }),
   }
 })
@@ -60,6 +75,32 @@ describe('useVoiceInputSession', () => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.clearAllMocks()
+    vadMock.options = undefined
+    vadMock.loaded = true
+  })
+
+  it('transcribes the VAD buffered segment without waiting on a recorder started after speech detection', async () => {
+    const { useVoiceInputSession } = await import('./voice-input-session')
+    useVoiceInputSession(shallowRef(createMediaStream()), {
+      volumeFallback: { enabled: false },
+    })
+
+    vadMock.options?.onSpeechStart?.()
+    await Promise.resolve()
+    vadMock.options?.onSpeechReady?.({
+      buffer: new Float32Array([0, 0.25, -0.25, 0]),
+      duration: 250,
+    })
+
+    await vi.waitFor(() => {
+      expect(hearingPipelineMock.transcribeForRecording).toHaveBeenCalledOnce()
+    })
+
+    expect(audioRecorderMock.startRecord).not.toHaveBeenCalled()
+    const recording = hearingPipelineMock.transcribeForRecording.mock.calls[0]?.[0]
+    expect(recording).toBeInstanceOf(Blob)
+    expect(recording?.type).toBe('audio/wav')
+    expect(await recording?.slice(0, 4).text()).toBe('RIFF')
   })
 
   it('clears the active recorder segment when discarding fails during stop', async () => {
@@ -106,10 +147,10 @@ describe('useVoiceInputSession', () => {
     const gateError = new Error('gate failed')
 
     const session = useVoiceInputSession(shallowRef(createMediaStream()), {
-      volumeFallback: { enabled: false },
       canStartSegment: vi.fn()
         .mockRejectedValueOnce(gateError)
         .mockResolvedValueOnce(true),
+      volumeFallback: { enabled: false },
     })
 
     await expect(session.startSegment('manual')).resolves.toBe(false)
@@ -130,8 +171,8 @@ describe('useVoiceInputSession', () => {
     const hookError = new Error('start hook failed')
 
     const session = useVoiceInputSession(shallowRef(createMediaStream()), {
-      volumeFallback: { enabled: false },
       onSegmentStart: vi.fn().mockRejectedValueOnce(hookError),
+      volumeFallback: { enabled: false },
     })
 
     await expect(session.startSegment('manual')).resolves.toBe(false)
@@ -153,8 +194,8 @@ describe('useVoiceInputSession', () => {
     })
 
     const session = useVoiceInputSession(shallowRef(createMediaStream()), {
-      volumeFallback: { enabled: false },
       onSegmentStarted: vi.fn().mockRejectedValueOnce(hookError),
+      volumeFallback: { enabled: false },
     })
 
     await expect(session.startSegment('manual')).resolves.toBe(false)
@@ -178,9 +219,9 @@ describe('useVoiceInputSession', () => {
     })
 
     const session = useVoiceInputSession(shallowRef(createMediaStream()), {
-      volumeFallback: { enabled: false },
       onSegmentStop: vi.fn().mockRejectedValueOnce(hookError),
       onTranscriptionError,
+      volumeFallback: { enabled: false },
     })
 
     await expect(session.startSegment('manual')).resolves.toBe(true)
@@ -231,8 +272,30 @@ describe('useVoiceInputSession', () => {
     })
 
     class FakeAudioContext {
-      state: AudioContextState = 'running'
+      close = vi.fn()
       destination = {}
+
+      resume = vi.fn()
+
+      state: AudioContextState = 'running'
+
+      createAnalyser() {
+        return {
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          fftSize: 512,
+          getByteTimeDomainData: (data: Uint8Array<ArrayBuffer>) => data.fill(128),
+          smoothingTimeConstant: 0,
+        }
+      }
+
+      createGain() {
+        return {
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          gain: { value: 1 },
+        }
+      }
 
       createMediaStreamSource() {
         return {
@@ -240,27 +303,6 @@ describe('useVoiceInputSession', () => {
           disconnect: vi.fn(),
         }
       }
-
-      createAnalyser() {
-        return {
-          fftSize: 512,
-          smoothingTimeConstant: 0,
-          connect: vi.fn(),
-          disconnect: vi.fn(),
-          getByteTimeDomainData: (data: Uint8Array<ArrayBuffer>) => data.fill(128),
-        }
-      }
-
-      createGain() {
-        return {
-          gain: { value: 1 },
-          connect: vi.fn(),
-          disconnect: vi.fn(),
-        }
-      }
-
-      resume = vi.fn()
-      close = vi.fn()
     }
 
     vi.stubGlobal('AudioContext', FakeAudioContext)
@@ -269,6 +311,7 @@ describe('useVoiceInputSession', () => {
       return animationFrames.length
     }))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    vadMock.loaded = false
 
     const { useVoiceInputSession } = await import('./voice-input-session')
     const session = useVoiceInputSession(shallowRef(createMediaStream()), {
@@ -288,5 +331,17 @@ describe('useVoiceInputSession', () => {
 
     expect(stopRecord).toHaveBeenCalledOnce()
     expect(session.activeRecordingTrigger.value).toBeUndefined()
+  })
+
+  it('does not start the volume fallback while model VAD is available', async () => {
+    const audioContext = vi.fn()
+    vi.stubGlobal('AudioContext', audioContext)
+
+    const { useVoiceInputSession } = await import('./voice-input-session')
+    const session = useVoiceInputSession(shallowRef(createMediaStream()))
+
+    await session.startAutoSegmentation()
+
+    expect(audioContext).not.toHaveBeenCalled()
   })
 })

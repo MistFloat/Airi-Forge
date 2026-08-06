@@ -1,11 +1,5 @@
 import { encodeBase64 } from '@moeru/std/base64'
 
-function writeString(dataView: DataView, offset: number, string: string) {
-  for (let i = 0; i < string.length; i++) {
-    dataView.setUint8(offset + i, string.charCodeAt(i))
-  }
-}
-
 export function toWav(buffer: ArrayBufferLike, sampleRate: number, channel = 1) {
   const samples = new Float32Array(buffer) // allows indexing
   const numChannels = channel
@@ -48,4 +42,10 @@ export function toWav(buffer: ArrayBufferLike, sampleRate: number, channel = 1) 
 
 export function toWAVBase64(buffer: ArrayBufferLike, sampleRate: number) {
   return encodeBase64(toWav(buffer, sampleRate))
+}
+
+function writeString(dataView: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    dataView.setUint8(offset + i, string.charCodeAt(i))
+  }
 }

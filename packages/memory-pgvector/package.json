@@ -16,11 +16,17 @@
     "directory": "packages/memory-pgvector"
   },
   "keywords": [],
+  "exports": {
+    "./evaluation": "./src/evaluation.ts",
+    "./sensitive-content": "./src/sensitiveContent.ts",
+    "./store": "./src/store.ts"
+  },
   "scripts": {
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
     "@guiiai/logg": "catalog:",
+    "@node-rs/jieba": "catalog:",
     "@proj-airi/server-sdk": "workspace:^",
     "drizzle-orm": "catalog:",
     "postgres": "catalog:"

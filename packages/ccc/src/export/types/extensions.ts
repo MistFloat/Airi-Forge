@@ -21,5 +21,5 @@ export interface Extensions extends Record<string, unknown> {
 export interface ExtensionsDepthPrompt {
   depth: number
   prompt: string
-  role: 'system' | ({} & string)
+  role: 'system' | (string & {})
 }
