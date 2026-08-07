@@ -72,10 +72,20 @@ async function scanConflicts() {
 }
 
 async function validateAndPromote(claim: LongTermMemoryClaim) {
-  if (claim.status === 'proposed' || claim.status === 'quarantined')
-    await store.validateClaim(claim.id)
-  await store.promoteClaim(claim.id)
-  await refresh()
+  loading.value = true
+  error.value = ''
+  try {
+    if (claim.status === 'proposed' || claim.status === 'quarantined')
+      await store.validateClaim(claim.id)
+    await store.promoteClaim(claim.id)
+    await refresh()
+  }
+  catch (cause) {
+    error.value = errorMessageFrom(cause) ?? `Failed to promote claim ${claim.id}`
+  }
+  finally {
+    loading.value = false
+  }
 }
 
 async function createSchema() {
