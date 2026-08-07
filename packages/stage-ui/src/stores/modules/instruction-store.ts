@@ -3,7 +3,7 @@ import type { CompilableInstruction, InstructionScope } from './instructionCompi
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { nanoid } from 'nanoid'
 import { defineStore } from 'pinia'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { compileInstructions } from './instructionCompiler'
@@ -36,6 +36,13 @@ export const useInstructionStore = defineStore('instructions', () => {
   const { t } = useI18n()
   const instructions = useLocalStorageManualReset<CompilableInstruction[]>('settings/instructions/list', [])
   const tokenBudget = useLocalStorageManualReset<number>('settings/instructions/token-budget', 1200)
+
+  /**
+   * Optional external instruction override (e.g. a root-directory instruction.md
+   * file loaded by the Electron main process). When set, this content replaces
+   * the compiled localStorage instructions entirely for system-prompt injection.
+   */
+  const fileInstructionContent = ref<null | string>(null)
 
   function nowIso(): string {
     return new Date().toISOString()
@@ -85,17 +92,34 @@ export const useInstructionStore = defineStore('instructions', () => {
   }
 
   /** Compiled prompt text injected into the system message on every turn. */
-  const compiled = computed(() => compileInstructions(instructions.value, {
-    scopes: ['chat', 'speech'],
-    tokenBudget: tokenBudget.value,
-  }))
+  const compiled = computed(() => {
+    if (fileInstructionContent.value != null) {
+      return {
+        estimatedTokens: 0,
+        instructions: [] as CompilableInstruction[],
+        omittedCount: 0,
+        prompt: fileInstructionContent.value,
+      }
+    }
+    return compileInstructions(instructions.value, {
+      scopes: ['chat', 'speech'],
+      tokenBudget: tokenBudget.value,
+    })
+  })
+
+  /** Replaces the compiled instructions with external file content, or clears it. */
+  function setFileInstructionContent(content: null | string) {
+    fileInstructionContent.value = content
+  }
 
   return {
     compiled,
     deleteInstruction,
+    fileInstructionContent,
     instructions,
     saveInstruction,
     seedStageControl,
+    setFileInstructionContent,
     tokenBudget,
   }
 })

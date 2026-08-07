@@ -715,6 +715,9 @@ pages:
           active: 激活中
           archived: 已归档
           superseded: 已取代
+        file-override:
+          title: 正在使用 instruction.md
+          description: 编译后的提示词已从项目根目录的 instruction.md 加载，请直接编辑该文件。
     memory-long-term:
       description: 长期记忆
       title: 长期记忆

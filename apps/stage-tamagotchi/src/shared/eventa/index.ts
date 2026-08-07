@@ -518,5 +518,12 @@ export const electronAuthLogout = defineInvokeEventa<void>('eventa:invoke:electr
 export const i18nSetLocale = defineInvokeEventa<void, Locale>('eventa:invoke:electron:i18n:set-locale')
 export const i18nGetLocale = defineInvokeEventa<string | undefined>('eventa:invoke:electron:i18n:get-locale')
 
+export interface ElectronInstructionFilePayload {
+  content: string | undefined
+  path: string
+}
+export const electronInstructionFileGet = defineInvokeEventa<ElectronInstructionFilePayload>('eventa:invoke:electron:instruction-file:get')
+export const electronInstructionFileChanged = defineEventa<ElectronInstructionFilePayload>('eventa:event:electron:instruction-file:changed')
+
 export { electron } from '@proj-airi/electron-eventa'
 export * from '@proj-airi/electron-eventa/electron-updater'

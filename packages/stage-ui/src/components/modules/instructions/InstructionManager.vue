@@ -13,12 +13,13 @@ import InstructionEditor from './InstructionEditor.vue'
 import { useInstructionStore } from '../../../stores/modules/instruction-store'
 
 const instructionStore = useInstructionStore()
-const { compiled } = storeToRefs(instructionStore)
+const { compiled, fileInstructionContent } = storeToRefs(instructionStore)
 const { t } = useI18n()
 const editorOpen = ref(false)
 const selected = ref<CompilableInstruction>()
 
 const instructions = computed(() => instructionStore.instructions)
+const fileOverrideActive = computed(() => fileInstructionContent.value != null)
 
 function createInstruction() {
   selected.value = undefined
@@ -55,7 +56,15 @@ function deleteInstruction(instruction: CompilableInstruction) {
         <p :class="['text-sm text-neutral-500 dark:text-neutral-400']">
           {{ t('settings.pages.modules.instructions.description') }}
         </p>
-        <p v-if="compiled?.prompt" :class="['mt-1 text-xs text-neutral-500 dark:text-neutral-400']">
+        <div v-if="fileOverrideActive" :class="['mt-2 rounded-lg border border-primary-500/30 bg-primary-500/10 px-3 py-2 text-sm text-primary-700 dark:text-primary-300']">
+          <p class="font-medium">
+            {{ t('settings.pages.modules.instructions.file-override.title') }}
+          </p>
+          <p class="text-xs opacity-80">
+            {{ t('settings.pages.modules.instructions.file-override.description') }}
+          </p>
+        </div>
+        <p v-else-if="compiled?.prompt" :class="['mt-1 text-xs text-neutral-500 dark:text-neutral-400']">
           {{ t('settings.pages.modules.instructions.estimated-tokens', { tokens: compiled.estimatedTokens }) }}
         </p>
       </div>

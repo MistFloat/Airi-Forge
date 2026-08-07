@@ -721,6 +721,9 @@ pages:
         active: Active
         archived: Archived
         superseded: Superseded
+      file-override:
+        title: Using instruction.md
+        description: The compiled prompt is loaded from instruction.md in the project root. Edit that file directly.
       editor:
         create-title: New instruction
         edit-title: Edit instruction

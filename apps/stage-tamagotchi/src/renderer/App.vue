@@ -14,6 +14,7 @@ import { useModsServerChannelStore } from '@proj-airi/stage-ui/stores/mods/api/c
 import { useContextBridgeStore } from '@proj-airi/stage-ui/stores/mods/api/context-bridge'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
+import { useInstructionStore } from '@proj-airi/stage-ui/stores/modules/instruction-store'
 import { usePerfTracerBridgeStore } from '@proj-airi/stage-ui/stores/perf-tracer-bridge'
 import { listProvidersForPluginHost, shouldPublishPluginHostCapabilities } from '@proj-airi/stage-ui/stores/plugin-host-capabilities'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
@@ -29,6 +30,8 @@ import {
   electronGetServerChannelConfig,
   electronGodotStageGetStatus,
   electronGodotStageStatusChanged,
+  electronInstructionFileChanged,
+  electronInstructionFileGet,
   electronSettingsNavigate,
   electronStartTrackMousePosition,
   i18nGetLocale,
@@ -87,6 +90,7 @@ function createFullStageRuntime() {
   const stageWindowLifecycleStore = useStageWindowLifecycleStore()
   const settingsAudioDeviceStore = useSettingsAudioDevice()
   const artistryStore = useArtistryStore()
+  const instructionStore = useInstructionStore()
   const { activeProvider, artistryGlobals, activeModel, defaultPromptPrefix, providerOptions } = storeToRefs(artistryStore)
   const getServerChannelConfig = useElectronEventaInvoke(electronGetServerChannelConfig)
   const listPlugins = useElectronEventaInvoke(electronPluginList)
@@ -100,6 +104,7 @@ function createFullStageRuntime() {
   const reportPluginCapability = useElectronEventaInvoke(electronPluginUpdateCapability)
   const getGodotStageStatus = useElectronEventaInvoke(electronGodotStageGetStatus)
   const syncArtistryConfig = useElectronEventaInvoke(artistrySyncConfig)
+  const getInstructionFile = useElectronEventaInvoke(electronInstructionFileGet)
   const isAuxiliaryChatRoute = initialWindowRoutePath === '/chat'
   const isGodotStageRoute = () => route.path === '/' || route.path.startsWith('/settings')
   const isWidgetsWindowRoute = () => route.path === '/widgets'
@@ -189,6 +194,10 @@ function createFullStageRuntime() {
     syncGodotStageRenderer(event.body)
   })
 
+  context.value.on(electronInstructionFileChanged, (event) => {
+    instructionStore.setFileInstructionContent(event.body?.content ?? null)
+  })
+
   context.value.on(electronPluginToolsChanged, () => {
     void refreshPluginRuntimeTools()
   })
@@ -239,6 +248,16 @@ function createFullStageRuntime() {
             source: 'stage-ui',
           },
         })
+      }
+
+      // Load root-directory instruction.md if present. Live updates are pushed
+      // via electronInstructionFileChanged as the file is watched by main.
+      try {
+        const instructionFile = await getInstructionFile()
+        instructionStore.setFileInstructionContent(instructionFile.content ?? null)
+      }
+      catch (error) {
+        console.warn('[App] Failed to load instruction.md:', error)
       }
 
       inferencePreload.triggerPreload()
