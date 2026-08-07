@@ -6,7 +6,7 @@ import type { ElectronInstructionFilePayload } from '../../../shared/eventa'
 import process from 'node:process'
 
 import { existsSync, readFileSync, watch } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 import { defineInvokeHandler } from '@moeru/eventa'
 import { app, shell } from 'electron'
@@ -28,7 +28,17 @@ export function createAppService(params: { context: ReturnType<typeof createCont
   })
   defineInvokeHandler(params.context, electronAppQuit, () => app.quit())
 
-  const instructionFilePath = resolve(process.cwd(), 'instruction.md')
+  function findMonorepoRoot(start: string): string {
+    let current = start
+    while (current !== dirname(current)) {
+      if (existsSync(resolve(current, 'pnpm-workspace.yaml')))
+        return current
+      current = dirname(current)
+    }
+    return start
+  }
+
+  const instructionFilePath = resolve(findMonorepoRoot(process.cwd()), 'instruction.md')
   function readInstructionFile(): ElectronInstructionFilePayload {
     return {
       content: existsSync(instructionFilePath) ? readFileSync(instructionFilePath, 'utf-8') : undefined,
@@ -36,9 +46,21 @@ export function createAppService(params: { context: ReturnType<typeof createCont
     }
   }
 
-  watch(instructionFilePath, { persistent: false, recursive: false }, () => {
-    params.context.emit(electronInstructionFileChanged, readInstructionFile())
-  })
+  function startWatchingInstructionFile() {
+    if (!existsSync(instructionFilePath)) {
+      setTimeout(startWatchingInstructionFile, 2000)
+      return
+    }
+    try {
+      watch(instructionFilePath, { persistent: false, recursive: false }, () => {
+        params.context.emit(electronInstructionFileChanged, readInstructionFile())
+      })
+    }
+    catch (error) {
+      console.warn('[App] Failed to watch instruction.md:', error)
+    }
+  }
+  startWatchingInstructionFile()
 
   defineInvokeHandler(params.context, electronInstructionFileGet, () => readInstructionFile())
 }
