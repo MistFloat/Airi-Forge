@@ -85,7 +85,9 @@ async function validateAndPromote(claim: LongTermMemoryClaim) {
     await refresh()
   }
   catch (cause) {
-    error.value = errorMessageFrom(cause) ?? `Failed to promote claim ${claim.id}`
+    const message = errorMessageFrom(cause) ?? `Failed to promote claim ${claim.id}`
+    console.error('[MemoryGovernance] validateAndPromote failed:', { claimId: claim.id, status: claim.status, message }, cause)
+    error.value = message
   }
   finally {
     loading.value = false
