@@ -75,8 +75,12 @@ async function validateAndPromote(claim: LongTermMemoryClaim) {
   loading.value = true
   error.value = ''
   try {
+    // Claims must be validated before promotion. If the user clicks the button
+    // on an already-validated claim, skip validation and promote directly.
     if (claim.status === 'proposed' || claim.status === 'quarantined')
       await store.validateClaim(claim.id)
+    else if (claim.status !== 'validated')
+      throw new Error(`Claim cannot be promoted from status '${claim.status}'`)
     await store.promoteClaim(claim.id)
     await refresh()
   }
@@ -197,7 +201,7 @@ onMounted(refresh)
           <article v-for="claim in claims" :key="claim.id" :class="['rounded-lg bg-white/60 p-3 text-sm dark:bg-black/20']">
             <div :class="['flex flex-wrap items-center justify-between gap-2']">
               <span>{{ claim.kind }} · {{ claim.assertionMode }} · {{ claim.status }}</span>
-              <Button v-if="claim.status !== 'promoted' && claim.status !== 'rejected'" :label="t('settings.pages.modules.memory-long-term.governance.promote')" size="sm" @click="validateAndPromote(claim)" />
+              <Button v-if="['proposed', 'quarantined', 'validated'].includes(claim.status)" :label="t('settings.pages.modules.memory-long-term.governance.promote')" size="sm" @click="validateAndPromote(claim)" />
             </div>
             <div :class="['mt-1 font-mono text-xs']">
               {{ claim.factKey }}
