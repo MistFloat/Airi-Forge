@@ -20,7 +20,7 @@ interface EditableTurn {
   createdAt: number
 }
 
-const { getDb } = useDuckDb()
+const { db: dbRef, getDb } = useDuckDb()
 const turns = ref<ShortTermMemoryTurn[]>([])
 const filterSessionId = ref('')
 const loading = ref(false)
@@ -29,11 +29,26 @@ const editingTurn = ref<EditableTurn | null>(null)
 const confirmDialog = ref<{ open: boolean, title: string, message: string, onConfirm: () => void } | null>(null)
 
 async function db() {
-  const ref = await getDb()
-  const client = ref.value
-  if (!client)
-    throw new Error('DuckDB is not initialized')
-  return client
+  // Reuse the existing DuckDB connection when the explorer is opened inside
+  // the same renderer context as the main app. DuckDB-WASM locks the OPFS
+  // database file, so creating a second connection to the same file fails.
+  if (dbRef.value)
+    return dbRef.value
+
+  try {
+    const ref = await getDb()
+    const client = ref.value
+    if (!client)
+      throw new Error('DuckDB is not initialized')
+    return client
+  }
+  catch (error) {
+    throw new Error(
+      error instanceof Error && error.message.includes('createSyncAccessHandle')
+        ? 'DuckDB is already open in another window. Close other AIRI windows or restart the app, then retry.'
+        : `Failed to open DuckDB: ${error}`,
+    )
+  }
 }
 
 async function refreshTurns() {
