@@ -97,6 +97,12 @@ const menu = computed(() => [
     icon: 'i-solar:keyboard-bold-duotone',
     to: '/devtools/global-shortcut',
   },
+  {
+    title: 'DuckDB Explorer',
+    description: 'Inspect and edit browser-local short-term memory stored in DuckDB',
+    icon: 'i-solar:database-bold-duotone',
+    to: '/devtools/duckdb-explorer',
+  },
 ])
 
 const openDevTools = useElectronEventaInvoke(electronOpenMainDevtools)
