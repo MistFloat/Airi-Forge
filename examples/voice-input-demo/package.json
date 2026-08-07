@@ -9,7 +9,7 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "@moeru/std": "workspace:^",
+    "@moeru/std": "catalog:",
     "@proj-airi/audio": "workspace:^",
     "@proj-airi/stage-ui": "workspace:^",
     "vue": "catalog:"
