@@ -5,7 +5,6 @@ export default defineConfig({
     projects: [
       'apps/stage-tamagotchi',
       'packages/core-agent',
-      'packages/vishot-runner-browser',
       'packages/better-ws',
       'packages/plugin-sdk',
       'packages/plugin-sdk-tamagotchi',

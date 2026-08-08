@@ -234,7 +234,7 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
     expect(restored.memories.map(memory => memory.content)).not.toContain('北京')
   })
 
-  it('quarantines a claim whose predicate cardinality is not registered', async () => {
+  it('quarantines an auto-promoted claim whose predicate cardinality is not registered', async () => {
     const store = createPgvectorMemoryStore(connectionString!)
     const namespace = `integration:unknown-predicate:${Date.now()}`
     const content = 'The user stores private files on a local device.'
@@ -262,9 +262,50 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
     })
 
     await store.validateClaim(namespace, claim.claimId)
-    expect((await store.promoteClaim(namespace, claim.claimId)).outcome).toBe('quarantined')
+    expect((await store.promoteClaim(namespace, claim.claimId, 'auto')).outcome).toBe('quarantined')
     expect((await store.list({ limit: 20, namespaces: [namespace], offset: 0, status: 'active' })).total).toBe(0)
     expect((await store.listClaims(namespace, 'quarantined'))[0]?.id).toBe(claim.claimId)
+  })
+
+  it('promotes a manually confirmed claim whose predicate cardinality is not registered', async () => {
+    // ROOT CAUSE:
+    //
+    // Unknown predicates (predicate not in predicateRegistry) used to be
+    // quarantined unconditionally in promoteClaim, so a user clicking Promote
+    // in the governance UI got no canonical memory and the claim stayed stuck.
+    //
+    // We fixed this by only quarantining unknown predicates on the 'auto' path;
+    // the user path falls through and treats them with single semantics.
+    const store = createPgvectorMemoryStore(connectionString!)
+    const namespace = `integration:unknown-predicate-user:${Date.now()}`
+    const content = 'The user prefers walking to work.'
+    const evidence = await store.ingestEvidence({
+      content,
+      namespace,
+      sourceId: 'message-1',
+      sourceRole: 'user',
+      sourceType: 'user_assertion',
+    })
+    const claim = await store.createClaim({
+      assertionMode: 'explicit',
+      evidenceId: evidence.evidenceId,
+      factKey: '',
+      kind: 'preference',
+      namespace,
+      polarity: 'positive',
+      predicate: 'commute_habit',
+      quote: content,
+      quoteEnd: content.length,
+      quoteStart: 0,
+      scope: 'global',
+      subject: 'user',
+      value: 'The user prefers walking to work.',
+    })
+
+    await store.validateClaim(namespace, claim.claimId)
+    expect((await store.promoteClaim(namespace, claim.claimId)).outcome).toBe('promoted')
+    expect((await store.list({ limit: 20, namespaces: [namespace], offset: 0, status: 'active' })).total).toBe(1)
+    expect((await store.listClaims(namespace, 'promoted'))[0]?.id).toBe(claim.claimId)
   })
 
   it('keeps active and fallback embedding schemas current after an atomic switch', async () => {

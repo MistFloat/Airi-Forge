@@ -279,10 +279,12 @@ export function createPgvectorMemoryStore(connectionString: string) {
       // Quarantined memories are intentionally excluded. They require an explicit
       // user restore before they can participate in a later conflict run.
       const cardinality = cardinalityFor(claim.predicate)
-      if (cardinality === 'unknown') {
+      if (cardinality === 'unknown' && source === 'auto') {
         // Unknown predicates have no trustworthy single/set semantics. Keeping
         // the validated claim in quarantine preserves its evidence without
         // inventing a cardinality or creating an unsafe canonical projection.
+        // Manual (user) promotion is still allowed: the user explicitly confirmed
+        // the claim, so it falls through and is treated with single semantics.
         await transaction`UPDATE memory_claims SET status = 'quarantined', revision = revision + 1, updated_at = NOW() WHERE id = ${claimId}`
         return { outcome: 'quarantined' as const }
       }
