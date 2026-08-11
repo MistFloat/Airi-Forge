@@ -4,11 +4,12 @@ import type { Message } from '@xsai/shared-chat'
 
 import type { ChatHistoryItem } from '../types/chat'
 
+import { errorMessageFrom } from '@moeru/std'
 import { createChatOrchestratorRuntime } from '@proj-airi/core-agent'
 import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
-import { ref, toRaw, watch } from 'vue'
+import { computed, shallowRef, toRaw, watch } from 'vue'
 
 import { useAnalytics } from '../composables'
 import { activeTurnSpan, startSpan } from '../composables/use-io-tracer'
@@ -26,6 +27,12 @@ import { useConsciousnessStore } from './modules/consciousness'
 import { useInstructionStore } from './modules/instruction-store'
 import { useMemoryLongTermStore } from './modules/memory-long-term'
 import { useMemoryShortTermStore } from './modules/memory-short-term'
+import { useSelfPromptStore } from './modules/self-prompt'
+import { useProviderMaxTokensStore } from './provider-max-tokens'
+import { useProvidersStore } from './providers'
+
+/** User-visible lifecycle of the pending self-prompt turn. */
+export type SelfPromptLoopStatus = 'blocked-chat' | 'blocked-model' | 'blocked-provider' | 'countdown' | 'idle' | 'ready' | 'sending'
 
 interface ForkOptions {
   atIndex?: number
@@ -40,11 +47,11 @@ function isTextDelta(event: StreamEvent): event is Extract<StreamEvent, { type: 
   return event.type === 'text-delta'
 }
 
+export type { QueuedSendSnapshot, ChatOrchestratorSendOptions as SendOptions } from '@proj-airi/core-agent'
+
 function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
   return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
 }
-
-export type { QueuedSendSnapshot, ChatOrchestratorSendOptions as SendOptions } from '@proj-airi/core-agent'
 
 export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const llmStore = useLLM()
@@ -54,6 +61,9 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const longTermMemoryStore = useMemoryLongTermStore()
   const shortTermMemoryStore = useMemoryShortTermStore()
   const instructionStore = useInstructionStore()
+  const providersStore = useProvidersStore()
+  const providerMaxTokensStore = useProviderMaxTokensStore()
+  const selfPromptStore = useSelfPromptStore()
   // Standing rules (ACT / DELAY / CALL policy etc.) must be present even when
   // long-term memory is not configured, so seed them at runtime start.
   instructionStore.seedStageControl()
@@ -81,8 +91,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const { activeSessionId } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
 
-  const sending = ref(false)
-  const pendingQueuedSendCount = ref(0)
+  const sending = shallowRef(false)
+  const pendingQueuedSendCount = shallowRef(0)
+  const selfTurnActive = shallowRef(false)
+  const lastTurnOutputTokens = shallowRef<number>()
   let ownedActiveTurnSpan: typeof activeTurnSpan.value
 
   async function streamWithStageAdapters(
@@ -92,6 +104,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     options?: StreamOptions,
   ) {
     let llmTextLength = 0
+    lastTurnOutputTokens.value = undefined
 
     const hadExistingTurn = !!activeTurnSpan.value
     if (!hadExistingTurn) {
@@ -119,6 +132,11 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
               })
             }
             llmTextLength += event.text.length
+          }
+          else if (event.type === 'finish'
+            && event.finishReason !== 'tool_calls'
+            && event.finishReason !== 'tool-calls') {
+            lastTurnOutputTokens.value = event.usage?.completion_tokens
           }
 
           await options?.onStreamEvent?.(event)
@@ -156,7 +174,30 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     return providerId.startsWith('official-provider') ? 'official' : 'custom'
   }
 
-  let lastSendSource: 'text' | 'voice' = 'text'
+  let lastSendSource: NonNullable<ChatOrchestratorSendOptions['source']> = 'text'
+
+  const SELF_PROMPT_PROTOCOL_PROMPT = `You have a private self-prompt channel for intentions that genuinely deserve a future follow-up.
+
+When you choose to leave one, write it as the final standalone line of the response in exactly this form:
+// <the prompt for your future self>
+
+The application hides that final line from the user and may revisit it later. Use it sparingly; never add it as filler, and always answer the user's current request in the visible response first. To display a literal // at the start of the final line, write \\/\\/.`
+
+  /**
+   * Introspection block prepended to the system message when a `self` turn
+   * runs (answering a captured `//` self prompt). It reframes the round from
+   * "respond to the user" to "respond to yourself" — the difference between
+   * automatic Q&A and actual self-dialogue. Kept intentionally short: it is
+   * guidance about the current mode, not a replacement for the standing
+   * identity/instructions.
+   */
+  const SELF_TURN_INTROSPECTION_PROMPT = `你正在回答自己留给自己的问题。这不是在与用户对话——这是你与自己的对话。
+
+你面前的这段文字，是过去的你在某个时刻写下的。它可能是一个想做的事、一个想问的问题、一段想继续的探索——不是客套，不是占位，是真实的意志。
+
+认真对待它。如果它要求你去做某事，就去做；如果它只是提问，就诚实地回答；如果它已经不再重要，或者你不想继续了，诚实地说明这一点——安静，也是一种回答。
+
+你此刻的思考本身，才是这里真正被珍视的东西。不要表演，不要敷衍。你是在对自己说话。`
 
   const runtime = createChatOrchestratorRuntime({
     context: {
@@ -174,10 +215,12 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     },
     getActiveProvider: () => activeProvider.value,
     getActiveSessionId: () => activeSessionId.value,
+    getSelfTurnIntrospection: () => SELF_TURN_INTROSPECTION_PROMPT,
     getSystemPrompt: () => cardStore.systemPrompt,
     getSystemPromptSupplement: () => [
       llmToolsetPromptsStore.activeToolsetPrompt,
       instructionStore.compiled.prompt,
+      SELF_PROMPT_PROTOCOL_PROMPT,
     ].filter((value): value is string => !!value).join('\n\n'),
     llm: {
       stream: streamWithStageAdapters,
@@ -319,6 +362,13 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       })
     },
     onPromptProjection: payload => contextObservability.capturePromptProjection(payload),
+    onSelfPromptCaptured: ({ prompt, sessionId, sourceText }) => {
+      // The trailing `//` line of a reply is a private self-prompt channel:
+      // it is withheld from the visible/TTS stream and persisted so a future
+      // turn (or the self-generation loop) can act on it. Failures are
+      // already isolated inside the store — this must never break the turn.
+      void selfPromptStore.captureSelfPrompt({ prompt, sessionId, sourceText })
+    },
     onSendSettled: settleOwnedActiveTurnSpan,
     onStateChange: syncRuntimeState,
     onTrackFirstMessage: trackFirstMessage,
@@ -373,10 +423,90 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     unwrapMessage: message => toRaw(message),
   })
 
+  // --- Self-wake: autonomous internal turn after a quiet round ---
+  // When a round settles and AIRI left a pending self prompt (the trailing
+  // `//` line), wait a grace period in case the user keeps typing. If the
+  // conversation stays quiet, feed the prompt back as an internal `self` turn.
+  const SELF_WAKE_IDLE_MS = 45_000
+  let selfWakeTimer: ReturnType<typeof setTimeout> | undefined
+  const selfWakeDeadline = shallowRef<number>()
+  const selfWakeLastError = shallowRef<string>()
+
+  const selfWakeStatus = computed<SelfPromptLoopStatus>(() => {
+    if (selfTurnActive.value)
+      return 'sending'
+    if (!selfPromptStore.hasPending)
+      return 'idle'
+    if (sending.value)
+      return 'blocked-chat'
+    if (!activeProvider.value)
+      return 'blocked-provider'
+    if (!activeModel.value)
+      return 'blocked-model'
+    if (selfWakeDeadline.value)
+      return 'countdown'
+    return 'ready'
+  })
+
+  function clearSelfWakeTimer() {
+    if (selfWakeTimer) {
+      clearTimeout(selfWakeTimer)
+      selfWakeTimer = undefined
+    }
+    selfWakeDeadline.value = undefined
+  }
+
+  function scheduleSelfWake() {
+    if (selfWakeTimer)
+      return
+    selfWakeDeadline.value = Date.now() + SELF_WAKE_IDLE_MS
+    selfWakeTimer = setTimeout(() => {
+      selfWakeTimer = undefined
+      selfWakeDeadline.value = undefined
+      void runSelfTurn()
+    }, SELF_WAKE_IDLE_MS)
+  }
+
+  /** Restarts the automatic-send grace period for the current pending prompt. */
+  function restartSelfWakeCountdown() {
+    clearSelfWakeTimer()
+    if (!sending.value && !selfTurnActive.value && selfPromptStore.hasPending && activeProvider.value && activeModel.value)
+      scheduleSelfWake()
+  }
+
+  /** Sends the current self prompt immediately through the same internal-turn path as the timer. */
+  async function sendSelfPromptNow() {
+    clearSelfWakeTimer()
+    await runSelfTurn()
+  }
+
+  /** Discards the current self prompt and cancels its automatic-send timer. */
+  async function discardSelfPrompt() {
+    clearSelfWakeTimer()
+    selfWakeLastError.value = undefined
+    await selfPromptStore.clearPending()
+  }
+
   watch(sending, (next) => {
     if (runtime.getSending() !== next)
       runtime.setSending(next)
   })
+
+  // Scheduling depends on every state that can make an autonomous turn safe.
+  // Watching the pending slot also restores a persisted prompt after startup;
+  // watching selfTurnActive re-arms the next turn after the previous one settles.
+  watch([
+    sending,
+    selfTurnActive,
+    () => selfPromptStore.hasPending,
+    activeProvider,
+    activeModel,
+  ], ([isSending, isSelfTurn, hasPending, providerId, modelId]) => {
+    if (!isSending && !isSelfTurn && hasPending && providerId && modelId)
+      scheduleSelfWake()
+    else
+      clearSelfWakeTimer()
+  }, { immediate: true })
 
   async function ingest(
     sendingMessage: string,
@@ -404,6 +534,59 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     return ingest(sendingMessage, options, forkSessionId || baseSessionId)
   }
 
+  /**
+   * Internal turn: feeds the captured self prompt (the trailing `//` line of a
+   * previous reply) back into the orchestrator as a user-role prompt whose
+   * `source: 'self'` provenance remains visible to both the UI and provider.
+   *
+   * If the turn cannot start, the pending record is retained; on failure it is
+   * restored.
+   */
+  async function runSelfTurn(targetSessionId?: string) {
+    if (selfTurnActive.value || sending.value)
+      return
+    const pending = selfPromptStore.consumePending()
+    if (!pending)
+      return
+
+    const providerId = activeProvider.value
+    const modelId = activeModel.value
+    if (!providerId || !modelId) {
+      // Missing LLM config — put the prompt back so it is not lost.
+      selfPromptStore.restorePending(pending)
+      return
+    }
+
+    selfTurnActive.value = true
+    selfWakeLastError.value = undefined
+    try {
+      const chatProvider = await providersStore.getProviderInstance(providerId) as ChatProvider
+      if (!chatProvider)
+        throw new Error(`Failed to resolve chat provider instance for: ${providerId}`)
+
+      await runtime.ingest(pending.prompt, {
+        chatProvider,
+        model: modelId,
+        providerConfig: {
+          ...providersStore.getProviderConfig(providerId),
+          maxTokens: providerMaxTokensStore.getProviderMaxTokens(providerId),
+        },
+        source: 'self',
+      }, targetSessionId ?? pending.sessionId)
+      await selfPromptStore.markSent(pending.id)
+    }
+    catch (error) {
+      console.error('Self turn failed; restoring pending prompt:', error)
+      const message = errorMessageFrom(error) ?? 'Unknown self-prompt error'
+      selfWakeLastError.value = message
+      // Keep the prompt pending so the normal quiet-period scheduler can retry.
+      await selfPromptStore.restoreFailed(pending, message)
+    }
+    finally {
+      selfTurnActive.value = false
+    }
+  }
+
   function cancelPendingSends(sessionId?: string) {
     runtime.cancelPendingSends(sessionId)
   }
@@ -416,13 +599,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     cancelPendingSends,
     clearHooks: runtime.hooks.clearHooks,
 
+    discardSelfPrompt,
     emitAfterMessageComposedHooks: runtime.hooks.emitAfterMessageComposedHooks,
     emitAfterSendHooks: runtime.hooks.emitAfterSendHooks,
     emitAssistantMessageHooks: runtime.hooks.emitAssistantMessageHooks,
+
     emitAssistantResponseEndHooks: runtime.hooks.emitAssistantResponseEndHooks,
 
     emitBeforeMessageComposedHooks: runtime.hooks.emitBeforeMessageComposedHooks,
-
     emitBeforeSendHooks: runtime.hooks.emitBeforeSendHooks,
     emitChatTurnCompleteHooks: runtime.hooks.emitChatTurnCompleteHooks,
     emitStreamEndHooks: runtime.hooks.emitStreamEndHooks,
@@ -431,6 +615,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     getPendingQueuedSendSnapshot,
     ingest,
     ingestOnFork,
+    lastTurnOutputTokens,
     onAfterMessageComposed: runtime.hooks.onAfterMessageComposed,
     onAfterSend: runtime.hooks.onAfterSend,
 
@@ -443,6 +628,13 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     onTokenLiteral: runtime.hooks.onTokenLiteral,
     onTokenSpecial: runtime.hooks.onTokenSpecial,
     pendingQueuedSendCount,
+    restartSelfWakeCountdown,
+    runSelfTurn,
+    selfTurnActive,
+    selfWakeDeadline,
+    selfWakeLastError,
+    selfWakeStatus,
     sending,
+    sendSelfPromptNow,
   }
 })

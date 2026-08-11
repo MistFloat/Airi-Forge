@@ -398,14 +398,16 @@ export function createPgvectorMemoryStore(connectionString: string) {
     await withDatabase(async sql => await sql.begin(async (transaction) => {
       await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${memory.namespace}, 0))`
       const before = (await transaction`SELECT * FROM canonical_memories WHERE id = ${memory.memoryId} FOR UPDATE`)[0] ?? null
-      const polarity = memory.content.trim().startsWith('!') ? 'negative' : 'positive'
+      const kind = canonicalKind(memory.kind)
+      // summary memories are polarity-less by schema; only fact/preference carry polarity
+      const polarity = kind === 'summary' ? null : (memory.content.trim().startsWith('!') ? 'negative' : 'positive')
       await transaction`
         INSERT INTO canonical_memories (
           id, namespace, title, kind, subject, predicate, scope, fact_key, polarity,
           value_text, tags, importance, confidence, status, valid_from, valid_until,
           created_by, supersedes_id
         ) VALUES (
-          ${memory.memoryId}, ${memory.namespace}, ${memory.title.trim()}, ${canonicalKind(memory.kind)},
+          ${memory.memoryId}, ${memory.namespace}, ${memory.title.trim()}, ${kind},
           'user', 'manual_note', 'global', ${`user/manual_note/${memory.memoryId}`}, ${polarity},
           ${memory.content.trim()}, ${cleanTags(memory.tags)}, ${normalizedScore(memory.importance, 0.5)},
           1, ${canonicalStatus(memory.status)}, ${memory.effectiveFrom ?? null}, ${memory.effectiveUntil ?? null},

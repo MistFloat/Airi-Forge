@@ -23,7 +23,15 @@ import { findFilesTool, searchCodeTool } from './tools/search'
 import { addFileTool, clearSessionTool, dropFileTool, listFilesTool } from './tools/session'
 import { countTokensTool } from './tools/tokens'
 import { errorMessageFromValue, errorResult } from './tools/types'
-import { applyDiffTool, deleteFileTool, moveFileTool, writeFileTool } from './tools/write'
+import {
+  applyDiffTool,
+  createWriteFileChunkState,
+  deleteFileTool,
+  moveFileTool,
+  WRITE_FILE_CHUNK_MAX_CHARS,
+  writeFileChunkTool,
+  writeFileTool,
+} from './tools/write'
 
 /**
  * Coding-agent MCP server: workdir-scoped tools for AIRI.
@@ -43,8 +51,8 @@ import { applyDiffTool, deleteFileTool, moveFileTool, writeFileTool } from './to
  * Tool groups (aider-aligned):
  * - **Read** (aider `/add` + read-only): `read_file`, `read_file_range`,
  *   `list_dir`, `search_code`, `find_files`.
- * - **Write** (aider SEARCH/REPLACE + whole-file): `apply_diff`, `write_file`,
- *   `delete_file`, `move_file`.
+ * - **Write** (aider SEARCH/REPLACE + bounded whole-file): `apply_diff`,
+ *   `write_file`, `write_file_chunk`, `delete_file`, `move_file`.
  * - **Git** (aider auto-commit + /undo + /git): `git_status`, `git_diff`,
  *   `git_add`, `git_commit`, `git_push`, `git_undo`, `git_log`, `git_raw`.
  * - **Command** (aider `/run` + `/test` + `/lint`): `run_command`, `run_tests`,
@@ -57,6 +65,7 @@ import { applyDiffTool, deleteFileTool, moveFileTool, writeFileTool } from './to
  */
 
 interface ServerContext {
+  chunkState: ReturnType<typeof createWriteFileChunkState>
   enableCommit: boolean
   progress: ProgressSink | undefined
   session: FileSession
@@ -66,6 +75,9 @@ interface ServerContext {
 const workdirRoot = process.env.CODING_AGENT_WORKDIR ?? process.cwd()
 const workdir = createWorkdir(workdirRoot)
 const enableCommit = process.env.CODING_AGENT_ENABLE_GIT_COMMIT === '1'
+// Staged chunk writes are owned by this MCP process and isolated by writeId.
+// Restarting the server intentionally invalidates all unfinished sequences.
+const chunkState = createWriteFileChunkState()
 // Single per-process session. The MCP stdio connection is long-lived, so
 // session state persists across tool calls until the host restarts the server.
 const session = new FileSession(workdir)
@@ -79,6 +91,7 @@ function toolHandler<Args>(
 ): (args: Args, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => Promise<McpToolResult> {
   return async (args, extra) => {
     const ctx: ServerContext = {
+      chunkState,
       enableCommit,
       progress: createProgressSink(extra),
       session,
@@ -136,6 +149,7 @@ server.registerTool('list_dir', {
 server.registerTool('apply_diff', {
   description: [
     'Apply SEARCH/REPLACE edit blocks to files inside the workdir (aider-style edits).',
+    'Prefer this for targeted edits to existing files instead of rewriting the whole file.',
     'Each block has `path`, `search` (exact existing lines) and `replace`.',
     'Empty `search` creates a new file or appends to an existing one.',
     'Matching chain: exact → missing-leading-whitespace → skip-blank-leading-line → dotdotdots (`...`) → fuzzy.',
@@ -151,12 +165,34 @@ server.registerTool('apply_diff', {
 }, toolHandler('apply_diff', applyDiffTool))
 
 server.registerTool('write_file', {
-  description: 'Create or fully overwrite a file inside the workdir (creates missing parent directories).',
+  description: [
+    `Create or fully overwrite a small file of at most ${WRITE_FILE_CHUNK_MAX_CHARS} characters.`,
+    'For larger files, do not put the complete content in one tool call: use write_file_chunk with mode "start", then ordered "append" calls, and final: true on the last chunk.',
+    'For targeted changes to existing files, prefer apply_diff.',
+  ].join(' '),
   inputSchema: {
-    content: z.string().describe('Full file content.'),
+    content: z.string().max(WRITE_FILE_CHUNK_MAX_CHARS).describe(`Full file content, at most ${WRITE_FILE_CHUNK_MAX_CHARS} characters.`),
     path: z.string().describe('File path relative to the workdir.'),
   },
 }, toolHandler('write_file', writeFileTool))
+
+server.registerTool('write_file_chunk', {
+  description: [
+    `Create or fully replace a large file through ordered chunks of at most ${WRITE_FILE_CHUNK_MAX_CHARS} characters.`,
+    'First call mode "start" without writeId/expectedOffset. Read writeId and nextOffset from the result.',
+    'For every later call use mode "append" with that exact writeId and expectedOffset.',
+    'Set final: true only on the last chunk. The destination is not replaced before final, so always finish the sequence.',
+    'Never guess an offset and never issue append calls in parallel.',
+  ].join(' '),
+  inputSchema: {
+    content: z.string().max(WRITE_FILE_CHUNK_MAX_CHARS).describe(`This chunk's content, at most ${WRITE_FILE_CHUNK_MAX_CHARS} characters.`),
+    expectedOffset: z.number().int().min(0).optional().describe('Exact UTF-8 byte offset returned by the preceding call. Required only for append.'),
+    final: z.boolean().optional().describe('Commit the staged file after this chunk (default false).'),
+    mode: z.enum(['start', 'append']).describe('Use start for the first chunk and append for every later chunk.'),
+    path: z.string().describe('Destination path relative to the workdir. Repeat the same path for every chunk.'),
+    writeId: z.string().optional().describe('Server-issued writeId returned by start. Required only for append.'),
+  },
+}, toolHandler('write_file_chunk', writeFileChunkTool))
 
 server.registerTool('delete_file', {
   description: [
@@ -269,7 +305,7 @@ server.registerTool('git_raw', {
 server.registerTool('run_command', {
   description: [
     'Run a shell command inside the workdir (no shell expansion: `&&`, `;`, `|` are NOT interpreted).',
-    'Returns stdout/stderr (truncated to 256KB each), exit code, and timeout/signal flags.',
+    'Returns stdout/stderr (truncated to 16 KiB each), exit code, and timeout/signal flags.',
     'Never throws — failures surface as `exitCode: -1` with the message in stderr.',
     'This is the primary escape hatch for operations not covered by dedicated tools (lint, test, build, etc.).',
   ].join(' '),

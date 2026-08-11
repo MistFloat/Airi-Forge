@@ -4,6 +4,7 @@ import type {
   GameletIframeResponsePayload,
 } from '@proj-airi/plugin-sdk-tamagotchi/gamelet'
 import type { ServerOptions } from '@proj-airi/server-runtime/server'
+import type { ProviderMaxTokensConfig } from '@proj-airi/stage-shared'
 import type {
   ShortcutAccelerator,
   ShortcutBinding,
@@ -382,6 +383,25 @@ export const electronGetWindowLifecycleState = defineInvokeEventa<ElectronWindow
 export const electronWindowSetAlwaysOnTop = defineInvokeEventa<void, boolean>('eventa:invoke:electron:window:set-always-on-top')
 export const electronAppOpenUserDataFolder = defineInvokeEventa<{ path: string }>('eventa:invoke:electron:app:open-user-data-folder')
 export const electronAppQuit = defineInvokeEventa<void>('eventa:invoke:electron:app:quit')
+
+/** Project-file response returned to renderer max-token stores. */
+export interface ElectronProviderMaxTokensSnapshot {
+  /** Validated portable configuration. */
+  config: ProviderMaxTokensConfig
+  /** Absolute JSON path used by the main process. */
+  path: string
+}
+
+/** Updates one stable provider definition in the shared project policy. */
+export interface ElectronProviderMaxTokensUpdate {
+  /** Positive integer override, or undefined to restore the project default. */
+  maxTokens?: number
+  /** Stable provider definition ID such as `deepseek`. */
+  providerId: string
+}
+
+export const electronProviderMaxTokensGet = defineInvokeEventa<ElectronProviderMaxTokensSnapshot>('eventa:invoke:electron:provider-max-tokens:get')
+export const electronProviderMaxTokensSet = defineInvokeEventa<ElectronProviderMaxTokensSnapshot, ElectronProviderMaxTokensUpdate>('eventa:invoke:electron:provider-max-tokens:set')
 
 /**
  * Serialized scene input payload forwarded from renderer to Electron main.

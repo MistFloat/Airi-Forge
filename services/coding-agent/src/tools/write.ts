@@ -1,9 +1,11 @@
 import type { Workdir } from '../lib/workdir'
 import type { McpToolResult } from './types'
 
+import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { appendFile, mkdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { replaceExact } from '../lib/edit'
@@ -45,11 +47,50 @@ export interface WriteFileArgs {
   path: string
 }
 
+/** One bounded chunk in a staged whole-file write. */
+export interface WriteFileChunkArgs {
+  /** Chunk content. Must not exceed {@link WRITE_FILE_CHUNK_MAX_CHARS}. */
+  content: string
+  /** UTF-8 byte offset returned by the preceding call. Required for `append`. */
+  expectedOffset?: number
+  /** Commits the staged file to `path` after writing this chunk. @default false */
+  final?: boolean
+  /** Starts a new staged file or appends to an existing write session. */
+  mode: 'append' | 'start'
+  /** Destination path relative to the workdir. */
+  path: string
+  /** Server-issued identifier returned by `start`. Required for `append`. */
+  writeId?: string
+}
+
+/** Context required by the stateful chunk writer. */
+export interface WriteFileChunkContext extends WriteToolsContext {
+  chunkState: WriteFileChunkState
+}
+
+/** Process-local ownership state for staged chunk writes. */
+export interface WriteFileChunkState {
+  activeWrites: Map<string, ActiveWriteFileChunk>
+}
+
 export interface WriteToolsContext {
   workdir: Workdir
 }
 
+interface ActiveWriteFileChunk {
+  absolutePath: string
+  nextOffset: number
+  relativePath: string
+  temporaryPath: string
+}
+
 const execFileAsync = promisify(execFile)
+
+/**
+ * Maximum characters accepted in one tool argument, leaving headroom for JSON
+ * escaping and the rest of an 8K-token provider response.
+ */
+export const WRITE_FILE_CHUNK_MAX_CHARS = 6000
 
 interface ApplyFailure {
   matches?: number
@@ -139,6 +180,11 @@ export async function applyDiffTool(args: ApplyDiffArgs, ctx: WriteToolsContext)
     applied.map(a => `${a.path} (${a.status})`).join('\n'),
     { applied },
   )
+}
+
+/** Creates isolated process-local state for staged file writes. */
+export function createWriteFileChunkState(): WriteFileChunkState {
+  return { activeWrites: new Map() }
 }
 
 /**
@@ -241,11 +287,140 @@ export async function moveFileTool(args: MoveFileArgs, ctx: WriteToolsContext): 
   })
 }
 
-/** Creates or overwrites a file wholesale, creating missing parent directories. */
+/**
+ * Writes a whole file through bounded, ordered chunks.
+ *
+ * `start` creates a temporary file and returns a `writeId` plus the next UTF-8
+ * byte offset. Every `append` must echo both values. The destination remains
+ * untouched until a call sets `final: true`, when the staged file is renamed
+ * over it. Starting another session for the same path invalidates the older
+ * process-local session.
+ */
+export async function writeFileChunkTool(args: WriteFileChunkArgs, ctx: WriteFileChunkContext): Promise<McpToolResult> {
+  const resolved = resolveInWorkdir(ctx.workdir, args.path)
+  if (!resolved.ok)
+    return errorResult(`Path is outside the workdir: ${args.path}`)
+  if (args.content.length > WRITE_FILE_CHUNK_MAX_CHARS) {
+    return errorResult(
+      `Chunk exceeds ${WRITE_FILE_CHUNK_MAX_CHARS} characters; split it into smaller write_file_chunk calls.`,
+    )
+  }
+
+  if (args.mode === 'start') {
+    if (args.writeId !== undefined || args.expectedOffset !== undefined)
+      return errorResult('start must not include writeId or expectedOffset')
+
+    try {
+      // Only one staged writer may own a destination. A fresh start explicitly
+      // abandons older incomplete sessions for the same path.
+      for (const [activeWriteId, activeWrite] of ctx.chunkState.activeWrites) {
+        if (activeWrite.absolutePath !== resolved.absolute)
+          continue
+        ctx.chunkState.activeWrites.delete(activeWriteId)
+        await rm(activeWrite.temporaryPath, { force: true })
+      }
+
+      await mkdir(dirname(resolved.absolute), { recursive: true })
+      const writeId = randomUUID()
+      const temporaryPath = join(
+        dirname(resolved.absolute),
+        `.${basename(resolved.absolute)}.${writeId}.airi-write`,
+      )
+      await writeFile(temporaryPath, args.content, 'utf8')
+      const nextOffset = Buffer.byteLength(args.content, 'utf8')
+
+      if (args.final) {
+        await rename(temporaryPath, resolved.absolute)
+        return textResult(`completed ${resolved.rel} at ${nextOffset} UTF-8 bytes`, {
+          nextOffset,
+          path: resolved.rel,
+          status: 'completed',
+          writeId,
+        })
+      }
+
+      ctx.chunkState.activeWrites.set(writeId, {
+        absolutePath: resolved.absolute,
+        nextOffset,
+        relativePath: resolved.rel,
+        temporaryPath,
+      })
+      return textResult(`started ${resolved.rel}; append at UTF-8 byte offset ${nextOffset}`, {
+        nextOffset,
+        path: resolved.rel,
+        status: 'started',
+        writeId,
+      })
+    }
+    catch (error) {
+      return errorResult(`Failed to start chunked write for ${resolved.rel}: ${errorMessageFromValue(error)}`)
+    }
+  }
+
+  if (args.writeId === undefined || args.expectedOffset === undefined)
+    return errorResult('append requires writeId and expectedOffset from the preceding write_file_chunk result')
+
+  const activeWrite = ctx.chunkState.activeWrites.get(args.writeId)
+  if (activeWrite === undefined)
+    return errorResult(`Unknown or completed writeId: ${args.writeId}; restart with mode "start"`)
+  if (activeWrite.absolutePath !== resolved.absolute) {
+    return errorResult(
+      `writeId ${args.writeId} belongs to ${activeWrite.relativePath}, not ${resolved.rel}`,
+    )
+  }
+  if (args.expectedOffset !== activeWrite.nextOffset) {
+    return errorResult(
+      `Chunk offset mismatch for ${resolved.rel}: expected ${activeWrite.nextOffset}, received ${args.expectedOffset}`,
+      { expectedOffset: activeWrite.nextOffset, path: resolved.rel, writeId: args.writeId },
+    )
+  }
+
+  try {
+    const stagedFile = await stat(activeWrite.temporaryPath)
+    if (!stagedFile.isFile() || stagedFile.size !== activeWrite.nextOffset) {
+      ctx.chunkState.activeWrites.delete(args.writeId)
+      await rm(activeWrite.temporaryPath, { force: true })
+      return errorResult(
+        `Staged file changed outside this write session; restart ${resolved.rel} with mode "start"`,
+      )
+    }
+
+    await appendFile(activeWrite.temporaryPath, args.content, 'utf8')
+    activeWrite.nextOffset += Buffer.byteLength(args.content, 'utf8')
+
+    if (args.final) {
+      await rename(activeWrite.temporaryPath, activeWrite.absolutePath)
+      ctx.chunkState.activeWrites.delete(args.writeId)
+      return textResult(`completed ${resolved.rel} at ${activeWrite.nextOffset} UTF-8 bytes`, {
+        nextOffset: activeWrite.nextOffset,
+        path: resolved.rel,
+        status: 'completed',
+        writeId: args.writeId,
+      })
+    }
+
+    return textResult(`appended ${resolved.rel}; continue at UTF-8 byte offset ${activeWrite.nextOffset}`, {
+      nextOffset: activeWrite.nextOffset,
+      path: resolved.rel,
+      status: 'appended',
+      writeId: args.writeId,
+    })
+  }
+  catch (error) {
+    return errorResult(`Failed to append chunk for ${resolved.rel}: ${errorMessageFromValue(error)}`)
+  }
+}
+
+/** Creates or overwrites a bounded small file, creating missing parent directories. */
 export async function writeFileTool(args: WriteFileArgs, ctx: WriteToolsContext): Promise<McpToolResult> {
   const resolved = resolveInWorkdir(ctx.workdir, args.path)
   if (!resolved.ok)
     return errorResult(`Path is outside the workdir: ${args.path}`)
+  if (args.content.length > WRITE_FILE_CHUNK_MAX_CHARS) {
+    return errorResult(
+      `Whole-file content exceeds ${WRITE_FILE_CHUNK_MAX_CHARS} characters; use write_file_chunk instead.`,
+    )
+  }
 
   try {
     await writeText(resolved.absolute, args.content)

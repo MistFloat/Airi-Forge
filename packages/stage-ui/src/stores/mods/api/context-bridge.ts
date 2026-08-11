@@ -24,6 +24,7 @@ import { useChatStreamStore } from '../../chat/stream-store'
 import { useContextObservabilityStore } from '../../devtools/context-observability'
 import { useLlmStreamingControlStore } from '../../llm-streaming-control'
 import { useConsciousnessStore } from '../../modules/consciousness'
+import { useProviderMaxTokensStore } from '../../provider-max-tokens'
 import { useProvidersStore } from '../../providers'
 import { useModsServerChannelStore } from './channel-server'
 
@@ -57,6 +58,7 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
   const contextObservability = useContextObservabilityStore()
   const characterOrchestratorStore = useCharacterOrchestratorStore()
   const consciousnessStore = useConsciousnessStore()
+  const providerMaxTokensStore = useProviderMaxTokensStore()
   const providersStore = useProvidersStore()
   const { activeModel, activeProvider } = storeToRefs(consciousnessStore)
   const streamingControl = useLlmStreamingControlStore()
@@ -674,6 +676,7 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
           // - https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API
           await withContextBridgeLock('context-bridge:event:input:text', async () => {
             try {
+              await providerMaxTokensStore.refresh()
               await chatOrchestrator.ingest(messageText, {
                 chatProvider,
                 input: {
@@ -687,6 +690,10 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
                   type: 'input:text',
                 },
                 model: activeModel.value,
+                providerConfig: {
+                  ...providersStore.getProviderConfig(activeProvider.value),
+                  maxTokens: providerMaxTokensStore.getProviderMaxTokens(activeProvider.value),
+                },
               }, targetSessionId)
             }
             catch (err) {

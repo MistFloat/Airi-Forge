@@ -4,7 +4,7 @@ import type { McpToolDescriptor, McpToolRuntime } from './mcp'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createMcpDirectTools, desanitizeMcpToolName, mcp, sanitizeMcpToolName } from './mcp'
+import { createMcpDirectTools, createMcpTools, desanitizeMcpToolName, mcp, sanitizeMcpToolName } from './mcp'
 
 describe('tools mcp schema', () => {
   it('emits strict parameter objects', async () => {
@@ -154,6 +154,56 @@ describe('createMcpDirectTools', () => {
       content: [{ text: 'server crashed', type: 'text' }],
       isError: true,
     })
+  })
+
+  // ROOT CAUSE:
+  //
+  // xsAI serializes every non-string tool result into the next provider
+  // request. A single MCP read/search result containing hundreds of thousands
+  // of characters was therefore replayed on every later tool step and could
+  // exhaust the model context without a visible application error.
+  //
+  // We fixed this at the shared MCP boundary so both direct tools and the
+  // builtIn_mcpCallTool proxy return a bounded diagnostic result.
+  it('bounds oversized direct MCP results before they enter model history', async () => {
+    const oversizedText = `start-${'x'.repeat(40_000)}-end`
+    const callTool = vi.fn(async () => ({
+      content: [{ text: oversizedText, type: 'text' }],
+      structuredContent: { raw: oversizedText },
+    }))
+    const tools = await createMcpDirectTools(makeRuntime([sampleDescriptor], callTool))
+
+    const result = await tools[0].execute({}, toolOptions)
+    const serialized = JSON.stringify(result)
+
+    expect(serialized.length).toBeLessThan(25_000)
+    expect(result).toEqual(expect.objectContaining({
+      content: [expect.objectContaining({
+        text: expect.stringContaining('MCP result truncated by AIRI'),
+        type: 'text',
+      })],
+      structuredContent: expect.objectContaining({
+        airiTruncated: true,
+      }),
+    }))
+    expect(serialized).toContain('start-')
+    expect(serialized).toContain('-end')
+  })
+
+  it('applies the same result bound to the MCP proxy tool', async () => {
+    const oversizedText = 'z'.repeat(40_000)
+    const runtime = makeRuntime([], vi.fn(async () => ({
+      content: [{ text: oversizedText, type: 'text' }],
+    })))
+    const tools = await Promise.all(createMcpTools(runtime))
+    const callTool = tools.find(entry => entry.function.name === 'builtIn_mcpCallTool')
+
+    const result = await callTool?.execute({ arguments: '{}', name: 'server::read' }, toolOptions)
+
+    expect(JSON.stringify(result).length).toBeLessThan(25_000)
+    expect(result).toEqual(expect.objectContaining({
+      structuredContent: expect.objectContaining({ airiTruncated: true }),
+    }))
   })
 
   it('returns empty array when listTools throws', async () => {

@@ -28,7 +28,7 @@ export type FeedbackSeverity = 'blocker' | 'major' | 'minor' | 'suggestion'
 export type FeedbackSource = 'app' | 'discord' | 'email' | 'github' | 'other' | 'qq'
 export type FeedbackUserType = 'developer_user' | 'new_user' | 'overseas_user' | 'paid_user' | 'role_chat_user' | 'unknown'
 export type FluxBalanceBucket = '1_100' | '101_1000' | '1001_10000' | '10000_plus' | 'unknown' | 'zero'
-export type MessageInputMode = 'text' | 'voice'
+export type MessageInputMode = 'self' | 'text' | 'voice'
 /**
  * Full stage vocabulary of the cross-surface `oauth_callback_failed` event.
  * The web/PKCE stages fire from `pages/auth/callback.vue`; the electron
@@ -55,7 +55,7 @@ interface ChatActivationBaseProperties extends ChatRoundCorrelationProperties {
   model_id: string
   provider_id: string
   provider_mode: ProviderMode
-  source: 'text' | 'voice'
+  source: MessageInputMode
 }
 
 interface ChatRoundCorrelationProperties {
@@ -361,7 +361,7 @@ export function useAnalytics() {
   // (per-request volume stays in DB/Grafana). These client emits supply the
   // user-facing latency picture (TTFT, render time) the server cannot see.
 
-  function trackMessageSendStarted(properties: ChatRoundCorrelationProperties & { model?: string, source: 'text' | 'voice' }) {
+  function trackMessageSendStarted(properties: ChatRoundCorrelationProperties & { model?: string, source: MessageInputMode }) {
     if (!canCapture())
       return
     posthog.capture('message_send_started', properties)
@@ -400,7 +400,7 @@ export function useAnalytics() {
     failure_stage: ChatActivationFailureStage
     model_id: string
     provider_id: string
-    source: 'text' | 'voice'
+    source: MessageInputMode
   }) {
     if (!canCapture())
       return

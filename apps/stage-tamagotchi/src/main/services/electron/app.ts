@@ -12,7 +12,11 @@ import { defineInvokeHandler } from '@moeru/eventa'
 import { app, shell } from 'electron'
 import { isLinux, isMacOS, isWindows } from 'std-env'
 
-import { electron, electronAppOpenUserDataFolder, electronAppQuit, electronInstructionFileChanged, electronInstructionFileGet } from '../../../shared/eventa'
+import { electron, electronAppOpenUserDataFolder, electronAppQuit, electronInstructionFileChanged, electronInstructionFileGet, electronProviderMaxTokensGet, electronProviderMaxTokensSet } from '../../../shared/eventa'
+import { createProviderMaxTokensConfigRepository, resolveProviderMaxTokensConfigPath } from '../../configs/provider-max-tokens'
+
+const providerMaxTokensConfigPath = resolveProviderMaxTokensConfigPath(process.cwd())
+const providerMaxTokensRepository = createProviderMaxTokensConfigRepository(providerMaxTokensConfigPath)
 
 export function createAppService(params: { context: ReturnType<typeof createContext>['context'], window: BrowserWindow }) {
   defineInvokeHandler(params.context, electron.app.isMacOS, () => isMacOS)
@@ -27,6 +31,14 @@ export function createAppService(params: { context: ReturnType<typeof createCont
     return { path }
   })
   defineInvokeHandler(params.context, electronAppQuit, () => app.quit())
+  defineInvokeHandler(params.context, electronProviderMaxTokensGet, async () => ({
+    config: await providerMaxTokensRepository.read(),
+    path: providerMaxTokensConfigPath,
+  }))
+  defineInvokeHandler(params.context, electronProviderMaxTokensSet, async ({ maxTokens, providerId }) => ({
+    config: await providerMaxTokensRepository.set(providerId, maxTokens),
+    path: providerMaxTokensConfigPath,
+  }))
 
   function findMonorepoRoot(start: string): string {
     let current = start

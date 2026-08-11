@@ -58,4 +58,35 @@ describe('embedWithJina', () => {
       task: 'retrieval.query',
     })).rejects.toThrow('Jina embedding failed: 401 invalid token')
   })
+
+  it('retries a transient 429 concurrency limit before succeeding', async () => {
+    // ROOT CAUSE:
+    //
+    // Jina's free tier caps concurrent embedding requests per key at 2, so the
+    // renderer's 4-term fan-out plus gateway job draining can hit 429. embedWithJina
+    // failed on the first 429 instead of waiting for a pending request to finish.
+    //
+    // We fixed this by retrying 429 responses with exponential backoff.
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'concurrency limit exceeded' }), { status: 429 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const promise = embedWithJina({
+        apiKey: 'jina_test',
+        dimensions: 512,
+        input: 'The user prefers tea.',
+        model: 'jina-embeddings-v5-text-small',
+        task: 'retrieval.passage',
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      await expect(promise).resolves.toEqual([0.1, 0.2, 0.3])
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -1,7 +1,7 @@
 import type { ChatProvider } from '@xsai-ext/providers/utils'
-import type { Message, Tool } from '@xsai/shared-chat'
+import type { Message, Tool, Usage } from '@xsai/shared-chat'
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { isContentArrayRelatedError, sanitizeMessages, streamFrom } from './llm-service'
 
@@ -27,14 +27,22 @@ const provider = {
   }),
 } as unknown as ChatProvider
 
-function createMockStreamResult(steps: Promise<unknown[]> = Promise.resolve([])) {
+function createMockStreamResult(
+  steps: Promise<unknown[]> = Promise.resolve([]),
+  messages: Promise<Message[]> = Promise.resolve([]),
+  totalUsage: Promise<undefined | Usage> = Promise.resolve(undefined),
+) {
   return {
-    messages: Promise.resolve([]),
+    messages,
     steps,
-    totalUsage: Promise.resolve(undefined),
+    totalUsage,
     usage: Promise.resolve(undefined),
   }
 }
+
+beforeEach(() => {
+  streamTextMock.mockReset()
+})
 
 describe('streamFrom tool error capture', () => {
   /**
@@ -108,6 +116,286 @@ describe('streamFrom tool error capture', () => {
       toolCallId: 'call-1',
       toolName: 'play_chess',
       type: 'tool-error',
+    }))
+  })
+})
+
+describe('streamFrom output continuation', () => {
+  // ROOT CAUSE:
+  //
+  // OpenAI-compatible providers end a valid SSE stream with
+  // `finish_reason: "length"` when one response reaches the provider output
+  // ceiling. Before this regression fix, streamFrom treated that event like a
+  // normal completion, so the chat orchestrator persisted the partial text and
+  // changed the UI state to stopped.
+  //
+  // We fixed this by replaying the provider-returned partial assistant message
+  // with an internal continuation instruction. Only the final finish event is
+  // exposed, and continuation text is joined at the interrupted word boundary.
+  // The internal instruction never enters AIRI's durable session messages.
+  //
+  // Reference implementations:
+  // https://github.com/NousResearch/hermes-agent/pull/12846
+  // https://vercel.com/blog/ai-sdk-4-0#continuation-support
+  it('continues a length-truncated response and emits one seamless final stream', async () => {
+    const inputMessages = [{ content: 'Write a sentence.', role: 'user' }] satisfies Message[]
+    const events: Array<{ finishReason?: string, text?: string, type: string }> = []
+
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const partialAssistant = { content: 'The quick bro', role: 'assistant' } satisfies Message
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'The quick bro', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'length', type: 'finish' })
+          resolve([{ finishReason: 'length', text: partialAssistant.content, toolCalls: [], toolResults: [] }])
+        })
+      })
+
+      return createMockStreamResult(
+        steps,
+        Promise.resolve([...options.messages, partialAssistant]),
+      )
+    })
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'brown fox.', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([{ finishReason: 'stop', text: 'brown fox.', toolCalls: [], toolResults: [] }])
+        })
+      })
+
+      return createMockStreamResult(steps, Promise.resolve(options.messages))
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: inputMessages,
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+      },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2)
+    expect(events.filter(event => event.type === 'text-delta').map(event => event.text).join('')).toBe('The quick brown fox.')
+    expect(events.filter(event => event.type === 'finish')).toEqual([
+      expect.objectContaining({ finishReason: 'stop', type: 'finish' }),
+    ])
+    expect(inputMessages).toEqual([{ content: 'Write a sentence.', role: 'user' }])
+
+    const continuationMessages = streamTextMock.mock.calls[1]?.[0]?.messages as Message[]
+    expect(continuationMessages.at(-2)).toEqual({ content: 'The quick bro', role: 'assistant' })
+    expect(continuationMessages.at(-1)).toEqual(expect.objectContaining({ role: 'user' }))
+    expect(String(continuationMessages.at(-1)?.content)).toContain('Continue exactly where')
+  })
+
+  // ROOT CAUSE:
+  //
+  // Automatic continuation creates more than one `streamText` call. Reporting
+  // only the last call's usage made a truncated turn look much smaller than it
+  // really was, which hid the evidence needed to diagnose provider limits.
+  //
+  // We fixed this by summing xsAI's per-call `totalUsage` and attaching that
+  // turn aggregate to the one terminal finish event exposed to consumers.
+  it('reports aggregate output tokens across automatic continuation calls', async () => {
+    const finishEvents: Array<{ type: string, usage?: Usage }> = []
+
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'part one ', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'length', type: 'finish' })
+          resolve([{ finishReason: 'length', text: 'part one ', toolCalls: [], toolResults: [] }])
+        })
+      })
+      return createMockStreamResult(
+        steps,
+        Promise.resolve([...options.messages, { content: 'part one ', role: 'assistant' }]),
+        Promise.resolve({ completion_tokens: 100, prompt_tokens: 40, total_tokens: 140 }),
+      )
+    })
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'part two', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([{ finishReason: 'stop', text: 'part two', toolCalls: [], toolResults: [] }])
+        })
+      })
+      return createMockStreamResult(
+        steps,
+        Promise.resolve(options.messages),
+        Promise.resolve({ completion_tokens: 60, prompt_tokens: 150, total_tokens: 210 }),
+      )
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Keep writing.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          if (event.type === 'finish')
+            finishEvents.push(event)
+        },
+      },
+    })
+
+    expect(streamTextMock.mock.calls[0]?.[0]?.streamOptions).toEqual({ includeUsage: true })
+    expect(streamTextMock.mock.calls[1]?.[0]?.streamOptions).toEqual({ includeUsage: true })
+    expect(finishEvents).toEqual([{
+      finishReason: 'stop',
+      type: 'finish',
+      usage: {
+        completion_tokens: 160,
+        prompt_tokens: 190,
+        total_tokens: 350,
+      },
+    }])
+  })
+
+  it('stops after three continuation attempts and surfaces the final length finish', async () => {
+    const events: Array<{ finishReason?: string, text?: string, type: string }> = []
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      streamTextMock.mockImplementationOnce((options: {
+        messages: Message[]
+        onEvent: (event: unknown) => Promise<void>
+      }) => {
+        const text = `part${attempt} `
+        const steps = new Promise<unknown[]>((resolve) => {
+          queueMicrotask(async () => {
+            await options.onEvent({ text, type: 'text-delta' })
+            await options.onEvent({ finishReason: 'length', type: 'finish' })
+            resolve([{ finishReason: 'length', text, toolCalls: [], toolResults: [] }])
+          })
+        })
+
+        return createMockStreamResult(
+          steps,
+          Promise.resolve([...options.messages, { content: text, role: 'assistant' }]),
+        )
+      })
+    }
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Keep writing.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+      },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(4)
+    expect(events.filter(event => event.type === 'finish')).toEqual([
+      expect.objectContaining({ finishReason: 'length', type: 'finish' }),
+    ])
+  })
+
+  it('does not auto-continue a length-truncated tool-call step', async () => {
+    const events: Array<{ finishReason?: string, type: string }> = []
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ finishReason: 'length', type: 'finish' })
+          resolve([{
+            finishReason: 'length',
+            text: '',
+            toolCalls: [{ toolCallId: 'call-partial', toolName: 'write_file' }],
+            toolResults: [],
+          }])
+        })
+      })
+      return createMockStreamResult(steps, Promise.resolve(options.messages))
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Write the file.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+      },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(1)
+    expect(events.filter(event => event.type === 'finish')).toEqual([
+      expect.objectContaining({ finishReason: 'length', type: 'finish' }),
+    ])
+  })
+
+  // ROOT CAUSE:
+  //
+  // xsAI can finish its last allowed agent step while the model is still
+  // requesting another tool. AIRI previously returned normally in that state,
+  // so the visible reply simply stopped with no explanation.
+  //
+  // We fixed this by appending an explicit diagnostic and exposing a terminal
+  // non-tool finish event after the safety limit is reached.
+  it('surfaces an explicit message when maxSteps stops an unfinished tool loop', async () => {
+    const events: Array<{ finishReason?: string, text?: string, type: string }> = []
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'Checking files.', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'tool_calls', type: 'finish' })
+          resolve([
+            { finishReason: 'tool_calls', text: '', toolCalls: [], toolResults: [] },
+            {
+              finishReason: 'tool_calls',
+              text: '',
+              toolCalls: [{ toolCallId: 'call-2', toolName: 'read_file' }],
+              toolResults: [],
+            },
+          ])
+        })
+      })
+      return createMockStreamResult(steps, Promise.resolve(options.messages))
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Inspect the repository.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        maxSteps: 2,
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+      },
+    })
+
+    expect(events.filter(event => event.type === 'text-delta').map(event => event.text).join(''))
+      .toContain('reaching the 2-step tool-call safety limit')
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      finishReason: 'other',
+      type: 'finish',
     }))
   })
 })

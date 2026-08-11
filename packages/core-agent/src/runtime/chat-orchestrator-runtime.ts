@@ -13,8 +13,10 @@ import { formatTimePrefix } from '../messages/datetime-prefix'
 import { createChatHooks } from './agent-hooks'
 import { useLlmmarkerParser } from './llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from './response-categoriser'
+import { createSelfPromptCapture } from './self-prompt'
 
 const STREAMING_UI_FLUSH_CHUNK_SIZE = 24
+const SELF_PROMPT_MESSAGE_SOURCE = '[Message source: AIRI self-prompt loop; not sent by the user]\n'
 
 /**
  * Lifecycle record emitted around prompt composition.
@@ -102,6 +104,14 @@ export interface ChatOrchestratorRuntimeDeps {
   getActiveProvider: () => string | undefined
   /** Returns the currently visible session ID. */
   getActiveSessionId: () => string
+  /**
+   * Optional introspection prompt prepended to the provider system message
+   * when this send is a `self` turn (source === 'self'). It reframes the
+   * round from "respond to the user" to "respond to yourself", so a captured
+   * `//` self prompt is answered as self-dialogue instead of as a regular
+   * user message. When omitted, no introspection block is injected.
+   */
+  getSelfTurnIntrospection?: () => string | undefined
   /** Returns the active character card's system prompt (identity) for this send. */
   getSystemPrompt?: () => string | undefined
   /** Returns optional prompt text appended to the provider system message for this send. */
@@ -136,20 +146,20 @@ export interface ChatOrchestratorRuntimeDeps {
     failureStage: 'llm_response'
     model: string
     provider: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
   }) => void
   /** Called for attempts made before the conversation has its first assistant response. */
   onChatActivationStarted?: (event: ChatRoundCorrelation & {
     model: string
     provider: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
   }) => void
   /** Called when the conversation reaches its first successful assistant response. */
   onChatActivationSucceeded?: (event: ChatRoundCorrelation & {
     durationMs: number
     model: string
     provider: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
   }) => void
   /** Called for context/prompt lifecycle observability. */
   onLifecycle?: (record: ChatOrchestratorLifecycleRecord) => void
@@ -176,15 +186,25 @@ export interface ChatOrchestratorRuntimeDeps {
     failureStage: 'llm_response'
     model: string
     provider: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
   }) => void
   /** Called when a user message send begins. */
   onMessageSendStarted?: (event: ChatRoundCorrelation & {
     model: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
   }) => void
   /** Called with the final provider prompt projection. */
   onPromptProjection?: (payload: ChatOrchestratorPromptProjection) => void
+  /**
+   * Called when a trailing `//` self-prompt line is captured from the reply.
+   * The line is withheld from the visible/TTS stream; this callback persists it
+   * so a future turn can act on it. Failures here must not abort the turn.
+   */
+  onSelfPromptCaptured?: (event: {
+    prompt: string
+    sessionId: string
+    sourceText: string
+  }) => Promise<void> | void
   /** Called after a runtime-owned send completes or fails and `sending` has been cleared. */
   onSendSettled?: (event: { sessionId: string }) => void
   /** Called whenever writable runtime state changes. */
@@ -199,7 +219,7 @@ export interface ChatOrchestratorRuntimeDeps {
     provider: string
     roundId: string
     sessionId: string
-    source: 'text' | 'voice'
+    source: 'self' | 'text' | 'voice'
     turnIndex: number
   }) => void
   /** Called after user turn persistence, before provider prompt composition. */
@@ -237,8 +257,14 @@ export interface ChatOrchestratorSendOptions {
   input?: ChatStreamEventContext['input']
   /** Provider model identifier used for the outbound LLM request. */
   model: string
-  /** Provider-specific request options, currently used for headers. */
+  /** Provider-specific request options, including headers and output-token limits. */
   providerConfig?: Record<string, unknown>
+  /**
+   * Send origin classification. Defaults to `voice` when `input` is present,
+   * otherwise `text`. `self` marks an internal turn (e.g. answering a captured
+   * self prompt) that is not a direct user message.
+   */
+  source?: 'self' | 'text' | 'voice'
   /** Tool definitions passed through to the LLM stream port. */
   tools?: StreamOptions['tools']
 }
@@ -365,7 +391,9 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const rawMessage = unwrapMessage(withoutContext)
 
       if (rawMessage.role === 'user') {
-        return prependTextToContent(rawMessage, formatTimePrefix(createdAt ?? nowTs))
+        const sourcePrefix = rawMessage.source === 'self' ? SELF_PROMPT_MESSAGE_SOURCE : ''
+        const { source: _source, ...providerMessage } = rawMessage
+        return prependTextToContent(providerMessage, `${formatTimePrefix(createdAt ?? nowTs)}${sourcePrefix}`)
       }
 
       if (rawMessage.role === 'assistant') {
@@ -403,13 +431,20 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     ingestRuntimeContexts()
 
     const sendingCreatedAt = now()
+    const sendSource = options.source ?? (options.input ? 'voice' : 'text')
 
     // TODO: Expire or prune stale runtime contexts from disconnected services before composing.
     const streamingMessageContext: ChatStreamEventContext = {
       composedMessage: [],
       contexts: deps.context.snapshot(),
       input: options.input,
-      message: { content: sendingMessage, createdAt: sendingCreatedAt, id: createId(), role: 'user' },
+      message: {
+        content: sendingMessage,
+        createdAt: sendingCreatedAt,
+        id: createId(),
+        role: 'user',
+        ...(sendSource === 'self' ? { source: 'self' as const } : {}),
+      },
     }
     deps.onLifecycle?.({
       channel: 'chat',
@@ -437,7 +472,6 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       tool_results: [],
     }
     patchForegroundStream(sessionId, buildingMessage)
-    const sendSource = options.input ? 'voice' : 'text'
     const activeProvider = deps.getActiveProvider?.() ?? ''
     // The user message is the durable start of a round, so its ID also serves
     // as the correlation key for every telemetry milestone emitted by it.
@@ -463,6 +497,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     })
     const roundStartedAt = monotonicNow()
 
+    let finalizeStream: (() => Promise<void>) | undefined
     try {
       await hooks.emitBeforeMessageComposedHooks(sendingMessage, streamingMessageContext)
 
@@ -499,7 +534,12 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         createdAt: sendingCreatedAt,
         id: roundId,
         role: 'user' as const,
+        ...(sendSource === 'self' ? { source: 'self' as const } : {}),
       }
+      // Self prompts intentionally remain `role: 'user'` in the durable raw
+      // history. The `source: 'self'` metadata preserves their real origin for
+      // auditing, while the complete user/assistant sequence makes autonomous
+      // activity queryable through the same database path as ordinary turns.
       deps.session.appendSessionMessage(sessionId, userMessage)
 
       // Cloud sync v1: only the raw text part round-trips; image attachments
@@ -515,20 +555,76 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         turnIndex,
       })
 
-      const sessionMessagesForSend = deps.session.getSessionMessages(sessionId)
-      deps.onUserTurnReady?.({
-        messageText: sendingMessage,
-        sessionMessages: sessionMessagesForSend,
-      })
+      const persistedSessionMessages = deps.session.getSessionMessages(sessionId)
+      const sessionMessagesForSend = persistedSessionMessages
+      if (sendSource !== 'self') {
+        deps.onUserTurnReady?.({
+          messageText: sendingMessage,
+          sessionMessages: sessionMessagesForSend,
+        })
+      }
 
       const categorizer = createStreamingCategorizer(deps.getActiveProvider())
+      let fullText = ''
       let streamPosition = 0
+      let terminalFinishReason: Extract<StreamEvent, { type: 'finish' }>['finishReason'] | undefined
+
+      // Self-prompt capture: the trailing `//` line of a reply is withheld from
+      // the visible/TTS stream and surfaced via onSelfPromptCaptured instead.
+      const capture = createSelfPromptCapture(async (literal) => {
+        if (shouldAbort())
+          return
+
+        categorizer.consume(literal)
+
+        const speechOnly = categorizer.filterToSpeech(literal, streamPosition)
+        streamPosition += literal.length
+
+        if (speechOnly.trim()) {
+          buildingMessage.content += speechOnly
+
+          await hooks.emitTokenLiteralHooks(speechOnly, streamingMessageContext)
+
+          const lastSlice = buildingMessage.slices.at(-1)
+          if (lastSlice?.type === 'text') {
+            lastSlice.text += speechOnly
+          }
+          else {
+            buildingMessage.slices.push({
+              text: speechOnly,
+              type: 'text',
+            })
+          }
+          patchForegroundStream(sessionId, buildingMessage)
+        }
+      })
 
       const parser = useLlmmarkerParser({
         minLiteralEmitLength: STREAMING_UI_FLUSH_CHUNK_SIZE,
-        onEnd: async (fullText) => {
+        onEnd: async (parserFullText) => {
           if (isStaleGeneration())
             return
+
+          // Flush any buffered tail; capture the self prompt if the reply ended
+          // with a `//` line. Persistence failures must not abort the turn.
+          const sourceText = parserFullText
+          const captured = await capture.finish({ allowCapture: terminalFinishReason === 'stop' })
+          // Downstream hooks and conversation memory receive the same text the
+          // user can see. The captured private line is available separately in
+          // `captured.prompt` and must not leak back into ordinary chat history.
+          fullText = captured.text
+          if (captured.prompt) {
+            try {
+              await deps.onSelfPromptCaptured?.({
+                prompt: captured.prompt,
+                sessionId,
+                sourceText,
+              })
+            }
+            catch (error) {
+              console.error('Failed to persist self prompt:', error)
+            }
+          }
 
           const finalCategorization = categorizeResponse(fullText, deps.getActiveProvider())
 
@@ -542,29 +638,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         onLiteral: async (literal) => {
           if (shouldAbort())
             return
-
-          categorizer.consume(literal)
-
-          const speechOnly = categorizer.filterToSpeech(literal, streamPosition)
-          streamPosition += literal.length
-
-          if (speechOnly.trim()) {
-            buildingMessage.content += speechOnly
-
-            await hooks.emitTokenLiteralHooks(speechOnly, streamingMessageContext)
-
-            const lastSlice = buildingMessage.slices.at(-1)
-            if (lastSlice?.type === 'text') {
-              lastSlice.text += speechOnly
-            }
-            else {
-              buildingMessage.slices.push({
-                text: speechOnly,
-                type: 'text',
-              })
-            }
-            patchForegroundStream(sessionId, buildingMessage)
-          }
+          await capture.consume(literal)
         },
         onSpecial: async (special) => {
           if (shouldAbort())
@@ -573,6 +647,17 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
           await hooks.emitTokenSpecialHooks(special, streamingMessageContext)
         },
       })
+      let parserEnded = false
+      finalizeStream = async () => {
+        if (parserEnded)
+          return
+        try {
+          await parser.end()
+        }
+        finally {
+          parserEnded = true
+        }
+      }
 
       const toolCallQueue = createQueue<ChatSlices>({
         handlers: [
@@ -611,7 +696,14 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       // memory. Replacing (not appending) keeps identity current when the card
       // changes and prevents the same prompt from stacking inside long
       // sessions whose history already carries an initial system snapshot.
+      // For `self` turns (a captured `//` prompt answered back), an optional
+      // introspection block is prepended so the model knows this is self-
+      // dialogue rather than a regular user message.
+      const selfTurnIntrospection = options.source === 'self'
+        ? deps.getSelfTurnIntrospection?.()?.trim()
+        : undefined
       const systemPrompt = [
+        selfTurnIntrospection,
         deps.getSystemPrompt?.()?.trim(),
         deps.getSystemPromptSupplement?.()?.trim(),
         memoryPrompt,
@@ -676,8 +768,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       await hooks.emitAfterMessageComposedHooks(sendingMessage, streamingMessageContext)
       await hooks.emitBeforeSendHooks(sendingMessage, streamingMessageContext)
 
-      let fullText = ''
       const headers = (options.providerConfig?.headers || {}) as Record<string, string>
+      const configuredMaxTokens = options.providerConfig?.maxTokens
+      const maxTokens = typeof configuredMaxTokens === 'number'
+        && Number.isFinite(configuredMaxTokens)
+        && configuredMaxTokens > 0
+        ? Math.floor(configuredMaxTokens)
+        : undefined
 
       if (shouldAbort())
         return
@@ -694,9 +791,11 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       await deps.llm.stream(options.model, options.chatProvider, newMessages as Message[], {
         captureToolErrors: true,
         headers,
+        maxTokens,
         onStreamEvent: async (event: StreamEvent) => {
           switch (event.type) {
             case 'finish':
+              terminalFinishReason = event.finishReason
               break
             case 'reasoning-delta': {
               if (shouldAbort())
@@ -759,7 +858,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         waitForTools: true,
       })
 
-      await parser.end()
+      await finalizeStream()
       deps.onAssistantResponseRendered?.({
         ...correlation,
         latencyMs: Math.round(monotonicNow() - llmRequestStartedAt),
@@ -826,6 +925,15 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       }
     }
     catch (error) {
+      try {
+        // A failed provider/tool stream has no trustworthy natural-stop
+        // reason. Finalizing still flushes a buffered `//` candidate visibly,
+        // preventing the filtering layer from swallowing the response tail.
+        await finalizeStream?.()
+      }
+      catch (finalizeError) {
+        console.error('Failed to flush interrupted assistant stream:', finalizeError)
+      }
       console.error('Error sending message:', error)
       deps.onMessageRoundFailed?.({
         ...correlation,

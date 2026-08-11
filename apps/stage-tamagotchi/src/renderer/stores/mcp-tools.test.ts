@@ -21,6 +21,18 @@ const invokeMocks = vi.hoisted(() => ({
   }]),
 }))
 
+const memoryMocks = vi.hoisted(() => ({
+  recallMemories: vi.fn(async () => ({
+    memories: [],
+    trace: { candidates: [], originalText: '', retrievalId: 'retrieval-1', terms: [] },
+  })),
+  saveMemory: vi.fn(async () => 'memory-1'),
+}))
+
+vi.mock('@proj-airi/stage-ui/stores/modules/memory-long-term', () => ({
+  useMemoryLongTermStore: () => memoryMocks,
+}))
+
 let progressListener: ((event: { body?: unknown }) => void) | undefined
 
 vi.mock('@proj-airi/electron-vueuse', () => ({
@@ -52,6 +64,8 @@ describe('useTamagotchiMcpToolsStore', async () => {
     progressListener = undefined
     invokeMocks.listMcpTools.mockClear()
     invokeMocks.callMcpTool.mockClear()
+    memoryMocks.recallMemories.mockClear()
+    memoryMocks.saveMemory.mockClear()
   })
 
   /**
@@ -70,13 +84,16 @@ describe('useTamagotchiMcpToolsStore', async () => {
     const listTools = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpListTools')
     const callTool = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpCallTool')
     const directTool = mcpTools?.find(tool => tool.function.name === 'filesystem__search')
+    const memorySearch = mcpTools?.find(tool => tool.function.name === 'memory__search')
 
-    // 2 meta-tools + 1 direct tool for the discovered `filesystem::search`
-    expect(mcpTools).toHaveLength(3)
+    // 2 meta-tools + 1 external direct tool + 2 built-in memory MCP tools.
+    expect(mcpTools).toHaveLength(5)
     expect(mcpTools).toEqual([
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpListTools' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpCallTool' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'filesystem__search' }) }),
+      expect.objectContaining({ function: expect.objectContaining({ name: 'memory__remember' }) }),
+      expect.objectContaining({ function: expect.objectContaining({ name: 'memory__search' }) }),
     ])
 
     const listResult = await listTools?.execute({}, toolOptions)
@@ -87,13 +104,15 @@ describe('useTamagotchiMcpToolsStore', async () => {
 
     // Direct tool: model calls `filesystem__search` by sanitized name
     const directResult = await directTool?.execute({ limit: 10, query: 'hello' }, toolOptions)
+    await memorySearch?.execute({ limit: 3, query: 'answer style' }, toolOptions)
 
     expect(invokeMocks.listMcpTools).toHaveBeenCalledTimes(1)
     expect(invokeMocks.callMcpTool).toHaveBeenCalledWith({
       arguments: { limit: 10, query: 'hello' },
       name: 'filesystem::search',
     })
-    expect(listResult).toEqual([{
+    expect(listResult).toHaveLength(3)
+    expect(listResult).toEqual(expect.arrayContaining([{
       description: 'Search files.',
       inputSchema: {
         properties: {},
@@ -102,7 +121,7 @@ describe('useTamagotchiMcpToolsStore', async () => {
       name: 'filesystem::search',
       serverName: 'filesystem',
       toolName: 'search',
-    }])
+    }]))
     expect(callResult).toEqual({
       content: [{ text: 'ok', type: 'text' }],
       isError: false,
@@ -114,6 +133,7 @@ describe('useTamagotchiMcpToolsStore', async () => {
     })
     // callMcpTool was invoked twice: once via meta-tool, once via direct tool
     expect(invokeMocks.callMcpTool).toHaveBeenCalledTimes(2)
+    expect(memoryMocks.recallMemories).toHaveBeenCalledWith('answer style', { maxResults: 3 })
 
     store.dispose()
 

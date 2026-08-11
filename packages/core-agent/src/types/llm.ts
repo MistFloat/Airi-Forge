@@ -1,16 +1,11 @@
 import type { ChatProvider } from '@xsai-ext/providers/utils'
-import type { CommonContentPart, CompletionToolCall, CompletionToolResult, Message, Tool } from '@xsai/shared-chat'
+import type { Message, Tool } from '@xsai/shared-chat'
+import type { StreamTextEvent } from '@xsai/stream-text'
 
 export type BuiltinToolsResolver = (model: string, chatProvider: ChatProvider) => Promise<Tool[]>
 
-export type StreamEvent
-  = | (any & { type: 'finish' })
-    | (CompletionToolCall & { type: 'tool-call' })
-    | (CompletionToolResult & { type: 'tool-error' })
-    | { error: any, type: 'error' }
-    | { result?: CommonContentPart[] | string, toolCallId: string, type: 'tool-result' }
-    | { text: string, type: 'reasoning-delta' }
-    | { text: string, type: 'text-delta' }
+/** Events emitted by xsAI while one AIRI completion is streaming. */
+export type StreamEvent = StreamTextEvent
 
 export interface StreamFromOptions {
   builtinToolsResolver?: BuiltinToolsResolver
@@ -40,6 +35,15 @@ export interface StreamOptions {
    */
   contentArrayCompatibility?: Map<string, boolean>
   headers?: Record<string, string>
+  /**
+   * Number of additional provider calls allowed after a completion ends with
+   * `finish_reason: "length"`. Each continuation replays the partial assistant
+   * response only inside the provider request context; synthetic continuation
+   * instructions are never persisted as user-authored chat history.
+   *
+   * @default 3
+   */
+  maxContinuationAttempts?: number
   /**
    * Hard ceiling on agent-loop steps (one LLM round trip per step) before the
    * stream stops, guarding against runaway tool loops. Defaults to 50; the old

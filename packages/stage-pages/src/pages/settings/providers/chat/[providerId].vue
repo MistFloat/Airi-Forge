@@ -13,7 +13,9 @@ import {
 import { useProviderValidation } from '@proj-airi/stage-ui/composables/use-provider-validation'
 import { getDefinedProvider } from '@proj-airi/stage-ui/libs'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { useProviderMaxTokensStore } from '@proj-airi/stage-ui/stores/provider-max-tokens'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
+import { FieldInput } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
@@ -21,6 +23,7 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 const providerId = route.params.providerId as string
 const providersStore = useProvidersStore()
+const providerMaxTokensStore = useProviderMaxTokensStore()
 const consciousnessStore = useConsciousnessStore()
 const { providers } = storeToRefs(providersStore) as { providers: RemovableRef<Record<string, any>> }
 const { activeProvider } = storeToRefs(consciousnessStore)
@@ -41,6 +44,15 @@ const baseUrl = computed({
     if (!providers.value[providerId])
       providers.value[providerId] = {}
     providers.value[providerId].baseUrl = value
+  },
+})
+
+const maxTokens = computed<number | undefined>({
+  get: () => providerMaxTokensStore.getProviderMaxTokensOverride(providerId),
+  set: (value) => {
+    void providerMaxTokensStore.setProviderMaxTokens(providerId, value).catch((error) => {
+      console.error(`[ProviderSettings] Failed to persist max tokens for "${providerId}".`, error)
+    })
   },
 })
 
@@ -80,6 +92,13 @@ function goToModelSelection() {
   activeProvider.value = providerId
   router.push('/settings/modules/consciousness')
 }
+
+function resetProviderSettings() {
+  handleResetSettings()
+  void providerMaxTokensStore.setProviderMaxTokens(providerId, undefined).catch((error) => {
+    console.error(`[ProviderSettings] Failed to reset max tokens for "${providerId}".`, error)
+  })
+}
 </script>
 
 <template>
@@ -93,7 +112,7 @@ function goToModelSelection() {
       <ProviderBasicSettings
         :title="t('settings.pages.providers.common.section.basic.title')"
         :description="t('settings.pages.providers.common.section.basic.description')"
-        :on-reset="handleResetSettings"
+        :on-reset="resetProviderSettings"
       >
         <ProviderApiKeyInput
           v-model="apiKey"
@@ -106,6 +125,13 @@ function goToModelSelection() {
         <ProviderBaseUrlInput
           v-model="baseUrl"
           :placeholder="providerMetadata?.defaultOptions?.().baseUrl as string || 'Base URL of your provider'"
+        />
+        <FieldInput
+          v-model="maxTokens"
+          :label="t('settings.pages.providers.catalog.edit.config.common.fields.field.max-tokens.label')"
+          :description="t('settings.pages.providers.catalog.edit.config.common.fields.field.max-tokens.description')"
+          placeholder="16384"
+          type="number"
         />
       </ProviderAdvancedSettings>
 

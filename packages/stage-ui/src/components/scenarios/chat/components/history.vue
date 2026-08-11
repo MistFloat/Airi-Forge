@@ -42,9 +42,10 @@ provide(chatScrollContainerKey, chatHistoryRef)
 const { t } = useI18n()
 const labels = computed(() => ({
   assistant: props.assistantLabel ?? t('stage.chat.message.character-name.airi'),
-  user: props.userLabel ?? t('stage.chat.message.character-name.you'),
   error: props.errorLabel ?? t('stage.chat.message.character-name.core-system'),
   retry: props.retryLabel ?? t('stage.chat.actions.retry'),
+  selfPrompt: t('stage.chat.message.character-name.self-prompt'),
+  user: props.userLabel ?? t('stage.chat.message.character-name.you'),
 }))
 
 const streaming = computed<ChatAssistantMessage & { context?: ContextMessage } & { createdAt?: number }>(() => props.streamingMessage ?? { role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
@@ -150,7 +151,7 @@ function emitToolCallRerun(
         <ChatUserItem
           v-else-if="message.role === 'user'"
           :message="message"
-          :label="labels.user"
+          :label="message.source === 'self' ? labels.selfPrompt : labels.user"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"

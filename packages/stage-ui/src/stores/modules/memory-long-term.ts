@@ -218,23 +218,60 @@ export const useMemoryLongTermStore = defineStore('memory-long-term', () => {
     return await providersStore.getProviderInstance<ChatProvider>(extractorProvider.value.trim())
   }
 
-  async function embeddingFor(text: string, task: 'passage' | 'query'): Promise<number[]> {
-    if (embeddingSource.value === 'jina-api') {
-      return await embedWithJina({
-        apiKey: jinaApiKey.value,
-        dimensions: Number(jinaDimensions.value),
-        input: text,
-        model: jinaModel.value.trim(),
-        task: task === 'query' ? 'retrieval.query' : 'retrieval.passage',
-      })
-    }
+  // NOTICE:
+  // Jina's free tier caps concurrent embedding requests per key at 2
+  // (RATE_CONCURRENCY_LIMIT_EXCEEDED). recallMemories fans out up to 4 terms
+  // with Promise.all and the desktop gateway drains jobs with the same key, so
+  // the renderer serializes its own requests through a 2-slot semaphore. The
+  // slot budget must stay <= 2 while Jina's cap is 2; revisit for paid tiers.
+  const EMBEDDING_CONCURRENCY = 2
+  let activeEmbeddingRequests = 0
+  const embeddingWaiters: Array<() => void> = []
 
-    const provider = await providersStore.getProviderInstance<EmbedProvider<string>>(embeddingProvider.value)
-    const result = await embed({
-      ...provider.embed(embeddingModel.value),
-      input: text,
+  function acquireEmbeddingSlot(): Promise<void> {
+    if (activeEmbeddingRequests < EMBEDDING_CONCURRENCY) {
+      activeEmbeddingRequests++
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => {
+      embeddingWaiters.push(resolve)
     })
-    return result.embedding
+  }
+
+  function releaseEmbeddingSlot(): void {
+    const next = embeddingWaiters.shift()
+    if (next) {
+      // Hand the freed slot to the next waiter; the counter stays unchanged
+      // because the waiter is now occupying the slot.
+      next()
+      return
+    }
+    activeEmbeddingRequests--
+  }
+
+  async function embeddingFor(text: string, task: 'passage' | 'query'): Promise<number[]> {
+    await acquireEmbeddingSlot()
+    try {
+      if (embeddingSource.value === 'jina-api') {
+        return await embedWithJina({
+          apiKey: jinaApiKey.value,
+          dimensions: Number(jinaDimensions.value),
+          input: text,
+          model: jinaModel.value.trim(),
+          task: task === 'query' ? 'retrieval.query' : 'retrieval.passage',
+        })
+      }
+
+      const provider = await providersStore.getProviderInstance<EmbedProvider<string>>(embeddingProvider.value)
+      const result = await embed({
+        ...provider.embed(embeddingModel.value),
+        input: text,
+      })
+      return result.embedding
+    }
+    finally {
+      releaseEmbeddingSlot()
+    }
   }
 
   // NOTICE:
@@ -667,12 +704,12 @@ export const useMemoryLongTermStore = defineStore('memory-long-term', () => {
     })
   }
 
-  async function saveMemory(draft: LongTermMemoryDraft, options: { namespace?: string } = {}): Promise<string> {
+  async function saveMemory(draft: LongTermMemoryDraft, options: { createdBy?: 'agent' | 'user', namespace?: string } = {}): Promise<string> {
     const memoryId = draft.memoryId || nanoid()
     const namespace = options.namespace?.trim() || memoryScope()
     await request('upsert', {
       ...draft,
-      createdBy: 'user',
+      createdBy: options.createdBy ?? 'user',
       embedding: await embeddingFor(draft.content, 'passage'),
       embeddingModel: activeEmbeddingModel(),
       embeddingProvider: embeddingIdentity(),
@@ -717,6 +754,21 @@ export const useMemoryLongTermStore = defineStore('memory-long-term', () => {
 
   async function promoteClaim(id: string, source?: 'auto'): Promise<void> {
     await request('claims/promote', { id, namespace: memoryScope(), source })
+    // NOTICE:
+    // Promote only enqueues a build_embedding job; nothing drains it until the
+    // next recall or turn, and recallMemories races its drain against a 200ms
+    // budget that Jina round-trips usually exceed. That is why a manually
+    // promoted memory stayed unqueryable until the user edited and re-saved it
+    // (upsert computes the embedding inline). For manual promotion, wait on a
+    // bounded drain so the promoted memory is immediately recallable. The auto
+    // path stays fire-and-forget: rememberTurn already kicks a drain and the
+    // chat turn must not stall on embedding API latency.
+    if (source !== 'auto') {
+      await Promise.race([
+        processEmbeddingJobs().catch(() => undefined),
+        sleep(5_000),
+      ])
+    }
   }
 
   async function listGovernance() {

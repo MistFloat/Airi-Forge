@@ -63,8 +63,17 @@ export interface RunCommandResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000
-const MAX_STDOUT_BYTES = 256 * 1024
-const MAX_STDERR_BYTES = 256 * 1024
+// NOTICE:
+// Tool results are replayed in every later agent-loop request. A 256 KiB
+// stdout result can therefore consume millions of input tokens after only a
+// handful of tool calls, even though the provider's output limit was never
+// reached. Keep each stream small enough for diagnosis and instruct the agent
+// to rerun with narrower arguments when the marker is present.
+// Source/context: DeepSeek usage investigation, 2026-08-08.
+// Removal condition: when the runtime compacts old tool results before every
+// provider request using an equivalent or stricter context budget.
+const MAX_STDOUT_BYTES = 16 * 1024
+const MAX_STDERR_BYTES = 16 * 1024
 
 /**
  * Runs `command args...` inside the workdir with stdin piped in. Returns

@@ -5,6 +5,7 @@ chat:
     character-name:
       airi: AIRI
       core-system: Core System
+      self-prompt: AIRI self-prompt loop
       you: You
   reasoning: Reasoning
   sessions:
@@ -20,12 +21,32 @@ api-status:
   stopped: Stopped
   queued: 'Queued: {count}'
   tools: 'Tools: {done}/{total}'
+  output-tokens: 'Output: {count} tokens'
   model: '{provider} · {model}'
 send-mode:
   title: Send key
   enter: Enter
   ctrl-enter: Ctrl + Enter
   double-enter: Double Enter
+self-prompt-loop:
+  title: Self-prompt loop
+  description: A prompt AIRI wrote for its next autonomous turn.
+  empty: No pending self-prompt. The next one will appear here before it is sent.
+  auto-send: Automatic send
+  pending-prompt: Pending prompt
+  captured-at: 'Captured {time}'
+  send-now: Send now
+  restart: Restart timer
+  discard: Discard
+  last-error: 'Last attempt failed: {error}'
+  status:
+    idle: Waiting
+    ready: Ready
+    countdown: Scheduled
+    sending: Sending
+    blocked-chat: Waiting for reply
+    blocked-provider: Select a provider
+    blocked-model: Select a model
 operations:
   load-models: Load Models
   load-models-status:

@@ -113,9 +113,7 @@ export async function runCommandTool(args: RunCommandArgs, ctx: CommandToolsCont
   return textResult(text, {
     exitCode: result.exitCode,
     signal: result.signal,
-    stderr: result.stderr,
     stderrTruncated: result.stderrTruncated,
-    stdout: result.stdout,
     stdoutTruncated: result.stdoutTruncated,
     timedOut: result.timedOut,
   })
@@ -160,9 +158,7 @@ export async function runTestsTool(args: RunTestsToolArgs, ctx: CommandToolsCont
     failed: result.failed,
     passed: result.passed,
     signal: result.signal,
-    stderr: result.stderr,
     stderrTruncated: result.stderrTruncated,
-    stdout: result.stdout,
     stdoutTruncated: result.stdoutTruncated,
     timedOut: result.timedOut,
   })

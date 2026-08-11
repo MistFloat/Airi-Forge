@@ -5,6 +5,7 @@ chat:
     character-name:
       airi: AIRI
       core-system: 核心系统
+      self-prompt: 自我 Prompt 闭环
       you: 你
   reasoning: 思考
   sessions:
@@ -20,12 +21,32 @@ api-status:
   stopped: 已停止
   queued: '排队: {count}'
   tools: '工具调用: {done}/{total}'
+  output-tokens: '输出：{count} tokens'
   model: '{provider} · {model}'
 send-mode:
   title: 发送键值
   enter: Enter
   ctrl-enter: Ctrl + Enter
   double-enter: 双击Enter
+self-prompt-loop:
+  title: 自我 Prompt 回路
+  description: AIRI 为下一次自主回合写下的 Prompt。
+  empty: 当前没有待发送的自我 Prompt。生成后会先显示在这里。
+  auto-send: 自动发送
+  pending-prompt: 待发送 Prompt
+  captured-at: '生成于 {time}'
+  send-now: 立即发送
+  restart: 重新倒计时
+  discard: 丢弃
+  last-error: '上次发送失败：{error}'
+  status:
+    idle: 等待 Prompt
+    ready: 可以发送
+    countdown: 已安排
+    sending: 正在发送
+    blocked-chat: 等待当前回复
+    blocked-provider: 请选择服务商
+    blocked-model: 请选择模型
 operations:
   load-models: 加载模型
   load-models-status:

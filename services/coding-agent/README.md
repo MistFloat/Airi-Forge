@@ -23,7 +23,7 @@ Host (AIRI chat orchestration)
   └─ MCP stdio client
        └─ McpServer (this package, node:process stdio)
             ├─ Read tools      read_file, read_file_range, list_dir, search_code, find_files
-            ├─ Write tools     apply_diff, write_file, delete_file, move_file
+            ├─ Write tools     apply_diff, write_file, write_file_chunk, delete_file, move_file
             ├─ Git tools        git_status, git_diff, git_add, git_commit, git_push, git_undo, git_log, git_raw
             ├─ Command tools    run_command, run_tests, lint_files
             ├─ RepoMap tool     get_repo_map
@@ -84,7 +84,8 @@ All tools return `{ content: [{ type: 'text', text }], structuredContent?, isErr
 ### Write
 
 - **`apply_diff`** — Apply aider-style SEARCH/REPLACE blocks. All-or-nothing: if any block fails to match, nothing is written and a "did you mean" suggestion is returned. Matching chain: exact → missing-leading-whitespace → skip-blank-leading-line → `...` elision → fuzzy (bigram Jaccard).
-- **`write_file`** — Create or fully overwrite a file (creates missing parent directories).
+- **`write_file`** — Create or fully overwrite a small file of at most 6,000 characters (creates missing parent directories). Use `write_file_chunk` for larger files.
+- **`write_file_chunk`** — Stage a large whole-file replacement through bounded, ordered chunks. Start without an ID, then pass the returned `writeId` and UTF-8 `nextOffset` to each append; set `final: true` on the last chunk. The destination stays unchanged until the final chunk commits.
 - **`delete_file`** — Delete a file or empty directory (`recursive: true` for non-empty dirs; never deletes the workdir root).
 - **`move_file`** — Rename/move a file. Plain rename by default; `useGitMv: true` for `git mv` (preserves history).
 
@@ -101,7 +102,7 @@ All tools return `{ content: [{ type: 'text', text }], structuredContent?, isErr
 
 ### Command
 
-- **`run_command`** — Run a shell command inside the workdir (no shell expansion: `&&`, `;`, `|` are not interpreted). Output capped at 256KB each.
+- **`run_command`** — Run a shell command inside the workdir (no shell expansion: `&&`, `;`, `|` are not interpreted). Stdout and stderr are each capped at 16 KiB so repeated tool rounds cannot flood the model context; rerun noisy commands with narrower arguments when truncation is reported.
 - **`run_tests`** — Run a test command and surface a structured `passed`/`failed` flag. Non-zero exit is not a tool error — it's a signal to the agent.
 - **`lint_files`** — Structural linter (unbalanced brackets, unterminated strings). For project linters (eslint, ruff, etc.) call `run_command`.
 
@@ -162,6 +163,7 @@ pnpm -F @proj-airi/coding-agent dev
 - **Path jail.** Every path argument is resolved against the workdir and rejected if it escapes. Symlinks pointing outside are ignored.
 - **Commit attribution.** Agent commits set both `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` to `airi-coding-agent (aider-mcp)`; `git_undo` checks this marker and refuses to undo user-made commits.
 - **All-or-nothing edits.** `apply_diff` is atomic: if any block fails to match, nothing is written and a "did you mean" suggestion is returned for self-correction.
+- **Bounded whole-file writes.** `write_file_chunk` caps each tool argument at 6,000 characters so an 8K-output provider does not need to emit one oversized JSON call. Staging is isolated by `writeId` and UTF-8 byte offset; interrupted or out-of-order sequences do not replace the destination.
 - **No caching of file contents.** Sessions track which files are editable, not their contents; every read goes to disk so out-of-band edits (user's editor, `run_command`) are always reflected.
 - **ripgrep first.** Search uses `rg` when available (fast, respects `.gitignore`); a pure-JS walker provides identical output shape when `rg` is missing. Result paths are normalized to POSIX (`src/foo.ts`) regardless of OS separators.
 

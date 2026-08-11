@@ -40,6 +40,18 @@ describe('useDuckDB (Singleton)', () => {
     await closeDb() // manual reset of the singleton
   })
 
+  it('creates the self-prompt delivery table during database initialization', async () => {
+    const { closeDb, getDb } = useDuckDb()
+
+    await getDb()
+
+    const database = vi.mocked(drizzle).mock.results[0]?.value
+    expect(database?.execute).toHaveBeenCalledWith(expect.stringContaining('CREATE TABLE IF NOT EXISTS self_prompt_turns'))
+    expect(database?.execute).toHaveBeenCalledWith(expect.stringContaining('delivery_status VARCHAR NOT NULL DEFAULT \'pending\''))
+
+    await closeDb()
+  })
+
   it('should handle concurrent getDb calls without duplicate initialization', async () => {
     const { closeDb, getDb } = useDuckDb()
 

@@ -1,0 +1,7 @@
+{
+  "default": 16384,
+  "providers": {
+    "deepseek": 65536
+  },
+  "version": 1
+}

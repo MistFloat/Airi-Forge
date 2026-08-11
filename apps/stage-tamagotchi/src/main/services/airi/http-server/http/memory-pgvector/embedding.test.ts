@@ -108,4 +108,30 @@ describe('embedForJob', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('retries a transient 429 rate limit before succeeding', async () => {
+    // ROOT CAUSE:
+    //
+    // Jina caps concurrent embedding requests per key at 2, so job draining can
+    // hit 429 when the renderer embeds with the same key. embedForJob failed on
+    // the first 429 instead of waiting for a pending request to finish.
+    //
+    // We fixed this by retrying 429 responses with exponential backoff.
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'concurrency limit exceeded' }), { status: 429 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: [1] }] }), { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const promise = embedForJob('a', 'passage', jinaConfig)
+      await vi.advanceTimersByTimeAsync(500)
+      await expect(promise).resolves.toEqual([1])
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    }
+    finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
 })

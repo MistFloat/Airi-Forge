@@ -17,6 +17,8 @@ import { useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
 import { useInstructionStore } from '@proj-airi/stage-ui/stores/modules/instruction-store'
 import { usePerfTracerBridgeStore } from '@proj-airi/stage-ui/stores/perf-tracer-bridge'
 import { listProvidersForPluginHost, shouldPublishPluginHostCapabilities } from '@proj-airi/stage-ui/stores/plugin-host-capabilities'
+import { useProviderMaxTokensStore } from '@proj-airi/stage-ui/stores/provider-max-tokens'
+import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { useTheme } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
@@ -32,6 +34,8 @@ import {
   electronGodotStageStatusChanged,
   electronInstructionFileChanged,
   electronInstructionFileGet,
+  electronProviderMaxTokensGet,
+  electronProviderMaxTokensSet,
   electronSettingsNavigate,
   electronStartTrackMousePosition,
   i18nGetLocale,
@@ -67,13 +71,33 @@ const { language, themeColorsHue, themeColorsHueDynamic } = storeToRefs(settings
 const router = useRouter()
 const route = useRoute()
 const chatSessionStore = useChatSessionStore()
+const providersStore = useProvidersStore()
+const providerMaxTokensStore = useProviderMaxTokensStore()
 const context = useElectronEventaContext()
 const getMainLocale = useElectronEventaInvoke(i18nGetLocale)
 const setLocale = useElectronEventaInvoke(i18nSetLocale)
+const getProviderMaxTokens = useElectronEventaInvoke(electronProviderMaxTokensGet)
+const setProviderMaxTokens = useElectronEventaInvoke(electronProviderMaxTokensSet)
 const initialWindowRoutePath = resolveInitialChatSyncRoutePath(route.path)
 const chatSyncLifecycle = createChatSyncWindowLifecycle(route.path)
 const isSpotlightWindowRoute = initialWindowRoutePath === '/spotlight'
 const isSettingsWindowRoute = initialWindowRoutePath.startsWith('/settings')
+
+providerMaxTokensStore.configurePersistence({
+  load: async () => (await getProviderMaxTokens()).config,
+  set: async payload => (await setProviderMaxTokens(payload)).config,
+})
+
+async function initializeProviderMaxTokens() {
+  await providerMaxTokensStore.initialize()
+
+  // Move the field introduced by the earlier implementation out of renderer
+  // localStorage after the project JSON is ready. API keys and endpoint config
+  // remain owned by the existing credential store.
+  await Promise.all(Object.entries(providersStore.providers).map(async ([providerId, providerConfig]) => {
+    await providerMaxTokensStore.migrateProviderConfig(providerId, providerConfig)
+  }))
+}
 
 function createFullStageRuntime() {
   const contextBridgeStore = useContextBridgeStore()
@@ -294,6 +318,12 @@ if (isSettingsWindowRoute) {
 }
 
 onMounted(async () => {
+  await initializeProviderMaxTokens().catch((error) => {
+    // A read-only checkout must not prevent chat startup. The store retains its
+    // 16384 in-memory safety default and keeps legacy fields until a later
+    // successful migration can persist them to the project JSON.
+    console.error('[App] Failed to initialize project provider max tokens.', error)
+  })
   chatSyncLifecycle.initialize()
 
   // NOTICE: Issue #1658

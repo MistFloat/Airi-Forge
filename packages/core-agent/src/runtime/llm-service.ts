@@ -1,7 +1,7 @@
 import type { ChatProvider } from '@xsai-ext/providers/utils'
-import type { Message, Tool } from '@xsai/shared-chat'
+import type { Message, Tool, Usage } from '@xsai/shared-chat'
 
-import type { StreamFromOptions, StreamOptions } from '../types/llm'
+import type { StreamEvent, StreamFromOptions, StreamOptions } from '../types/llm'
 
 import { stepCountAtLeast } from '@xsai/shared-chat'
 import { streamText } from '@xsai/stream-text'
@@ -98,104 +98,171 @@ export async function streamFrom({
     ? withCapturedToolErrors(tools, capturedToolErrorByCallId)
     : tools
 
-  return new Promise<void>((resolve, reject) => {
-    let settled = false
-    const resolveOnce = () => {
-      if (settled)
-        return
-      settled = true
-      resolve()
-    }
-    const rejectOnce = (error: unknown) => {
-      if (settled)
-        return
-      settled = true
-      reject(error)
-    }
+  const configuredContinuationAttempts = options?.maxContinuationAttempts ?? 3
+  const maxContinuationAttempts = Number.isFinite(configuredContinuationAttempts)
+    ? Math.max(0, Math.floor(configuredContinuationAttempts))
+    : 3
+  const configuredMaxSteps = options?.maxSteps ?? 50
+  const maxSteps = Number.isFinite(configuredMaxSteps)
+    ? Math.max(1, Math.floor(configuredMaxSteps))
+    : 50
+  let remainingSteps = maxSteps
+  let continuationAttempts = 0
+  let requestMessages = sanitized
+  let turnUsage: undefined | Usage
+  const textEmitter = createContinuationTextEmitter(text => options?.onStreamEvent?.({ text, type: 'text-delta' }))
 
-    const onEvent = async (event: unknown) => {
-      try {
-        const streamEvent = resolveCapturedToolErrorEvent(event, capturedToolErrorByCallId)
-        await options?.onStreamEvent?.(streamEvent as any)
-        if (event && (event as any).type === 'finish') {
-          const finishReason = (event as any).finishReason
-          // NOTICE:
-          // `finish_reason: 'length'` means the model hit its max_tokens cap
-          // mid-response. xsai resolves the stream normally (no error), so
-          // without this warning the truncation is invisible — the status bar
-          // just flips to "stopped". Surface it so users can raise maxTokens
-          // or switch models instead of mistaking this for a crash.
-          if (finishReason === 'length') {
-            console.warn(
-              `[llm] Stream ended with finish_reason: 'length' — response was truncated at the max_tokens cap (${options?.maxTokens ?? 16384}).`
-              + ' Raise StreamOptions.maxTokens or use a model with a higher output limit.',
-            )
+  while (true) {
+    let callbackError: unknown
+    let eventChain = Promise.resolve()
+    let pendingFinishEvent: Extract<StreamEvent, { type: 'finish' }> | undefined
+
+    // xsAI currently invokes onEvent without awaiting the returned promise.
+    // Serialize AIRI callbacks explicitly so the finish decision cannot race
+    // ahead of the last text delta or a consumer-side failure.
+    const onEvent = (event: unknown) => {
+      eventChain = eventChain
+        .then(async () => {
+          const resolvedEvent = resolveCapturedToolErrorEvent(event, capturedToolErrorByCallId)
+          if (typeof resolvedEvent !== 'object' || resolvedEvent === null || typeof (resolvedEvent as { type?: unknown }).type !== 'string')
+            return
+
+          const streamEvent = resolvedEvent as StreamEvent
+          if (streamEvent.type === 'text-delta') {
+            await textEmitter.push(streamEvent.text)
+            return
           }
-          const waitingForToolRound = finishReason === 'tool_calls' || finishReason === 'tool-calls'
-          if (!waitingForToolRound || !options?.waitForTools)
-            resolveOnce()
-        }
-        else if (event && (event as any).type === 'error') {
-          rejectOnce((event as any).error ?? new Error('Stream error'))
-        }
-      }
-      catch (error) {
-        rejectOnce(error)
-      }
+          if (streamEvent.type === 'finish') {
+            const waitingForToolRound = streamEvent.finishReason === 'tool_calls' || streamEvent.finishReason === 'tool-calls'
+            if (waitingForToolRound) {
+              await options?.onStreamEvent?.(streamEvent)
+              return
+            }
+
+            // Delay the terminal event until the authoritative `steps` result
+            // confirms whether this provider call needs a continuation.
+            pendingFinishEvent = streamEvent
+            return
+          }
+
+          await options?.onStreamEvent?.(streamEvent)
+          if (streamEvent.type === 'error')
+            throw streamEvent.error
+        })
+        .catch((error: unknown) => {
+          callbackError ??= error
+        })
+
+      return eventChain
     }
 
-    try {
-      const streamResult = streamText({
-        ...chatConfig,
-        abortSignal: options?.abortSignal,
-        headers: options?.headers,
-        // NOTICE:
-        // Default to 16384 output tokens. Many OpenAI-compatible providers
-        // default to a low value (e.g. 4096) when `max_tokens` is unset,
-        // silently truncating long responses with `finish_reason: 'length'`.
-        // xsai's requestBody() runs objCamelToSnake() so `maxTokens` reaches
-        // the provider wire as `max_tokens`. 16384 matches the production
-        // default across Aider, Cursor and Continue.dev.
-        maxTokens: options?.maxTokens ?? 16384,
-        messages: sanitized,
-        onEvent,
-        // Default 50 agent-loop steps: 10 was too low, silently truncating
-        // tasks that legitimately need 11+ tool calls.
-        stopWhen: stepCountAtLeast(options?.maxSteps ?? 50),
-        // NOTICE:
-        // Do not pass xsAI's `captureToolErrors` option here. In the installed
-        // @xsai/stream-text version, stream options are spread into the provider
-        // chat body, so unknown runtime-only fields can be rejected upstream.
-        // AIRI captures tool failures by wrapping local tool executors instead.
-        tools: streamTools,
-      })
-
-      // NOTICE: Consume underlying promises to prevent unhandled rejections from
-      // @xsai/stream-text's SSE parser surfacing as faulted app state.
+    const streamResult = streamText({
+      ...chatConfig,
+      abortSignal: options?.abortSignal,
+      headers: options?.headers,
       // NOTICE:
-      // `streamText(...).steps` is the authoritative completion signal for the
-      // full streamed interaction, including tool-call rounds.
-      // Resolving only from `onEvent({ type: 'finish' })` is incorrect when
-      // `options?.waitForTools === true`, because providers can emit
-      // `finishReason: 'tool_calls'` or `finishReason: 'tool-calls'` before the
-      // tool round has fully settled.
-      // That misuse leaves the outer promise pending, which makes provider-backed
-      // eval tasks look like they stop mid-run and prevents later scheduled evals
-      // from starting.
-      // Keep `steps.then(resolveOnce)` so evaluation runners observe the real end
-      // of the stream lifecycle instead of an intermediate tool boundary.
-      void streamResult.steps.then(resolveOnce).catch((error) => {
-        rejectOnce(error)
-        console.error('Stream steps error:', error)
-      })
-      void streamResult.messages.catch(error => console.error('Stream messages error:', error))
-      void streamResult.usage.catch(error => console.error('Stream usage error:', error))
-      void streamResult.totalUsage.catch(error => console.error('Stream totalUsage error:', error))
+      // Default to 16384 output tokens. Many OpenAI-compatible providers
+      // default to a low value (e.g. 4096) when `max_tokens` is unset,
+      // silently truncating long responses with `finish_reason: 'length'`.
+      // xsai's requestBody() runs objCamelToSnake() so `maxTokens` reaches
+      // the provider wire as `max_tokens`.
+      // Source/context: `@xsai/shared` request-body serialization and
+      // https://github.com/NousResearch/hermes-agent/pull/12846
+      // Removal condition: when every supported provider negotiates a safe
+      // output limit and never returns `finish_reason: 'length'` unexpectedly.
+      maxTokens: options?.maxTokens ?? 16384,
+      messages: requestMessages,
+      onEvent,
+      // The limit covers all tool and continuation calls made for this one
+      // AIRI turn, so auto-continuation cannot bypass the agent-loop guard.
+      stopWhen: stepCountAtLeast(remainingSteps),
+      // OpenAI-compatible streaming responses only include usage when this is
+      // requested explicitly. The terminal status badge uses it to diagnose
+      // provider output ceilings after the turn settles.
+      streamOptions: { includeUsage: true },
+      // NOTICE:
+      // Do not pass xsAI's `captureToolErrors` option here. In the installed
+      // @xsai/stream-text version, stream options are spread into the provider
+      // chat body, so unknown runtime-only fields can be rejected upstream.
+      // AIRI captures tool failures by wrapping local tool executors instead.
+      tools: streamTools,
+    })
+
+    // NOTICE:
+    // `steps` is the authoritative completion signal for the full xsAI call,
+    // including tool rounds. `messages` is needed to replay the partial
+    // assistant response without persisting the synthetic continuation prompt.
+    // Source/context: installed `@xsai/stream-text` StreamTextResult contract.
+    // Removal condition: only if xsAI exposes an awaited terminal callback that
+    // also returns the complete provider message history.
+    void streamResult.usage.catch(error => console.error('Stream usage error:', error))
+    const [steps, completedMessages, callUsage] = await Promise.all([
+      streamResult.steps,
+      streamResult.messages,
+      streamResult.totalUsage,
+    ])
+    turnUsage = addUsage(turnUsage, callUsage)
+    await eventChain
+    if (callbackError !== undefined)
+      throw callbackError
+
+    const finalStep = steps.at(-1)
+    const finishReason = finalStep?.finishReason ?? pendingFinishEvent?.finishReason ?? 'other'
+    remainingSteps -= Math.max(steps.length, 1)
+    const stoppedAtToolStepLimit = remainingSteps <= 0
+      && (finishReason === 'tool_calls' || finishReason === 'tool-calls')
+
+    // Tool-call JSON may itself be incomplete at the token boundary. Replaying
+    // it as prose can corrupt call ordering or execute a malformed duplicate,
+    // so only plain assistant text is eligible for automatic continuation.
+    const hasTruncatedToolCall = (finalStep?.toolCalls.length ?? 0) > 0
+    const shouldContinue = finishReason === 'length'
+      && !hasTruncatedToolCall
+      && continuationAttempts < maxContinuationAttempts
+      && remainingSteps > 0
+      && !options?.abortSignal?.aborted
+
+    if (shouldContinue) {
+      continuationAttempts += 1
+      textEmitter.beginContinuation()
+      requestMessages = [
+        ...completedMessages,
+        {
+          content: 'Continue exactly where the previous assistant response stopped. Output only the continuation; do not repeat, summarize, or mention text already written or this instruction.',
+          role: 'user',
+        },
+      ]
+      console.warn(
+        `[llm] Stream reached the provider output limit; continuing automatically (${continuationAttempts}/${maxContinuationAttempts}).`,
+      )
+      continue
     }
-    catch (error) {
-      rejectOnce(error)
+
+    if (stoppedAtToolStepLimit) {
+      await textEmitter.push(
+        `\n\n[AIRI stopped this turn after reaching the ${maxSteps}-step tool-call safety limit. Narrow the task or send a follow-up message to continue.]`,
+      )
+      console.warn(
+        `[llm] Agent stopped at maxSteps=${maxSteps} while the model was still requesting tools.`,
+      )
     }
-  })
+
+    await textEmitter.flush()
+    const terminalFinishEvent = stoppedAtToolStepLimit
+      ? { finishReason: 'other' as const, type: 'finish' as const }
+      : (pendingFinishEvent ?? { finishReason, type: 'finish' as const })
+    await options?.onStreamEvent?.({
+      ...terminalFinishEvent,
+      usage: turnUsage ?? pendingFinishEvent?.usage ?? finalStep?.usage,
+    })
+
+    if (finishReason === 'length') {
+      console.warn(
+        `[llm] Stream remains truncated after ${continuationAttempts} continuation attempt(s) at max_tokens=${options?.maxTokens ?? 16384}.`,
+      )
+    }
+    return
+  }
 }
 
 /**
@@ -221,6 +288,79 @@ export function streamOptionsToolsCompatibilityOk(model: string, chatProvider: C
 
 function createCapturedToolErrorResult(toolName: string, error: unknown): string {
   return `Tool call error for "${toolName}": ${errorMessageFromValue(error)}`
+}
+
+/**
+ * Joins text emitted by separate provider calls without exposing a split word
+ * or a repeated overlap at the continuation boundary.
+ *
+ * Before:
+ * - `"The quick bro"` + `"brown fox."`
+ *
+ * After:
+ * - `"The quick brown fox."`
+ */
+function createContinuationTextEmitter(emit: (text: string) => Promise<void> | void) {
+  let continuationPrefix = ''
+  let isReadingContinuationPrefix = false
+  let pendingText = ''
+
+  const emitSafeText = async (text: string) => {
+    pendingText += text
+    const trailingWord = pendingText.match(/\w+$/)?.[0] ?? ''
+    const safeTextLength = pendingText.length - trailingWord.length
+
+    if (safeTextLength > 0) {
+      await emit(pendingText.slice(0, safeTextLength))
+      pendingText = pendingText.slice(safeTextLength)
+    }
+
+    // A provider can stream an unusually long identifier without whitespace.
+    // Retain only the tail needed for boundary stitching so buffering stays
+    // bounded while ordinary prose still streams immediately.
+    if (pendingText.length > 256) {
+      await emit(pendingText.slice(0, -256))
+      pendingText = pendingText.slice(-256)
+    }
+  }
+
+  const mergeContinuationPrefix = async () => {
+    isReadingContinuationPrefix = false
+
+    let overlapLength = Math.min(pendingText.length, continuationPrefix.length)
+    while (overlapLength > 0 && !continuationPrefix.startsWith(pendingText.slice(-overlapLength)))
+      overlapLength -= 1
+
+    const joinedText = pendingText + continuationPrefix.slice(overlapLength)
+    continuationPrefix = ''
+    pendingText = ''
+    await emitSafeText(joinedText)
+  }
+
+  return {
+    beginContinuation() {
+      isReadingContinuationPrefix = true
+    },
+    async flush() {
+      if (isReadingContinuationPrefix)
+        await mergeContinuationPrefix()
+      if (pendingText)
+        await emit(pendingText)
+      pendingText = ''
+    },
+    async push(text: string) {
+      if (!isReadingContinuationPrefix) {
+        await emitSafeText(text)
+        return
+      }
+
+      continuationPrefix += text
+      if (/^\w+$/.test(continuationPrefix) && continuationPrefix.length <= 256)
+        return
+
+      await mergeContinuationPrefix()
+    },
+  }
 }
 
 function isAbortError(error: unknown): boolean {
@@ -340,4 +480,17 @@ const CONTENT_ARRAY_RELATED_ERROR_PATTERNS: RegExp[] = [
 export function isContentArrayRelatedError(error: unknown): boolean {
   const message = String(error)
   return CONTENT_ARRAY_RELATED_ERROR_PATTERNS.some(pattern => pattern.test(message))
+}
+
+function addUsage(total: undefined | Usage, next: undefined | Usage): undefined | Usage {
+  if (!next)
+    return total
+  if (!total)
+    return next
+
+  return {
+    completion_tokens: total.completion_tokens + next.completion_tokens,
+    prompt_tokens: total.prompt_tokens + next.prompt_tokens,
+    total_tokens: total.total_tokens + next.total_tokens,
+  }
 }

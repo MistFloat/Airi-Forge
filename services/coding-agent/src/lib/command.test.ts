@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -73,5 +74,26 @@ describe('runCommand', () => {
       stdin: 'piped-input\n',
     }, createWorkdir(root))
     expect(result.stdout).toContain('piped-input')
+  })
+
+  it('caps noisy command output before it can flood later agent-loop requests', async () => {
+    // ROOT CAUSE:
+    //
+    // Tool results are replayed with the conversation on every later model
+    // request. The previous 256 KiB per-stream cap let one noisy command add
+    // millions of cumulative prompt tokens across a multi-tool turn.
+    //
+    // We fixed this by enforcing a model-context-oriented 16 KiB ceiling and
+    // retaining an explicit truncation marker that tells the model to narrow
+    // its next command.
+    const result = await runCommand({
+      args: ['-e', 'process.stdout.write("x".repeat(64 * 1024))'],
+      command: process.execPath.includes('node') ? process.execPath : 'node',
+    }, createWorkdir(root))
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdoutTruncated).toBe(true)
+    expect(Buffer.byteLength(result.stdout)).toBeLessThan(17 * 1024)
+    expect(result.stdout).toContain('[truncated at 16384 bytes]')
   })
 })

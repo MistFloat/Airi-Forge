@@ -204,6 +204,13 @@ vi.mock('../../character', () => ({
   }),
 }))
 
+vi.mock('../../provider-max-tokens', () => ({
+  useProviderMaxTokensStore: () => ({
+    getProviderMaxTokens: () => 16384,
+    refresh: vi.fn(async () => {}),
+  }),
+}))
+
 vi.mock('../../chat', () => ({
   useChatOrchestratorStore: () => chatOrchestratorMock,
 }))
@@ -428,6 +435,7 @@ describe('context bridge contract', () => {
       sourceKey: 'weather:station-1',
     }))
     expect(chatOrchestratorMock.ingest).toHaveBeenCalledTimes(1)
+    expect(chatOrchestratorMock.ingest.mock.calls[0]?.[1]?.providerConfig).toEqual({ maxTokens: 16384 })
     expect(chatOrchestratorMock.ingest.mock.calls[0]?.[1]?.input?.data.contextUpdates).toEqual([
       expect.objectContaining({
         contextId: expect.any(String),

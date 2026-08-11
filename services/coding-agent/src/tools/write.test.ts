@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5,7 +6,14 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createWorkdir } from '../lib/workdir'
-import { applyDiffTool, deleteFileTool, writeFileTool } from './write'
+import {
+  applyDiffTool,
+  createWriteFileChunkState,
+  deleteFileTool,
+  WRITE_FILE_CHUNK_MAX_CHARS,
+  writeFileChunkTool,
+  writeFileTool,
+} from './write'
 
 let root: string
 
@@ -128,6 +136,142 @@ describe('write_file', () => {
     finally {
       rmSync(outside, { force: true, recursive: true })
     }
+  })
+
+  it('routes oversized whole-file writes to the bounded chunk protocol', async () => {
+    const result = await writeFileTool({
+      content: 'x'.repeat(WRITE_FILE_CHUNK_MAX_CHARS + 1),
+      path: 'large.ts',
+    }, { workdir: createWorkdir(root) })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('write_file_chunk')
+    expect(() => readFileSync(join(root, 'large.ts'), 'utf8')).toThrow()
+  })
+})
+
+describe('write_file_chunk', () => {
+  // ROOT CAUSE:
+  //
+  // Whole-file `write_file` calls put the complete source file inside one tool
+  // argument. Providers with an 8K output ceiling can truncate that JSON before
+  // xsAI has a valid tool call to execute, and a partial JSON continuation is
+  // not safe to replay.
+  //
+  // We fixed this by keeping each tool call bounded and staging chunks behind a
+  // server-generated writeId plus an exact UTF-8 byte offset. Only the final
+  // chunk replaces the destination, so an interrupted sequence leaves the
+  // existing file untouched.
+  it('stages ordered chunks and replaces the target only after the final chunk', async () => {
+    const chunkState = createWriteFileChunkState()
+    const ctx = { chunkState, workdir: createWorkdir(root) }
+    const firstChunk = 'export const greeting = "你好",\n'
+    const firstChunkBytes = Buffer.byteLength(firstChunk, 'utf8')
+
+    const started = await writeFileChunkTool({
+      content: firstChunk,
+      final: false,
+      mode: 'start',
+      path: 'a.ts',
+    }, ctx)
+
+    expect(started.isError).toBeUndefined()
+    expect(readFileSync(join(root, 'a.ts'), 'utf8')).toBe('one\ntwo\nthree\n')
+    expect(started.structuredContent).toMatchObject({
+      nextOffset: firstChunkBytes,
+      path: 'a.ts',
+      status: 'started',
+    })
+
+    const writeId = String(started.structuredContent?.writeId)
+    const completed = await writeFileChunkTool({
+      content: 'export const done = true\n',
+      expectedOffset: firstChunkBytes,
+      final: true,
+      mode: 'append',
+      path: 'a.ts',
+      writeId,
+    }, ctx)
+
+    expect(completed.isError).toBeUndefined()
+    expect(completed.structuredContent).toMatchObject({
+      path: 'a.ts',
+      status: 'completed',
+      writeId,
+    })
+    expect(readFileSync(join(root, 'a.ts'), 'utf8')).toBe([
+      'export const greeting = "你好",\n',
+      'export const done = true\n',
+    ].join(''))
+  })
+
+  it('rejects stale offsets without changing the staged or destination content', async () => {
+    const chunkState = createWriteFileChunkState()
+    const ctx = { chunkState, workdir: createWorkdir(root) }
+    const started = await writeFileChunkTool({
+      content: 'first\n',
+      mode: 'start',
+      path: 'a.ts',
+    }, ctx)
+    const writeId = String(started.structuredContent?.writeId)
+
+    const stale = await writeFileChunkTool({
+      content: 'wrong\n',
+      expectedOffset: 0,
+      mode: 'append',
+      path: 'a.ts',
+      writeId,
+    }, ctx)
+
+    expect(stale.isError).toBe(true)
+    expect(stale.content[0].text).toContain('offset mismatch')
+    expect(readFileSync(join(root, 'a.ts'), 'utf8')).toBe('one\ntwo\nthree\n')
+
+    const completed = await writeFileChunkTool({
+      content: 'second\n',
+      expectedOffset: 6,
+      final: true,
+      mode: 'append',
+      path: 'a.ts',
+      writeId,
+    }, ctx)
+    expect(completed.isError).toBeUndefined()
+    expect(readFileSync(join(root, 'a.ts'), 'utf8')).toBe('first\nsecond\n')
+  })
+
+  it('isolates write sessions by writeId and destination path', async () => {
+    const chunkState = createWriteFileChunkState()
+    const ctx = { chunkState, workdir: createWorkdir(root) }
+    const started = await writeFileChunkTool({
+      content: 'safe\n',
+      mode: 'start',
+      path: 'a.ts',
+    }, ctx)
+    const writeId = String(started.structuredContent?.writeId)
+
+    const wrongPath = await writeFileChunkTool({
+      content: 'escape\n',
+      expectedOffset: 5,
+      mode: 'append',
+      path: 'other.ts',
+      writeId,
+    }, ctx)
+
+    expect(wrongPath.isError).toBe(true)
+    expect(wrongPath.content[0].text).toContain('belongs to a.ts')
+    expect(() => readFileSync(join(root, 'other.ts'), 'utf8')).toThrow()
+  })
+
+  it('rejects chunks larger than the provider-safe character ceiling', async () => {
+    const result = await writeFileChunkTool({
+      content: 'x'.repeat(WRITE_FILE_CHUNK_MAX_CHARS + 1),
+      mode: 'start',
+      path: 'large.ts',
+    }, { chunkState: createWriteFileChunkState(), workdir: createWorkdir(root) })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain(`${WRITE_FILE_CHUNK_MAX_CHARS} characters`)
+    expect(() => readFileSync(join(root, 'large.ts'), 'utf8')).toThrow()
   })
 })
 

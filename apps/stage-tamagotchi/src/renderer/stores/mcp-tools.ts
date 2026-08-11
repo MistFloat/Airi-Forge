@@ -6,7 +6,9 @@ import type { ElectronMcpToolDescriptor, ElectronMcpToolProgressPayload } from '
 
 import { useElectronEventaContext, useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { useLlmToolsStore } from '@proj-airi/stage-ui/stores/llm-tools'
+import { useMemoryLongTermStore } from '@proj-airi/stage-ui/stores/modules/memory-long-term'
 import { createMcpDirectTools, createMcpTools, sanitizeMcpToolName } from '@proj-airi/stage-ui/tools/mcp'
+import { createMemoryMcpRuntime } from '@proj-airi/stage-ui/tools/memory-mcp'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
@@ -30,6 +32,7 @@ import { electronMcpCallTool, electronMcpListTools, electronMcpToolProgress } fr
  */
 export const useTamagotchiMcpToolsStore = defineStore('tamagotchi-mcp-tools', () => {
   const llmToolsStore = useLlmToolsStore()
+  const memoryStore = useMemoryLongTermStore()
   const listMcpTools = useElectronEventaInvoke(electronMcpListTools)
   const callMcpTool = useElectronEventaInvoke(electronMcpCallTool)
   const context = useElectronEventaContext()
@@ -55,12 +58,21 @@ export const useTamagotchiMcpToolsStore = defineStore('tamagotchi-mcp-tools', ()
   })
 
   async function refresh() {
-    cachedTools = await listMcpTools()
+    const electronRuntime: McpToolRuntime = {
+      callTool: payload => callMcpTool(payload),
+      listTools: async () => cachedTools,
+    }
+    const memoryRuntime = createMemoryMcpRuntime(memoryStore)
+    const externalTools = await listMcpTools()
+    const memoryTools = await memoryRuntime.listTools()
+    cachedTools = [...externalTools, ...memoryTools]
     // Use sanitized names so the renderer registry keys match the
     // provider-facing tool function names (e.g. "coding-agent__git_status").
     mcpToolNames.value = cachedTools.map(tool => sanitizeMcpToolName(tool.name))
     const runtime: McpToolRuntime = {
-      callTool: payload => callMcpTool(payload),
+      callTool: payload => payload.name.startsWith('memory::')
+        ? memoryRuntime.callTool(payload)
+        : electronRuntime.callTool(payload),
       listTools: async () => cachedTools,
     }
     // Register both the meta-tools (builtIn_mcpListTools / builtIn_mcpCallTool)

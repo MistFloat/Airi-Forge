@@ -45,6 +45,8 @@ export type {
   CategorizedSegment,
   ResponseCategory,
 } from './runtime/response-categoriser'
+export { createSelfPromptCapture, extractSelfPrompt } from './runtime/self-prompt'
+export type { SelfPromptCapture, SelfPromptExtraction } from './runtime/self-prompt'
 export { mergeLoadedSessionMessages } from './session/merge-loaded-session-messages'
 export type {
   ChatAssistantMessage,

@@ -20,6 +20,7 @@ import {
 } from '@proj-airi/stage-ui/components'
 import { getDefinedProvider, getSchemaDefault, getValidatorsOfProvider, validateProvider } from '@proj-airi/stage-ui/libs'
 import { useProviderCatalogStore } from '@proj-airi/stage-ui/stores/provider-catalog'
+import { useProviderMaxTokensStore } from '@proj-airi/stage-ui/stores/provider-max-tokens'
 import { Button, Callout, FieldCombobox, FieldInput, FieldKeyValues } from '@proj-airi/ui'
 import { useCloned, useDebounceFn } from '@vueuse/core'
 import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger } from 'reka-ui'
@@ -32,6 +33,7 @@ const router = useRouter()
 const route = useRoute('v2/settings/providers/edit/[providerId]')
 
 const providerCatalogStore = useProviderCatalogStore()
+const providerMaxTokensStore = useProviderMaxTokensStore()
 
 const providerId = computed(() => route.params.providerId as string)
 const providerConfig = computed(() => providerCatalogStore.configs[providerId.value] || {})
@@ -69,6 +71,7 @@ const validationSteps = ref<ProviderValidationStep[]>([])
 const hasValidationFailures = computed(() => validationSteps.value.some(step => step.status === 'invalid'))
 
 const isOllamaProvider = computed(() => providerDefinition.value?.id === 'ollama')
+const isChatProvider = computed(() => providerDefinition.value?.tasks.includes('chat') ?? false)
 const shouldShowTroubleshootingOllamaConnectivity = computed(() => {
   return isOllamaProvider.value && validationSteps.value.some(step => step.id === 'openai-compatible:check-connectivity' && step.status === 'invalid')
 })
@@ -158,6 +161,23 @@ function setFieldValue(key: string, value: unknown) {
   // NOTICE: Update local draft only. useCloned makes it safe to mutate 'cloned.value'.
   providerConfigEdit.value.config[key] = value
 }
+
+const maxTokensEdit = computed<number | undefined>({
+  get() {
+    const definitionId = providerDefinition.value?.id
+    return definitionId
+      ? providerMaxTokensStore.getProviderMaxTokensOverride(definitionId)
+      : undefined
+  },
+  set(value) {
+    const definitionId = providerDefinition.value?.id
+    if (!definitionId)
+      return
+    void providerMaxTokensStore.setProviderMaxTokens(definitionId, value).catch((error) => {
+      console.error(`[ProviderSettings] Failed to persist max tokens for "${definitionId}".`, error)
+    })
+  },
+})
 
 // NOTICE: Bridges the polymorphic `Record<string, unknown>` config store and typed
 // string inputs (ProviderApiKeyInput / ProviderBaseUrlInput / ProviderAccountIdInput /
@@ -275,9 +295,22 @@ watch([providerConfigEdit, providerDefinition], () => {
   debouncedValidation()
 }, { deep: true, immediate: true })
 
-onMounted(() => {
+onMounted(async () => {
   if (!providerConfig.value.validated) {
     providerConfigEdit.value.config = merge(providerSchemaDefault.value, providerConfigEdit.value?.config || {})
+  }
+
+  const definitionId = providerDefinition.value?.id
+  const persistedConfig = providerConfig.value?.config
+  if (!definitionId || !persistedConfig || !('maxTokens' in persistedConfig))
+    return
+
+  const migratedConfig = { ...persistedConfig }
+  if (await providerMaxTokensStore.migrateProviderConfig(definitionId, migratedConfig)) {
+    await providerCatalogStore.commitProviderConfig(providerId.value, migratedConfig, {
+      validated: providerConfig.value.validated,
+      validationBypassed: providerConfig.value.validationBypassed,
+    })
   }
 })
 
@@ -306,7 +339,9 @@ function commitEditedConfig(options: { validated: boolean, validationBypassed: b
   if (!providerConfigEdit.value)
     return
 
-  providerCatalogStore.commitProviderConfig(providerId.value, { ...providerConfigEdit.value.config }, options)
+  const config = { ...providerConfigEdit.value.config }
+  delete config.maxTokens
+  providerCatalogStore.commitProviderConfig(providerId.value, config, options)
 }
 
 function handleSaveAnyway() {
@@ -451,10 +486,18 @@ function handleDeleteProvider() {
           </ProviderBasicSettings>
 
           <ProviderAdvancedSettings
-            v-if="advancedFields.length > 0"
+            v-if="isChatProvider || advancedFields.length > 0"
             :title="t('settings.pages.providers.common.section.advanced.title')"
           >
             <div :class="['flex', 'flex-col', 'gap-4']">
+              <FieldInput
+                v-if="isChatProvider"
+                v-model="maxTokensEdit"
+                :label="t('settings.pages.providers.catalog.edit.config.common.fields.field.max-tokens.label')"
+                :description="t('settings.pages.providers.catalog.edit.config.common.fields.field.max-tokens.description')"
+                placeholder="16384"
+                type="number"
+              />
               <div v-for="field in advancedFields" :key="field.key">
                 <FieldKeyValues
                   v-if="field.type === 'key-values'"

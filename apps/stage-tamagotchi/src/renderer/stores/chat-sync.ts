@@ -13,6 +13,7 @@ import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-sto
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
 import { resolveLlmTools } from '@proj-airi/stage-ui/stores/llm-tool-resolver'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { useProviderMaxTokensStore } from '@proj-airi/stage-ui/stores/provider-max-tokens'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { executeToolCallRerun } from '@proj-airi/stage-ui/stores/tool-call-rerun'
 import { defineStore, storeToRefs } from 'pinia'
@@ -90,6 +91,7 @@ interface SpotlightIngestResult {
 }
 
 interface StreamSnapshotPayload {
+  lastTurnOutputTokens?: number
   sending: boolean
   streamingMessage: StreamingAssistantMessage
 }
@@ -191,11 +193,12 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   const chatOrchestrator = useChatOrchestratorStore()
   const { cleanupMessages } = useChatMaintenanceStore()
   const providersStore = useProvidersStore()
+  const providerMaxTokensStore = useProviderMaxTokensStore()
   const consciousnessStore = useConsciousnessStore()
   const { activeModel, activeProvider } = storeToRefs(consciousnessStore)
   const { activeSessionId, sessionMessages, sessionMetas } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
-  const { sending } = storeToRefs(chatOrchestrator)
+  const { lastTurnOutputTokens, sending } = storeToRefs(chatOrchestrator)
 
   const pendingRequests = new Map<string, PendingRequest>()
   const stopSyncWatchers: Array<() => void> = []
@@ -212,6 +215,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   function buildStreamSnapshot(): StreamSnapshotPayload {
     return {
+      lastTurnOutputTokens: lastTurnOutputTokens.value,
       sending: sending.value,
       streamingMessage: JSON.parse(JSON.stringify(streamingMessage.value)) as StreamingAssistantMessage,
     }
@@ -269,7 +273,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       watch([activeSessionId, sessionMessages, sessionMetas], () => {
         broadcastSessionSnapshot()
       }, { deep: true, immediate: true }),
-      watch([sending, streamingMessage], () => {
+      watch([lastTurnOutputTokens, sending, streamingMessage], () => {
         broadcastStreamSnapshot()
       }, { deep: true, immediate: true }),
     )
@@ -296,6 +300,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   }
 
   function applyStreamSnapshot(snapshot: StreamSnapshotPayload) {
+    chatOrchestrator.lastTurnOutputTokens = snapshot.lastTurnOutputTokens
     chatOrchestrator.sending = snapshot.sending
     chatStream.streamingMessage = snapshot.streamingMessage
   }
@@ -343,11 +348,19 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       throw new Error(`Failed to resolve chat provider "${providerId}"`)
     }
 
+    // Settings lives in a separate BrowserWindow. Reload the project file at
+    // the request boundary so a recently edited limit applies immediately.
+    await providerMaxTokensStore.refresh()
+
     await chatOrchestrator.ingest(payload.text, {
       attachments: payload.attachments,
       chatProvider,
       input: payload.input,
       model: modelId,
+      providerConfig: {
+        ...providersStore.getProviderConfig(providerId),
+        maxTokens: providerMaxTokensStore.getProviderMaxTokens(providerId),
+      },
       tools: resolveTools(payload.toolset),
     }, payload.sessionId)
   }

@@ -160,7 +160,8 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
           const qualifiedName = name.includes(MCP_TOOL_NAME_SEPARATOR)
             ? name
             : desanitizeMcpToolName(name)
-          return await runtime.callTool({ arguments: args, name: qualifiedName })
+          const result = await runtime.callTool({ arguments: args, name: qualifiedName })
+          return boundMcpResultForModelHistory(result)
         }
         catch (error) {
           return {
@@ -231,6 +232,54 @@ export function sanitizeMcpToolName(qualifiedName: string): string {
   return qualifiedName.split(MCP_TOOL_NAME_SEPARATOR).join(PROVIDER_SAFE_SEPARATOR)
 }
 
+/**
+ * Bounds an MCP result before xsAI serializes it into the conversation history.
+ * Small results retain their original structure; oversized results keep the
+ * beginning and end so the model sees both command context and trailing errors.
+ */
+function boundMcpResultForModelHistory(result: McpCallToolResult): McpCallToolResult {
+  let serialized: string
+  try {
+    serialized = JSON.stringify(result)
+  }
+  catch (error) {
+    return {
+      content: [{
+        text: `MCP result could not be serialized by AIRI: ${errorMessageFromValue(error)}`,
+        type: 'text',
+      }],
+      isError: true,
+      structuredContent: { airiSerializationFailed: true },
+    }
+  }
+
+  // A roughly 24k-character ceiling leaves useful tool evidence while
+  // preventing one read/search response from dominating every subsequent
+  // provider request in the same agent loop.
+  const maxSerializedCharacters = 24_000
+  if (serialized.length <= maxSerializedCharacters)
+    return result
+
+  const preservedHead = serialized.slice(0, 18_000)
+  const preservedTail = serialized.slice(-4_000)
+  return {
+    content: [{
+      text: [
+        `[MCP result truncated by AIRI: ${serialized.length} serialized characters; request a narrower range or query to retrieve omitted data.]`,
+        preservedHead,
+        '[... omitted ...]',
+        preservedTail,
+      ].join('\n'),
+      type: 'text',
+    }],
+    ...(result.isError === undefined ? {} : { isError: result.isError }),
+    structuredContent: {
+      airiOriginalSerializedCharacters: serialized.length,
+      airiTruncated: true,
+    },
+  }
+}
+
 function createDirectMcpTool(descriptor: McpToolDescriptor, runtime: McpToolRuntime): Tool {
   return {
     execute: async (input: unknown) => {
@@ -241,7 +290,8 @@ function createDirectMcpTool(descriptor: McpToolDescriptor, runtime: McpToolRunt
       try {
         // Use the original qualified name (with "::") for MCP dispatch —
         // the main process splits on "::" to find the server + tool.
-        return await runtime.callTool({ arguments: args, name: descriptor.name })
+        const result = await runtime.callTool({ arguments: args, name: descriptor.name })
+        return boundMcpResultForModelHistory(result)
       }
       catch (error) {
         // Return an MCP-style error result instead of throwing so the model

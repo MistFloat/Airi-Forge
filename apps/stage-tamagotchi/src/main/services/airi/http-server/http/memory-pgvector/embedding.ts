@@ -23,6 +23,9 @@ export interface EmbeddingJobClientConfig {
 
 export type EmbeddingTask = 'passage' | 'query'
 
+/** Retry budget for transient 429 rate-limit responses (see embedForJob NOTICE). */
+const MAX_ATTEMPTS = 3
+
 /**
  * Builds the embedding HTTP request for a job text without performing the
  * network call, so request construction is unit-testable.
@@ -82,16 +85,33 @@ export function embeddingRequestFor(text: string, task: EmbeddingTask, config: E
  */
 export async function embedForJob(text: string, task: EmbeddingTask, config: EmbeddingJobClientConfig): Promise<number[]> {
   const request = embeddingRequestFor(text, task, config)
-  const response = await fetch(request.url, {
-    body: JSON.stringify(request.body),
-    headers: request.headers,
-    method: 'POST',
-  })
-  if (!response.ok)
-    throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`)
-  const payload = await response.json() as { data?: Array<{ embedding?: unknown }> }
-  const embedding = payload.data?.[0]?.embedding
-  if (!Array.isArray(embedding) || embedding.length === 0 || !embedding.every(value => typeof value === 'number' && Number.isFinite(value)))
-    throw new Error('Embedding response did not contain a valid dense vector')
-  return embedding
+  // NOTICE:
+  // Jina caps concurrent requests per key at 2; the renderer embeds with the
+  // same key, so job draining can transiently hit 429. Absorb it with bounded
+  // backoff; the job system still marks a persistently failing job as failed.
+  let lastError: unknown
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(request.url, {
+        body: JSON.stringify(request.body),
+        headers: request.headers,
+        method: 'POST',
+      })
+      if (!response.ok)
+        throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`)
+      const payload = await response.json() as { data?: Array<{ embedding?: unknown }> }
+      const embedding = payload.data?.[0]?.embedding
+      if (!Array.isArray(embedding) || embedding.length === 0 || !embedding.every(value => typeof value === 'number' && Number.isFinite(value)))
+        throw new Error('Embedding response did not contain a valid dense vector')
+      return embedding
+    }
+    catch (error) {
+      lastError = error
+      if (error instanceof Error && error.message.includes('429'))
+        await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt))
+      else
+        throw error
+    }
+  }
+  throw lastError
 }

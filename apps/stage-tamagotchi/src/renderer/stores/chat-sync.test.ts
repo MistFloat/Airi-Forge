@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, ref } from 'vue'
 
 const mockResolveLlmTools = vi.hoisted(() => vi.fn<(options?: { customTools?: (() => Promise<Tool[]>) | Tool[] }) => Promise<Tool[]>>())
+const mockGetProviderConfig = vi.hoisted(() => vi.fn(() => ({})))
 const mockWidgetsTools = vi.hoisted(() => vi.fn<() => Promise<Tool[]>>(async () => []))
 const mockWeatherTools = vi.hoisted(() => vi.fn<() => Promise<Tool[]>>(async () => []))
 const mockImageJournalTools = vi.hoisted(() => vi.fn<() => Promise<Tool[]>>(async () => []))
@@ -136,6 +137,7 @@ vi.mock('@proj-airi/stage-ui/stores/chat/stream-store', () => ({
 vi.mock('@proj-airi/stage-ui/stores/chat', () => ({
   useChatOrchestratorStore: () => ({
     ingest: mockState.ingest,
+    lastTurnOutputTokens: ref<number>(),
     sending: ref(false),
   }),
 }))
@@ -148,7 +150,15 @@ vi.mock('@proj-airi/stage-ui/stores/chat/maintenance', () => ({
 
 vi.mock('@proj-airi/stage-ui/stores/providers', () => ({
   useProvidersStore: () => ({
+    getProviderConfig: mockGetProviderConfig,
     getProviderInstance: vi.fn(async () => ({ id: 'provider' })),
+  }),
+}))
+
+vi.mock('@proj-airi/stage-ui/stores/provider-max-tokens', () => ({
+  useProviderMaxTokensStore: () => ({
+    getProviderMaxTokens: () => 65536,
+    refresh: vi.fn(async () => {}),
   }),
 }))
 
@@ -232,6 +242,7 @@ describe('useChatSyncStore', async () => {
     mockWeatherTools.mockResolvedValue([])
     mockImageJournalTools.mockReset()
     mockImageJournalTools.mockResolvedValue([])
+    mockGetProviderConfig.mockClear()
 
     mockState = {
       activeSessionId,
@@ -463,8 +474,10 @@ describe('useChatSyncStore', async () => {
       }),
     ])
     expect(mockState.ingest).toHaveBeenCalledWith('hello spotlight', expect.objectContaining({
+      providerConfig: { maxTokens: 65536 },
       tools: expect.any(Function),
     }), 'session-1')
+    expect(mockGetProviderConfig).toHaveBeenCalledTimes(1)
 
     authorityStore.dispose()
     followerStore.dispose()

@@ -30,7 +30,7 @@ import { useOnboardingStore } from '@proj-airi/stage-ui/stores/onboarding'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { refDebounced, useBroadcastChannel, useEventListener } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, onUnmounted, ref, shallowRef, toRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, shallowRef, toRef, watch } from 'vue'
 import { toast } from 'vue-sonner'
 
 import ControlsIsland from '../components/stage-islands/controls-island/index.vue'
@@ -94,7 +94,11 @@ const { sceneMutationLocked, scenePhase } = storeToRefs(modelStore)
 const { stagePaused } = storeToRefs(useStageWindowLifecycleStore())
 const { fadeOnHoverEnabled } = storeToRefs(useControlsIslandStore())
 const modelSettingsRuntimeOwnerInstanceId = `tamagotchi-main-stage:${Math.random().toString(36).slice(2, 10)}`
-const { data: modelSettingsRuntimeChannelEvent, post: postModelSettingsRuntimeChannelEvent } = useBroadcastChannel<ModelSettingsRuntimeChannelEvent, ModelSettingsRuntimeChannelEvent>({ name: modelSettingsRuntimeSnapshotChannelName })
+const {
+  data: modelSettingsRuntimeChannelEvent,
+  isClosed: isModelSettingsRuntimeChannelClosed,
+  post: postModelSettingsRuntimeChannelEvent,
+} = useBroadcastChannel<ModelSettingsRuntimeChannelEvent, ModelSettingsRuntimeChannelEvent>({ name: modelSettingsRuntimeSnapshotChannelName })
 const shouldUseThreeTransparencyHitTest = computed(() => shouldSampleStageTransparency({
   componentState: componentStateStage.value,
   fadeOnHoverEnabled: fadeOnHoverEnabled.value,
@@ -234,6 +238,9 @@ watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor
  * Sends model-settings runtime events without letting closed HMR channels break the stage.
  */
 function postModelSettingsRuntimeEvent(event: ModelSettingsRuntimeChannelEvent) {
+  if (isModelSettingsRuntimeChannelClosed.value)
+    return
+
   const { error } = tryCatch(() => postModelSettingsRuntimeChannelEvent(event))
   if (error)
     console.warn('[Main Page] Failed to post model settings runtime event:', error)
@@ -687,11 +694,17 @@ onMounted(() => {
   }
 })
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
+  // VueUse closes the BroadcastChannel when this component scope is disposed.
+  // Notify settings windows while the channel is still available so teardown
+  // cannot race with `postMessage()` and leave a stale runtime snapshot behind.
   postModelSettingsRuntimeEvent({
     type: 'owner-gone',
     ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
   })
+})
+
+onUnmounted(() => {
   clearAssistantSpeechResumeTimer()
   void voiceInputInteractionLifecycle.stop().catch(error => reportVoiceInputFailure('stop listening', error))
 })

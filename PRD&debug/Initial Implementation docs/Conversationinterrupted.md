@@ -36,3 +36,19 @@
    现象：17 步 × ~35s ≈10 分钟，撞上 chat‑sync 全局命令超时，Promise 被静默 reject，UI 无报错提示
    根因：chat‑sync.ts 全局命令超时 10 分钟
    修复：全局超时从 10 分钟 → 30 分钟
+9. AI 发送长内容后静默停止（max_tokens 缺失被静默截断）
+   现象：AI 在发送很长一段内容后突然停止，状态栏由“运行中”变为“已停止”；控制台仅 memory-long-term.ts 的 POST /api/v1/memory/remember 500，无其他报错；coding-agent MCP 仍在运行
+   根因：streamText 调用从未设置 max_tokens，模型用 provider 默认上限（通常 4096），生成长内容撞上限后流以 finish_reason:'length' 正常结束；xsai 对 'length' 不抛错、不告警，直接 resolveOnce()，performSend 的 finally 块执行 setSending(false) 让状态栏变“已停止”。随后的 rememberTurn 因 PostgreSQL 当时未就绪返回 500，是流结束后的次生现象，非中断原因
+   证据链：
+   - StreamOptions(llm.ts) 无 maxTokens 字段
+   - llm-service.ts 的 streamText 只透传 chatConfig(仅 apiKey/baseURL)/abortSignal(chat 路径从未设置)/headers/messages/onEvent/stopWhen/tools，未传 max_tokens
+   - provider 配置(openai/deepseek index.ts) 只有 apiKey+baseUrl，max_tokens 仅出现在 validator 的连通性测试(max_tokens:1)
+   - xsai stream-text 无内部超时；chat.ts 无 AbortController；abortSignal 在 chat 路径从未被赋值
+   - xsai requestBody 用 objCamelToSnake 把 maxTokens→max_tokens 透传给 provider(WithUnknown<T> 允许任意字段)，因此传 maxTokens 给 streamText 即可生效
+   - FinishReason 类型含 'length'，onEvent 的 finish 分支对 length 走 resolveOnce() 静默结束
+   修复：
+   - llm.ts: StreamOptions 加 maxTokens?: number 字段
+   - llm-service.ts: streamText 调用传 maxTokens: options?.maxTokens ?? 16384（Aider/Cursor/Continue.dev 生产默认值）
+   - llm-service.ts: finish 事件中 finish_reason==='length' 时 console.warn 告警，截断不再隐形
+   验证：core-agent typecheck 通过；75/75 单测通过；lint 无错误
+   附注：PostgreSQL 用 Docker 容器 airi-pgvector(pgvector/pgvector:pg17) 运行，配置 POSTGRES_USER=airi / POSTGRES_PASSWORD=pazzw0rd123 / POSTGRES_DB=airi_memory，匹配 AIRI 默认连接串 postgresql://airi:pazzw0rd123@localhost:5432/airi_memory；Navicat 报 "No password supplied" 是连接配置密码留空所致，正确密码即 pazzw0rd123。schema 由 store.ts 首次连接时 migrateMemorySchema 自动建表 + CREATE EXTENSION vector/pgcrypto，无需手动建表
