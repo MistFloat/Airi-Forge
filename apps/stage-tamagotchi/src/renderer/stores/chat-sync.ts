@@ -3,6 +3,7 @@ import type { ToolCallRerunPayload } from '@proj-airi/stage-ui/stores/tool-call-
 import type { ChatHistoryItem, StreamingAssistantMessage } from '@proj-airi/stage-ui/types/chat'
 import type { ChatSessionMeta } from '@proj-airi/stage-ui/types/chat-session'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
+import type { Tool } from '@xsai/shared-chat'
 
 import { errorMessageFrom } from '@moeru/std'
 import { errorMessageFromValue } from '@proj-airi/stage-shared'
@@ -19,6 +20,7 @@ import { executeToolCallRerun } from '@proj-airi/stage-ui/stores/tool-call-rerun
 import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
+import { agentAutonomyTools } from './tools/builtin/agent-autonomy'
 import { imageJournalTools } from './tools/builtin/image-journal'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
@@ -42,7 +44,8 @@ type ChatResponsePayload
     | { ok: true, result?: SpotlightIngestResult }
 
 type ChatSyncMessage
-  = | ChatCommandMessage<'cleanup', { sessionId?: string }>
+  = | ChatCommandMessage<'cancel', { sessionId?: string }>
+    | ChatCommandMessage<'cleanup', { sessionId?: string }>
     | ChatCommandMessage<'delete-message', { index?: number, messageId?: string, sessionId?: string }>
     | ChatCommandMessage<'ingest', IngestCommandPayload>
     | ChatCommandMessage<'retry', RetryCommandPayload>
@@ -99,6 +102,17 @@ interface StreamSnapshotPayload {
 type ToolsetId = 'artistry' | 'widgets'
 
 const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
+
+/** Desktop tool bundle available to ordinary and scheduled Agent turns. */
+export async function autonomousStageTools(): Promise<Tool[]> {
+  const [autonomy, imageJournal, widgets, weather] = await Promise.all([
+    agentAutonomyTools(),
+    imageJournalTools(),
+    widgetsTools(),
+    weatherTools(),
+  ])
+  return [...autonomy, ...imageJournal, ...widgets, ...weather]
+}
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
 // Fast commands (delete/cleanup) never touch the LLM and must settle quickly.
 const REQUEST_TIMEOUT_MS = 30000
@@ -308,16 +322,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       artistry: async () => {
-        const [ai, wi, we] = await Promise.all([
-          imageJournalTools(),
+        return await autonomousStageTools()
+      },
+      widgets: async () => {
+        const [autonomy, widgets, weather] = await Promise.all([
+          agentAutonomyTools(),
           widgetsTools(),
           weatherTools(),
         ])
-        return [...ai, ...wi, ...we]
-      },
-      widgets: async () => {
-        const [w, we] = await Promise.all([widgetsTools(), weatherTools()])
-        return [...w, ...we]
+        return [...autonomy, ...widgets, ...weather]
       },
     }
 
@@ -469,6 +482,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
     try {
       switch (message.command) {
+        case 'cancel':
+          chatOrchestrator.cancelActiveSend(message.payload.sessionId)
+          break
         case 'cleanup':
           cleanupMessages(message.payload.sessionId)
           break
@@ -708,6 +724,21 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     })
   }
 
+  async function requestCancel(sessionId?: string) {
+    if (mode.value === 'authority') {
+      chatOrchestrator.cancelActiveSend(sessionId)
+      return
+    }
+
+    return await dispatch<void>({
+      command: 'cancel',
+      payload: { sessionId },
+      requestId: createRequestId(),
+      senderId: instanceId,
+      type: 'command',
+    })
+  }
+
   async function requestDeleteMessage(payload: { index?: number, messageId?: string, sessionId?: string }) {
     if (mode.value === 'authority') {
       executeDeleteMessage(payload)
@@ -737,6 +768,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     dispose,
     initialize,
     mode,
+    requestCancel,
     requestCleanup,
     requestDeleteMessage,
     requestIngest,

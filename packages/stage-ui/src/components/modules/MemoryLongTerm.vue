@@ -13,13 +13,11 @@ import { useMemoryLongTermStore } from '../../stores/modules/memory-long-term'
 
 const { t } = useI18n()
 const memoryStore = useMemoryLongTermStore()
-const { enabled, connectionString, embeddingSource, embeddingProvider, embeddingModel, extractorProvider, extractorApiKey, extractorBaseUrl, extractorModel, jinaApiKey, jinaModel, jinaDimensions, similarityThreshold, maxResults, memoryNamespace, instructionTokenBudget, configured, databaseConfigured } = storeToRefs(memoryStore)
+const { enabled, connectionString, embeddingSource, embeddingProvider, embeddingModel, jinaApiKey, jinaModel, jinaDimensions, similarityThreshold, maxResults, memoryNamespace, instructionTokenBudget, configured, databaseConfigured } = storeToRefs(memoryStore)
 const testingDatabase = shallowRef(false)
 const testingEmbedding = shallowRef(false)
-const testingExtractor = shallowRef(false)
 const databaseStatus = shallowRef('')
 const embeddingStatus = shallowRef('')
-const extractorStatus = shallowRef('')
 const healthError = shallowRef('')
 const managerRevision = shallowRef(0)
 const embeddingSourceOptions = computed(() => [
@@ -63,25 +61,6 @@ async function testEmbedding() {
   }
   finally {
     testingEmbedding.value = false
-  }
-}
-
-async function testExtractor() {
-  testingExtractor.value = true
-  healthError.value = ''
-  extractorStatus.value = ''
-  try {
-    const result = await memoryStore.testExtractor()
-    extractorStatus.value = t('settings.pages.modules.memory-long-term.health.extractor-success', {
-      count: result.claimCount,
-      sample: result.sample,
-    })
-  }
-  catch (error) {
-    healthError.value = errorMessageFrom(error) ?? t('settings.pages.modules.memory-long-term.health.failed')
-  }
-  finally {
-    testingExtractor.value = false
   }
 }
 </script>
@@ -188,34 +167,6 @@ async function testExtractor() {
       placeholder="1200"
     />
 
-    <div :class="['grid gap-4 md:grid-cols-2']">
-      <FieldInput
-        v-model="extractorProvider"
-        :label="t('settings.pages.modules.memory-long-term.extractor-provider')"
-        :description="t('settings.pages.modules.memory-long-term.extractor-provider-description')"
-        placeholder="openai"
-      />
-      <FieldInput
-        v-model="extractorModel"
-        :label="t('settings.pages.modules.memory-long-term.extractor-model')"
-        :description="t('settings.pages.modules.memory-long-term.extractor-model-description')"
-        placeholder="gpt-4.1-nano"
-      />
-      <FieldInput
-        v-model="extractorApiKey"
-        type="password"
-        :label="t('settings.pages.modules.memory-long-term.extractor-api-key')"
-        :description="t('settings.pages.modules.memory-long-term.extractor-api-key-description')"
-        placeholder="sk-..."
-      />
-      <FieldInput
-        v-model="extractorBaseUrl"
-        :label="t('settings.pages.modules.memory-long-term.extractor-base-url')"
-        :description="t('settings.pages.modules.memory-long-term.extractor-base-url-description')"
-        placeholder="https://api.openai.com/v1/"
-      />
-    </div>
-
     <div>
       <div :class="['flex flex-wrap gap-3']">
         <Button
@@ -237,25 +188,15 @@ async function testExtractor() {
           variant="secondary"
           @click="testEmbedding"
         />
-        <Button
-          icon="i-solar:test-tube-bold-duotone"
-          :label="t('settings.pages.modules.memory-long-term.health.test-extractor')"
-          :loading="testingExtractor"
-          variant="secondary"
-          @click="testExtractor"
-        />
       </div>
     </div>
 
-    <div v-if="databaseStatus || embeddingStatus || extractorStatus" :class="['rounded-lg bg-green-100 p-4 text-sm text-green-800 dark:bg-green-900/40 dark:text-green-200']">
+    <div v-if="databaseStatus || embeddingStatus" :class="['rounded-lg bg-green-100 p-4 text-sm text-green-800 dark:bg-green-900/40 dark:text-green-200']">
       <p v-if="databaseStatus">
         {{ databaseStatus }}
       </p>
       <p v-if="embeddingStatus">
         {{ embeddingStatus }}
-      </p>
-      <p v-if="extractorStatus">
-        {{ extractorStatus }}
       </p>
     </div>
 

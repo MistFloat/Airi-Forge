@@ -1,3 +1,4 @@
+import { createMemoryMcpRuntime } from '@proj-airi/stage-ui/tools/memory-mcp'
 import { describe, expect, it } from 'vitest'
 
 import { createPgvectorMemoryServer } from './index'
@@ -103,6 +104,95 @@ describe('pgvector memory HTTP gateway', () => {
       expect(response.headers.get('access-control-allow-origin')).toBe('*')
     }
     finally {
+      await memoryServer.serverManager.stop()
+    }
+  })
+})
+
+const integrationConnectionString = process.env.AIRI_MEMORY_TEST_URL
+
+describe.runIf(integrationConnectionString)('memory MCP PostgreSQL integration', () => {
+  it('writes long-term memory and independently searches memories and raw evidence', { timeout: 30_000 }, async () => {
+    const memoryServer = await createPgvectorMemoryServer()
+    await memoryServer.serverManager.start()
+
+    const marker = `mcp-e2e-${Date.now()}`
+    const namespace = `integration:${marker}`
+    let memoryId = ''
+    const postMemory = async <T>(route: string, body: Record<string, unknown>): Promise<T> => {
+      const response = await fetch(`http://127.0.0.1:6123/api/v1/memory/${route}`, {
+        body: JSON.stringify({ connectionString: integrationConnectionString, namespace, ...body }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      })
+      const payload = await response.json() as T & { error?: string }
+      if (!response.ok)
+        throw new Error(payload.error ?? `Memory gateway ${route} failed with ${response.status}`)
+      return payload
+    }
+    const runtime = createMemoryMcpRuntime({
+      async saveMemory(draft, options) {
+        const nextMemoryId = `memory-${marker}`
+        await postMemory('upsert', { ...draft, createdBy: options?.createdBy, memoryId: nextMemoryId })
+        return nextMemoryId
+      },
+      async searchEvidenceText(query, options) {
+        const result = await postMemory<{ evidence: Array<{ content: string, id: string, sourceRole: string, sourceType: string }> }>('evidence/list', {
+          limit: options?.limit,
+          search: query,
+          status: 'all',
+        })
+        return result.evidence
+      },
+      async searchMemoriesText(query, options) {
+        const result = await postMemory<{ memories: Array<{ content: string, createdBy: string, memoryId: string, title: string }> }>('list', {
+          limit: options?.limit,
+          namespaces: [namespace],
+          search: query,
+          status: 'all',
+        })
+        return result.memories
+      },
+    })
+
+    try {
+      const written = await runtime.callTool({
+        arguments: {
+          content: `Agent-authored long-term memory ${marker}`,
+          kind: 'fact',
+          title: `Integration memory ${marker}`,
+        },
+        name: 'memory::remember',
+      })
+      memoryId = String(written.structuredContent?.memoryId ?? '')
+      expect(memoryId).not.toBe('')
+
+      const memories = await runtime.callTool({
+        arguments: { query: marker },
+        name: 'memory::search_memories',
+      })
+      expect(memories.structuredContent?.memories).toEqual(expect.arrayContaining([
+        expect.objectContaining({ createdBy: 'agent', memoryId }),
+      ]))
+
+      await postMemory('remember', {
+        memoryId: `evidence-${marker}`,
+        sourceAssistantText: `Raw assistant evidence ${marker}`,
+        sourceSessionId: 'integration-session',
+        sourceUserText: `Raw user evidence ${marker}`,
+      })
+      const evidence = await runtime.callTool({
+        arguments: { limit: 10, query: marker },
+        name: 'memory::search_evidence',
+      })
+      expect(evidence.structuredContent?.evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining(marker), sourceRole: 'user' }),
+        expect.objectContaining({ content: expect.stringContaining(marker), sourceRole: 'assistant' }),
+      ]))
+    }
+    finally {
+      if (memoryId)
+        await postMemory('delete', { memoryId })
       await memoryServer.serverManager.stop()
     }
   })

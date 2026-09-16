@@ -35,7 +35,9 @@ function createHarness() {
   const assistantTurns: unknown[] = []
   const selfPromptsCaptured: unknown[] = []
   const recallMemory = vi.fn(async (_sessionId: string, _query: string): Promise<string | undefined> => undefined)
-  const rememberTurn = vi.fn(async () => {})
+  const checkpointTurn = vi.fn(async () => {})
+  const settleTurn = vi.fn(async () => true)
+  const startTurn = vi.fn(async () => true)
   const stateChanges: unknown[] = []
   const telemetry = {
     assistantResponseRendered: [] as unknown[],
@@ -48,9 +50,7 @@ function createHarness() {
     messageRoundFailed: [] as unknown[],
     messageSendStarted: [] as unknown[],
   }
-  const stream = vi.fn(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options?: {
-    onStreamEvent?: (event: StreamEvent) => Promise<void> | void
-  }) => {
+  const stream = vi.fn(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options?: StreamOptions) => {
     await options?.onStreamEvent?.({ text: 'assistant reply', type: 'text-delta' })
     await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
   })
@@ -82,7 +82,6 @@ function createHarness() {
     },
     memory: {
       recall: recallMemory,
-      rememberTurn,
     },
     monotonicNow: () => monotonicNowValues.shift() ?? 1000,
     now: () => nowValue,
@@ -116,11 +115,17 @@ function createHarness() {
       getSessionGeneration: () => generation,
       getSessionMessages: sessionId => sessionMessages[sessionId] ?? [],
     },
+    turnControl: {
+      checkpoint: checkpointTurn,
+      settle: settleTurn,
+      start: startTurn,
+    },
   })
 
   return {
     assistantAppended,
     assistantTurns,
+    checkpointTurn,
     contextSnapshot,
     foregroundPatches,
     foregroundResets,
@@ -142,7 +147,6 @@ function createHarness() {
     },
     promptProjections,
     recallMemory,
-    rememberTurn,
     runtime,
     selfPromptsCaptured,
     selfTurnIntrospection: {
@@ -151,6 +155,8 @@ function createHarness() {
       },
     },
     sessionMessages,
+    settleTurn,
+    startTurn,
     stateChanges,
     stream,
     systemPrompt: {
@@ -175,6 +181,98 @@ function createHarness() {
  * await runtime.ingest('hello', { model, chatProvider })
  */
 describe('createChatOrchestratorRuntime', () => {
+  it('checkpoints a main-owned turn around renderer execution', async () => {
+    const harness = createHarness()
+
+    await harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })
+
+    expect(harness.startTurn).toHaveBeenCalledWith({
+      assistantMessageId: 'assistant-id',
+      sessionId: 'session-1',
+      source: 'text',
+      turnId: 'user-id',
+      userMessage: expect.objectContaining({
+        content: 'hello',
+        id: 'user-id',
+        role: 'user',
+      }),
+      userMessageId: 'user-id',
+      userText: 'hello',
+    })
+    expect(harness.startTurn).toHaveBeenCalledBefore(harness.stream)
+    expect(harness.checkpointTurn).toHaveBeenCalledWith({
+      assistantMessageId: 'assistant-id',
+      assistantText: 'assistant reply',
+      sessionId: 'session-1',
+      turnId: 'user-id',
+    })
+    expect(harness.settleTurn).toHaveBeenCalledWith({
+      assistantMessage: expect.objectContaining({
+        content: 'assistant reply',
+        id: 'assistant-id',
+        role: 'assistant',
+      }),
+      assistantMessageStatus: 'complete',
+      finishReason: 'stop',
+      sessionId: 'session-1',
+      status: 'completed',
+      turnId: 'user-id',
+    })
+    expect(harness.checkpointTurn).toHaveBeenCalledBefore(harness.settleTurn)
+  })
+
+  it('does not dispatch the model or forge a local close when durable admission fails', async () => {
+    const harness = createHarness()
+    const admissionError = new Error('turn admission unavailable')
+    harness.startTurn.mockRejectedValueOnce(admissionError)
+
+    await expect(harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })).rejects.toBe(admissionError)
+
+    expect(harness.stream).not.toHaveBeenCalled()
+    expect(harness.settleTurn).not.toHaveBeenCalled()
+    expect(harness.runtime.getSessionEvents('session-1')).toEqual([])
+    expect(harness.sessionMessages['session-1']).toHaveLength(1)
+  })
+
+  it('coalesces streaming checkpoints while one platform write is in flight', async () => {
+    const harness = createHarness()
+    let releaseCheckpoint: (() => void) | undefined
+    harness.checkpointTurn.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseCheckpoint = resolve
+      })
+    })
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ text: 'a'.repeat(60), type: 'text-delta' })
+      await options?.onStreamEvent?.({ text: 'b'.repeat(60), type: 'text-delta' })
+      await options?.onStreamEvent?.({ text: 'c'.repeat(60), type: 'text-delta' })
+      await options?.onStreamEvent?.({ text: 'd'.repeat(60), type: 'text-delta' })
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
+    })
+
+    const send = harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })
+
+    await vi.waitFor(() => {
+      expect(harness.checkpointTurn).toHaveBeenCalledTimes(1)
+    })
+    releaseCheckpoint?.()
+    await send
+
+    expect(harness.checkpointTurn).toHaveBeenCalledTimes(2)
+    expect(harness.checkpointTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      assistantText: `${'a'.repeat(60)}${'b'.repeat(60)}${'c'.repeat(60)}${'d'.repeat(60)}`,
+    }))
+  })
+
   // ROOT CAUSE:
   //
   // Provider configuration reached the orchestrator but only custom headers
@@ -440,11 +538,6 @@ describe('createChatOrchestratorRuntime', () => {
     expect(harness.assistantTurns.at(-1)).toEqual(expect.objectContaining({
       messageText: 'visible\n',
     }))
-    expect(harness.rememberTurn).toHaveBeenCalledWith({
-      assistantText: 'visible\n',
-      sessionId: 'session-1',
-      userText: 'hello',
-    })
   })
 
   it('keeps a trailing self-prompt candidate visible after a length stop', async () => {
@@ -464,6 +557,34 @@ describe('createChatOrchestratorRuntime', () => {
       content: 'visible\n// incomplete follow-up',
       role: 'assistant',
     })
+    expect(harness.settleTurn).toHaveBeenCalledWith(expect.objectContaining({
+      finishReason: 'length',
+      status: 'completed',
+    }))
+  })
+
+  it('persists an exhausted action continuation as an interrupted failed turn', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ text: '让我读取文件。', type: 'text-delta' })
+      await options?.onStreamEvent?.({ finishReason: 'incomplete-action', type: 'finish' })
+    })
+
+    await expect(harness.runtime.ingest('读取文件', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })).rejects.toThrow('promised tool action')
+
+    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
+      content: '让我读取文件。',
+      interrupted: true,
+      role: 'assistant',
+    })
+    expect(harness.settleTurn).toHaveBeenCalledWith(expect.objectContaining({
+      assistantMessageStatus: 'interrupted',
+      finishReason: 'incomplete-action',
+      status: 'failed',
+    }))
   })
 
   it('recalls memory before the LLM request and persists the completed turn', async () => {
@@ -485,11 +606,6 @@ describe('createChatOrchestratorRuntime', () => {
     expect(composedMessages[0]).toMatchObject({
       content: '## Memory\nUser likes jasmine tea.',
       role: 'system',
-    })
-    expect(harness.rememberTurn).toHaveBeenCalledWith({
-      assistantText: 'assistant reply',
-      sessionId: 'session-1',
-      userText: 'What tea do I like?',
     })
   })
 
@@ -689,6 +805,113 @@ describe('createChatOrchestratorRuntime', () => {
         turnIndex: 2,
       }),
     ])
+  })
+
+  // ROOT CAUSE:
+  //
+  // The assistant message was appended only after the provider stream
+  // resolved. If the connection failed after emitting text, the foreground
+  // UI briefly showed that text but session history permanently lost it.
+  //
+  // We fixed this by finalizing the parser and committing the visible partial
+  // assistant as interrupted before the failed turn settles.
+  it('persists visible partial assistant output when a provider stream fails', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ text: 'partial reply', type: 'text-delta' })
+      throw new Error('connection lost')
+    })
+
+    await expect(harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })).rejects.toThrow('connection lost')
+
+    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
+      content: 'partial reply',
+      interrupted: true,
+      role: 'assistant',
+    })
+    expect(harness.assistantAppended).toEqual([
+      expect.objectContaining({
+        message: expect.objectContaining({ interrupted: true }),
+        messageText: 'partial reply',
+        sessionId: 'session-1',
+      }),
+    ])
+    expect(harness.foregroundResets).toHaveLength(1)
+    expect(harness.runtime.getSessionEvents('session-1').map(event => [event.type, event.payload])).toEqual([
+      ['prompt.composed', expect.objectContaining({ turnId: 'user-id' })],
+    ])
+    expect(harness.settleTurn).toHaveBeenCalledWith({
+      assistantMessage: expect.objectContaining({
+        content: 'partial reply',
+        interrupted: true,
+        role: 'assistant',
+      }),
+      assistantMessageStatus: 'interrupted',
+      sessionId: 'session-1',
+      status: 'failed',
+      turnId: 'user-id',
+    })
+  })
+
+  // ROOT CAUSE:
+  //
+  // Queue cancellation never reached the currently running provider request,
+  // so a reset or explicit stop left the active stream and its tools running.
+  //
+  // We fixed this by giving each active turn its own AbortController and
+  // passing that signal through the existing LLM port.
+  it('aborts only the exact active turn and persists its partial assistant output', async () => {
+    const harness = createHarness()
+    let receivedSignal: AbortSignal | undefined
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      receivedSignal = options?.abortSignal
+      await options?.onStreamEvent?.({ text: 'work in progress', type: 'text-delta' })
+      await new Promise<void>((_resolve, reject) => {
+        receivedSignal?.addEventListener('abort', () => reject(receivedSignal?.reason), { once: true })
+      })
+    })
+
+    const send = harness.runtime.ingest('start work', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })
+
+    await vi.waitFor(() => {
+      expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    })
+    expect(harness.runtime.getActiveTurn()).toEqual({ sessionId: 'session-1', turnId: 'user-id' })
+    expect(harness.runtime.cancelActiveTurn('stale-turn')).toBe(false)
+    expect(receivedSignal?.aborted).toBe(false)
+    expect(harness.runtime.cancelActiveTurn('user-id')).toBe(true)
+
+    await expect(send).rejects.toMatchObject({ name: 'AbortError' })
+    expect(receivedSignal?.aborted).toBe(true)
+    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
+      content: 'work in progress',
+      interrupted: true,
+      role: 'assistant',
+    })
+    expect(harness.runtime.getSessionEvents('session-1').at(-1)).toMatchObject({
+      payload: { turnId: 'user-id' },
+      type: 'prompt.composed',
+    })
+    expect(harness.telemetry.messageRoundFailed).toEqual([])
+    expect(harness.telemetry.chatActivationFailed).toEqual([])
+    expect(harness.settleTurn).toHaveBeenCalledWith({
+      assistantMessage: expect.objectContaining({
+        content: 'work in progress',
+        interrupted: true,
+        role: 'assistant',
+      }),
+      assistantMessageStatus: 'interrupted',
+      sessionId: 'session-1',
+      status: 'cancelled',
+      turnId: 'user-id',
+    })
+    expect(harness.runtime.cancelActiveSend('session-1')).toBe(false)
   })
 
   /**

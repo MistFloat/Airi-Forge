@@ -108,4 +108,77 @@ describe('useMemoryLongTermStore promoteClaim', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:6123/api/v1/memory/claims/promote', expect.any(Object))
   })
+
+  it('stores the user and assistant exchange as evidence without invoking an extractor', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      assistantEvidenceId: 'evidence-assistant',
+      ok: true,
+      userEvidenceId: 'evidence-user',
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useMemoryLongTermStore()
+    store.enabled = true
+    store.connectionString = 'postgresql://airi:test@localhost:5432/airi_memory'
+    store.memoryNamespace = 'default'
+    store.instructionTokenBudget = 1200
+
+    await store.rememberTurn('session-1', 'Remember the raw question.', 'Remember the raw answer.')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:6123/api/v1/memory/remember', expect.objectContaining({
+      body: expect.stringContaining('Remember the raw answer.'),
+    }))
+  })
+
+  it('reports a remember failure so the event projection keeps its retry cursor', async () => {
+    // ROOT CAUSE:
+    //
+    // rememberTurn swallowed the gateway failure to keep chat fail-open. The
+    // detached event projector therefore observed a fulfilled adapter promise
+    // and committed memory.projected even though PostgreSQL stored nothing.
+    //
+    // Chat already isolates projection work from sending. The adapter must
+    // reject here so the projector can leave its durable cursor unchanged.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: 'PostgreSQL is unavailable' }),
+      { status: 500 },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useMemoryLongTermStore()
+    store.enabled = true
+    store.connectionString = 'postgresql://airi:test@localhost:5432/airi_memory'
+    store.memoryNamespace = 'default'
+    store.instructionTokenBudget = 1200
+
+    await expect(
+      store.rememberTurn('session-1', 'Question', 'Answer'),
+    ).rejects.toThrow('Long-term memory remember failed: 500')
+  })
+
+  it('searches evidence and long-term memory independently without an embedding provider', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ evidence: [{ content: 'Raw blue evidence', id: 'evidence-1' }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ memories: [{ content: 'Blue preference', memoryId: 'memory-1' }], total: 1 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useMemoryLongTermStore()
+    store.enabled = true
+    store.connectionString = 'postgresql://airi:test@localhost:5432/airi_memory'
+    store.memoryNamespace = 'default'
+    store.instructionTokenBudget = 1200
+
+    const evidence = await store.searchEvidenceText('blue', { limit: 4 })
+    const memories = await store.searchMemoriesText('blue', { limit: 4 })
+
+    expect(evidence).toHaveLength(1)
+    expect(memories).toHaveLength(1)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:6123/api/v1/memory/evidence/list', expect.objectContaining({
+      body: expect.stringContaining('"search":"blue"'),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:6123/api/v1/memory/list', expect.objectContaining({
+      body: expect.stringContaining('"search":"blue"'),
+    }))
+  })
 })

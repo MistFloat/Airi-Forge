@@ -6,8 +6,9 @@ describe('createMemoryMcpRuntime', () => {
   it('lets the agent explicitly persist a long-term memory', async () => {
     const saveMemory = vi.fn(async () => 'memory-1')
     const runtime = createMemoryMcpRuntime({
-      recallMemories: vi.fn(),
       saveMemory,
+      searchEvidenceText: vi.fn(),
+      searchMemoriesText: vi.fn(),
     })
 
     const result = await runtime.callTool({
@@ -33,23 +34,49 @@ describe('createMemoryMcpRuntime', () => {
     expect(result.structuredContent).toEqual({ memoryId: 'memory-1', stored: true })
   })
 
-  it('uses the configured embedding recall pipeline to search memories', async () => {
-    const recallMemories = vi.fn(async () => ({
-      memories: [{ content: 'Use concise answers.', memoryId: 'memory-1', retrievalId: 'retrieval-1', similarity: 0.91, title: 'Answer style' }],
-      trace: { candidates: [], originalText: 'answer style', retrievalId: 'retrieval-1', terms: ['answer', 'style'] },
-    }))
-    const runtime = createMemoryMcpRuntime({ recallMemories, saveMemory: vi.fn() })
+  it('searches agent-authored long-term memory by text', async () => {
+    const searchMemoriesText = vi.fn(async () => ([
+      { content: 'Use concise answers.', createdBy: 'agent', memoryId: 'memory-1', title: 'Answer style' },
+    ]))
+    const runtime = createMemoryMcpRuntime({ saveMemory: vi.fn(), searchEvidenceText: vi.fn(), searchMemoriesText })
 
     const result = await runtime.callTool({
       arguments: { limit: 3, query: 'answer style' },
-      name: 'memory::search',
+      name: 'memory::search_memories',
     })
 
-    expect(recallMemories).toHaveBeenCalledWith('answer style', { maxResults: 3 })
+    expect(searchMemoriesText).toHaveBeenCalledWith('answer style', { limit: 3 })
     expect(result.structuredContent).toEqual({
-      memories: [{ content: 'Use concise answers.', memoryId: 'memory-1', similarity: 0.91, title: 'Answer style' }],
+      memories: [{ content: 'Use concise answers.', createdBy: 'agent', memoryId: 'memory-1', title: 'Answer style' }],
       query: 'answer style',
-      retrievalId: 'retrieval-1',
     })
+  })
+
+  it('searches raw conversation evidence by text', async () => {
+    const searchEvidenceText = vi.fn(async () => ([
+      { content: 'Please use concise answers.', id: 'evidence-1', sourceRole: 'user', sourceType: 'user_assertion' },
+    ]))
+    const runtime = createMemoryMcpRuntime({ saveMemory: vi.fn(), searchEvidenceText, searchMemoriesText: vi.fn() })
+
+    const result = await runtime.callTool({
+      arguments: { limit: 4, query: 'concise' },
+      name: 'memory::search_evidence',
+    })
+
+    expect(searchEvidenceText).toHaveBeenCalledWith('concise', { limit: 4 })
+    expect(result.structuredContent).toEqual({
+      evidence: [{ content: 'Please use concise answers.', evidenceId: 'evidence-1', sourceRole: 'user', sourceType: 'user_assertion' }],
+      query: 'concise',
+    })
+  })
+
+  it('exposes exactly the three explicit memory tools', async () => {
+    const runtime = createMemoryMcpRuntime({ saveMemory: vi.fn(), searchEvidenceText: vi.fn(), searchMemoriesText: vi.fn() })
+
+    expect((await runtime.listTools()).map(tool => tool.name)).toEqual([
+      'memory::remember',
+      'memory::search_memories',
+      'memory::search_evidence',
+    ])
   })
 })

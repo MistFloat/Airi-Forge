@@ -1,24 +1,26 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useSelfPromptStore } from './self-prompt'
+import { SELF_PROMPT_WAKE_DELAY_MS, useSelfPromptStore } from './self-prompt'
 
 const storageMock = vi.hoisted(() => ({
   values: new Map<string, unknown>(),
 }))
 
+const autonomyMocks = vi.hoisted(() => ({
+  cancelSchedule: vi.fn(),
+  createSchedule: vi.fn(),
+  get: vi.fn(),
+  putGoal: vi.fn(),
+  transitionGoal: vi.fn(),
+}))
+
 vi.mock('@proj-airi/stage-shared/composables', async () => {
   const vue = await vi.importActual<typeof import('vue')>('vue')
-
   return {
     useLocalStorageManualReset: <T>(key: string, initialValue: T) => {
       const value = vue.ref((storageMock.values.has(key) ? storageMock.values.get(key) : initialValue) as T)
-
-      storageMock.values.set(key, value.value)
-      vue.watch(value, (newValue) => {
-        storageMock.values.set(key, newValue)
-      }, { flush: 'sync' })
-
+      vue.watch(value, next => storageMock.values.set(key, next), { deep: true, flush: 'sync' })
       return Object.assign(value, {
         reset: () => {
           value.value = initialValue
@@ -28,117 +30,145 @@ vi.mock('@proj-airi/stage-shared/composables', async () => {
   }
 })
 
-// memory-long-term is only touched when configured; stub it so the store can be
-// imported without wiring up PostgreSQL/embedding backends.
-const longTermMock = vi.hoisted(() => ({
-  configured: false,
-  saveMemory: vi.fn(),
-}))
-
-const selfPromptRepoMocks = vi.hoisted(() => ({
-  markDiscarded: vi.fn().mockResolvedValue(undefined),
-  markFailed: vi.fn().mockResolvedValue(undefined),
-  markSent: vi.fn().mockResolvedValue(undefined),
-  save: vi.fn().mockResolvedValue(undefined),
-}))
-
-vi.mock('../../composables/use-duck-db', () => ({
-  useDuckDb: () => ({
-    getDb: vi.fn().mockResolvedValue({ value: {} }),
-  }),
-}))
-
-vi.mock('../../database/repos/self-prompt.repo', () => ({
-  createSelfPromptRepo: () => selfPromptRepoMocks,
-}))
-
-vi.mock('./memory-long-term', () => ({
-  useMemoryLongTermStore: () => longTermMock,
+vi.mock('../chat-autonomy', () => ({
+  cancelChatSchedule: autonomyMocks.cancelSchedule,
+  createChatSchedule: autonomyMocks.createSchedule,
+  getChatAutonomy: autonomyMocks.get,
+  hasChatAutonomyTransport: () => true,
+  putChatGoal: autonomyMocks.putGoal,
+  transitionChatGoal: autonomyMocks.transitionGoal,
 }))
 
 describe('useSelfPromptStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     storageMock.values.clear()
-    longTermMock.configured = false
-    longTermMock.saveMemory.mockReset()
-    for (const repoMock of Object.values(selfPromptRepoMocks))
-      repoMock.mockClear()
+    for (const mock of Object.values(autonomyMocks))
+      mock.mockReset()
+
+    autonomyMocks.putGoal.mockResolvedValue({
+      createdAt: 100,
+      id: 'goal-1',
+      maxRounds: 8,
+      objective: 'continue',
+      phase: 'active',
+      revision: 1,
+      rounds: 0,
+      source: 'self-prompt',
+      updatedAt: 100,
+    })
+    autonomyMocks.createSchedule.mockImplementation(async input => ({
+      afterMs: input.afterMs,
+      createdAt: 100,
+      goal: input.goal,
+      id: input.id,
+      kind: input.kind,
+      prompt: input.prompt,
+      revision: 1,
+      scheduledAt: 100 + input.afterMs,
+      state: 'scheduled',
+      updatedAt: 100,
+    }))
+    autonomyMocks.cancelSchedule.mockResolvedValue({ state: 'cancelled' })
+    autonomyMocks.get.mockResolvedValue({ schedules: [], tasks: [], workflows: [] })
   })
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('captures a self prompt into the single-slot pending channel', async () => {
+  it('converts a captured Self Prompt into a Goal and durable after Schedule', async () => {
     const store = useSelfPromptStore()
-
-    expect(store.hasPending).toBe(false)
-
-    await store.captureSelfPrompt({
-      prompt: '我想去查一下量子纠缠的最新进展',
+    const record = await store.captureSelfPrompt({
+      prompt: '继续调查量子纠缠',
       sessionId: 'session-1',
-      sourceText: '正文\n// 我想去查一下量子纠缠的最新进展',
+      sourceText: '正文\n// 继续调查量子纠缠',
     })
 
-    expect(store.hasPending).toBe(true)
-    expect(store.pendingPrompt?.prompt).toBe('我想去查一下量子纠缠的最新进展')
-    expect(store.pendingPrompt?.sessionId).toBe('session-1')
-    expect(selfPromptRepoMocks.save).toHaveBeenCalledWith(expect.objectContaining({
-      deliveryStatus: 'pending',
-      prompt: '我想去查一下量子纠缠的最新进展',
+    expect(autonomyMocks.putGoal).toHaveBeenCalledWith(expect.objectContaining({
+      objective: '继续调查量子纠缠',
       sessionId: 'session-1',
+      source: 'self-prompt',
     }))
+    expect(autonomyMocks.createSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      afterMs: SELF_PROMPT_WAKE_DELAY_MS,
+      goal: { id: 'goal-1', revision: 1 },
+      kind: 'after',
+      prompt: '继续调查量子纠缠',
+    }))
+    expect(record.scheduleId).toMatch(/^schedule:/)
+    expect(store.pendingPrompt?.goalId).toBe('goal-1')
+    expect(store.pendingPrompt?.scheduledAt).toBe(100 + SELF_PROMPT_WAKE_DELAY_MS)
   })
 
-  it('replaces the previous pending prompt (single-slot, bounded queue)', async () => {
+  it('cancels the replaced schedule while retaining a bounded UI slot', async () => {
     const store = useSelfPromptStore()
-
     await store.captureSelfPrompt({ prompt: '第一句', sessionId: 's', sourceText: 'a' })
-    const firstId = store.pendingPrompt?.id
+    const firstScheduleId = store.pendingPrompt?.scheduleId
     await store.captureSelfPrompt({ prompt: '第二句', sessionId: 's', sourceText: 'b' })
 
+    expect(autonomyMocks.cancelSchedule).toHaveBeenCalledWith({
+      scheduleId: firstScheduleId,
+      sessionId: 's',
+    })
     expect(store.pendingPrompt?.prompt).toBe('第二句')
-    expect(selfPromptRepoMocks.markDiscarded).toHaveBeenCalledWith(firstId, expect.any(Number))
   })
 
-  it('consumePending drains the slot and returns the record', async () => {
+  it('clears the cache, cancels its Schedule, and completes the matching Goal', async () => {
     const store = useSelfPromptStore()
+    await store.captureSelfPrompt({ prompt: '用户决定停止', sessionId: 's', sourceText: 'x' })
+    autonomyMocks.get.mockResolvedValue({
+      goal: {
+        id: 'goal-1',
+        phase: 'active',
+        revision: 1,
+      },
+      schedules: [],
+      tasks: [],
+      workflows: [],
+    })
 
-    await store.captureSelfPrompt({ prompt: '要消费的一句', sessionId: 's', sourceText: 'x' })
-
-    const consumed = store.consumePending()
-    expect(consumed?.prompt).toBe('要消费的一句')
-    expect(store.hasPending).toBe(false)
-    expect(store.consumePending()).toBeNull()
-  })
-
-  it('clears a pending prompt without consuming it as a turn', async () => {
-    const store = useSelfPromptStore()
-
-    await store.captureSelfPrompt({ prompt: '用户决定不发送', sessionId: 's', sourceText: 'x' })
     await store.clearPending()
 
-    expect(store.hasPending).toBe(false)
     expect(store.pendingPrompt).toBeNull()
-    expect(selfPromptRepoMocks.markDiscarded).toHaveBeenCalledWith(expect.any(String), expect.any(Number))
+    expect(autonomyMocks.cancelSchedule).toHaveBeenCalledTimes(1)
+    expect(autonomyMocks.transitionGoal).toHaveBeenCalledWith({
+      goalId: 'goal-1',
+      revision: 1,
+      sessionId: 's',
+      transition: 'complete',
+    })
   })
 
-  it('marks a successfully delivered prompt as sent', async () => {
+  it('restores the UI slot from event-derived Schedule state after refresh', async () => {
+    autonomyMocks.get.mockResolvedValue({
+      goal: { id: 'goal-restored', sourceText: 'original reply' },
+      schedules: [{
+        createdAt: 200,
+        goal: { id: 'goal-restored', revision: 3 },
+        id: 'schedule-restored',
+        kind: 'after',
+        prompt: 'resume this',
+        revision: 2,
+        scheduledAt: 45_200,
+        state: 'pending',
+        updatedAt: 201,
+      }],
+      tasks: [],
+      workflows: [],
+    })
     const store = useSelfPromptStore()
-    await store.captureSelfPrompt({ prompt: '已经发送', sessionId: 's', sourceText: 'x' })
-    const pending = store.consumePending()
-    if (!pending)
-      throw new Error('Expected a pending prompt')
 
-    await store.markSent(pending.id)
+    await store.restoreFromAutonomy('session-1')
 
-    expect(selfPromptRepoMocks.markSent).toHaveBeenCalledWith(pending.id, expect.any(Number))
+    expect(store.pendingPrompt).toMatchObject({
+      goalId: 'goal-restored',
+      goalRevision: 3,
+      prompt: 'resume this',
+      scheduleId: 'schedule-restored',
+      sessionId: 'session-1',
+    })
   })
 
-  it('keeps a failed prompt pending and records its last error', async () => {
+  it('keeps a failed delivery available for an explicit retry', async () => {
     const store = useSelfPromptStore()
-    await store.captureSelfPrompt({ prompt: '发送失败', sessionId: 's', sourceText: 'x' })
+    await store.captureSelfPrompt({ prompt: 'retry me', sessionId: 's', sourceText: 'x' })
     const pending = store.consumePending()
     if (!pending)
       throw new Error('Expected a pending prompt')
@@ -146,39 +176,5 @@ describe('useSelfPromptStore', () => {
     await store.restoreFailed(pending, 'provider unavailable')
 
     expect(store.pendingPrompt?.id).toBe(pending.id)
-    expect(selfPromptRepoMocks.markFailed).toHaveBeenCalledWith(pending.id, 'provider unavailable')
-  })
-
-  it('persists a best-effort copy to long-term memory when configured', async () => {
-    longTermMock.configured = true
-    longTermMock.saveMemory.mockResolvedValue(undefined)
-    const store = useSelfPromptStore()
-
-    await store.captureSelfPrompt({
-      prompt: '值得记住的问题',
-      sessionId: 's',
-      sourceText: '正文',
-    })
-
-    expect(longTermMock.saveMemory).toHaveBeenCalledTimes(1)
-    const arg = longTermMock.saveMemory.mock.calls[0][0]
-    expect(arg.content).toBe('值得记住的问题')
-    expect(arg.tags).toContain('self-prompt')
-    // The local slot stays the source of truth even when the durable copy is written.
-    expect(store.hasPending).toBe(true)
-  })
-
-  it('fails open when long-term memory persistence throws', async () => {
-    longTermMock.configured = true
-    longTermMock.saveMemory.mockRejectedValue(new Error('db down'))
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    const store = useSelfPromptStore()
-    await store.captureSelfPrompt({ prompt: '即使记忆库挂了也要保留', sessionId: 's', sourceText: '正文' })
-
-    expect(store.pendingPrompt?.prompt).toBe('即使记忆库挂了也要保留')
-    expect(warnSpy).toHaveBeenCalled()
-
-    warnSpy.mockRestore()
   })
 })

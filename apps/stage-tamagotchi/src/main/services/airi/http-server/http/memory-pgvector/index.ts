@@ -283,7 +283,10 @@ export async function createPgvectorMemoryServer(): Promise<{
     try {
       const body = await payloadFor(event)
       const status = body.status === 'active' || body.status === 'archived' ? body.status : 'all'
-      const evidence = await storeFor(body).listEvidence(requiredString(body.namespace, 'namespace'), Number(body.limit) || 50, Number(body.offset) || 0, { status })
+      const evidence = await storeFor(body).listEvidence(requiredString(body.namespace, 'namespace'), Number(body.limit) || 50, Number(body.offset) || 0, {
+        search: optionalString(body.search),
+        status,
+      })
       return { evidence }
     }
     catch (error) {
@@ -796,7 +799,7 @@ function memoryRecord(body: MemoryPayload): PgvectorMemoryRecord {
     createdBy: optionalString(body.createdBy) ?? 'user',
     effectiveFrom: optionalString(body.effectiveFrom),
     effectiveUntil: optionalString(body.effectiveUntil),
-    embedding: body.kind === 'instruction' ? undefined : parseEmbedding(body.embedding),
+    embedding: body.kind === 'instruction' ? undefined : optionalEmbedding(body.embedding),
     embeddingModel: optionalString(body.embeddingModel) ?? '',
     embeddingProvider: optionalString(body.embeddingProvider) ?? '',
     importance: score(body.importance, 0.5),
@@ -819,6 +822,10 @@ function memoryRecord(body: MemoryPayload): PgvectorMemoryRecord {
 
 function memoryStatus(value: unknown): MemoryStatus {
   return typeof value === 'string' && MEMORY_STATUSES.has(value as MemoryStatus) ? value as MemoryStatus : 'active'
+}
+
+function optionalEmbedding(value: unknown): number[] | undefined {
+  return value === undefined ? undefined : parseEmbedding(value)
 }
 
 function optionalString(value: unknown): string | undefined {

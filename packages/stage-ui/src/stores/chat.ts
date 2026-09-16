@@ -1,19 +1,59 @@
-import type { ChatOrchestratorRuntimeState, ChatOrchestratorSendOptions, StreamEvent, StreamOptions } from '@proj-airi/core-agent'
+import type {
+  AgentScheduleDueNotice,
+  AgentScheduleGoalRef,
+  AgentToolExecutionProjection,
+  AgentTurnCancellationReason,
+  AgentUnfinishedSelfTurnProjection,
+  ChatOrchestratorRuntimeState,
+  ChatOrchestratorSendOptions,
+  StreamEvent,
+  StreamOptions,
+} from '@proj-airi/core-agent'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 import type { Message } from '@xsai/shared-chat'
 
 import type { ChatHistoryItem } from '../types/chat'
+import type { PendingSelfPrompt } from './modules/self-prompt'
 
 import { errorMessageFrom } from '@moeru/std'
-import { createChatOrchestratorRuntime } from '@proj-airi/core-agent'
+import {
+  createChatOrchestratorRuntime,
+  projectSessionMessages,
+  projectUnfinishedSelfTurns,
+  projectUnsettledToolExecutions,
+} from '@proj-airi/core-agent'
 import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
-import { computed, shallowRef, toRaw, watch } from 'vue'
+import { computed, onScopeDispose, shallowRef, toRaw, watch } from 'vue'
 
 import { useAnalytics } from '../composables'
 import { activeTurnSpan, startSpan } from '../composables/use-io-tracer'
 import { extractMessageText, isCloudSyncableMessage } from '../libs/chat-sync'
+import { resolveChatAutonomousTools } from './chat-autonomous-tools'
+import {
+  claimChatSchedule,
+  getChatAutonomy,
+  settleChatSchedule,
+  transitionChatGoal,
+} from './chat-autonomy'
+import { projectChatMemoryFromEvents } from './chat-memory-projection'
+import {
+  createChatSessionEventPort,
+  createImportedMessageEvents,
+  importChatSessionMessages,
+  readChatSessionEvents,
+} from './chat-session-events'
+import { createChatToolExecutionControlPort } from './chat-tool-executions'
+import {
+  acknowledgeChatTurnRecovery,
+  configureChatTurnCancellationHandler,
+  createChatTurnControlPort,
+  listChatTurns,
+  readChatTurnStatus,
+  requestChatTurnCancellation,
+} from './chat-turn-control'
+import { recoverInterruptedChatTurns } from './chat-turn-recovery'
 import { createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
 import { useChatSessionStore } from './chat/session-store'
@@ -25,7 +65,6 @@ import { useAiriCardStore } from './modules/airi-card'
 import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
 import { useInstructionStore } from './modules/instruction-store'
-import { useMemoryLongTermStore } from './modules/memory-long-term'
 import { useMemoryShortTermStore } from './modules/memory-short-term'
 import { useSelfPromptStore } from './modules/self-prompt'
 import { useProviderMaxTokensStore } from './provider-max-tokens'
@@ -58,7 +97,6 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const llmToolsetPromptsStore = useLlmToolsetPromptsStore()
   const consciousnessStore = useConsciousnessStore()
   const artistryAutonomousStore = useAutonomousArtistryStore()
-  const longTermMemoryStore = useMemoryLongTermStore()
   const shortTermMemoryStore = useMemoryShortTermStore()
   const instructionStore = useInstructionStore()
   const providersStore = useProvidersStore()
@@ -88,13 +126,15 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const chatContext = useChatContextStore()
   const cardStore = useAiriCardStore()
   const contextObservability = useContextObservabilityStore()
-  const { activeSessionId } = storeToRefs(chatSession)
+  const { activeSessionId, ready: chatSessionReady } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
 
   const sending = shallowRef(false)
   const pendingQueuedSendCount = shallowRef(0)
   const selfTurnActive = shallowRef(false)
   const lastTurnOutputTokens = shallowRef<number>()
+  const unfinishedSelfTurns = shallowRef<AgentUnfinishedSelfTurnProjection[]>([])
+  const unsettledToolExecutions = shallowRef<AgentToolExecutionProjection[]>([])
   let ownedActiveTurnSpan: typeof activeTurnSpan.value
 
   async function streamWithStageAdapters(
@@ -165,6 +205,15 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     ownedActiveTurnSpan = undefined
   }
 
+  function scheduleMemoryProjection(sessionId: string) {
+    void projectChatMemoryFromEvents(sessionId).catch((error) => {
+      // The session log remains authoritative. A failed adapter or cursor
+      // commit is retried from the last successful projection on activation
+      // or after the next settled turn.
+      console.warn(`Failed to project Agent session memory for ${sessionId}:`, error)
+    })
+  }
+
   /**
    * Classifies configured chat providers into low-cardinality product analytics buckets.
    */
@@ -227,33 +276,8 @@ The application hides that final line from the user and may revisit it later. Us
     },
     memory: {
       async recall(sessionId, query) {
-        const prompts = await Promise.allSettled([
-          shortTermMemoryStore.recallPrompt(sessionId),
-          longTermMemoryStore.recallPrompt(sessionId, query),
-        ])
-        return prompts
-          .filter((result): result is PromiseFulfilledResult<string | undefined> => result.status === 'fulfilled')
-          .map(result => result.value?.trim())
-          .filter((value): value is string => !!value)
-          .join('\n\n') || undefined
-      },
-      async rememberTurn(turn) {
-        const results = await Promise.allSettled([
-          shortTermMemoryStore.rememberTurn(turn.sessionId, turn.userText, turn.assistantText),
-          longTermMemoryStore.rememberTurn(turn.sessionId, turn.userText, turn.assistantText),
-        ])
-        const longTermResult = results[1]
-        if (longTermResult?.status === 'rejected') {
-          // NOTICE:
-          // Long-term memory persistence is OPTIONAL — the chat flow must never
-          // die because the database or gateway is unavailable. Previously this
-          // re-threw the rejection "for diagnostics", but when PostgreSQL is
-          // persistently down, every turn's rememberTurn rejects, the re-throw
-          // aborts the orchestrator's turn, and the conversation dies.
-          // The memory store's circuit breaker already logs a warning when it
-          // opens; this boundary captures the rejection for observability only.
-          console.warn('Long-term memory rememberTurn rejected (fail-open):', longTermResult.reason)
-        }
+        void query
+        return await shortTermMemoryStore.recallPrompt(sessionId)
       },
     },
     onAssistantMessageAppended: ({ message, sessionId }) => {
@@ -369,7 +393,11 @@ The application hides that final line from the user and may revisit it later. Us
       // already isolated inside the store — this must never break the turn.
       void selfPromptStore.captureSelfPrompt({ prompt, sessionId, sourceText })
     },
-    onSendSettled: settleOwnedActiveTurnSpan,
+    onSendSettled: ({ sessionId }) => {
+      settleOwnedActiveTurnSpan()
+      scheduleMemoryProjection(sessionId)
+      void refreshUnfinishedSelfTurns(sessionId)
+    },
     onStateChange: syncRuntimeState,
     onTrackFirstMessage: trackFirstMessage,
     onUserMessageAppended: ({ message, messageText, model, provider, roundId, sessionId, source, turnIndex }) => {
@@ -420,16 +448,105 @@ The application hides that final line from the user and may revisit it later. Us
       getSessionGeneration: sessionId => chatSession.getSessionGeneration(sessionId),
       getSessionMessages: sessionId => chatSession.getSessionMessages(sessionId).map(message => toRaw(message)),
     },
+    sessionEvents: createChatSessionEventPort(),
+    toolExecutionControl: createChatToolExecutionControlPort(),
+    turnControl: createChatTurnControlPort(),
     unwrapMessage: message => toRaw(message),
   })
 
-  // --- Self-wake: autonomous internal turn after a quiet round ---
-  // When a round settles and AIRI left a pending self prompt (the trailing
-  // `//` line), wait a grace period in case the user keeps typing. If the
-  // conversation stays quiet, feed the prompt back as an internal `self` turn.
-  const SELF_WAKE_IDLE_MS = 45_000
-  let selfWakeTimer: ReturnType<typeof setTimeout> | undefined
-  const selfWakeDeadline = shallowRef<number>()
+  const disposeTurnCancellationHandler = configureChatTurnCancellationHandler((notice) => {
+    const activeTurn = runtime.getActiveTurn()
+    if (activeTurn?.sessionId === notice.sessionId && activeTurn.turnId === notice.turnId)
+      runtime.cancelActiveTurn(notice.turnId)
+  })
+  onScopeDispose(disposeTurnCancellationHandler)
+
+  async function reconcileSessionMessagesFromEvents(sessionId: string) {
+    const events = await readChatSessionEvents({ sessionId }, runtime.getSessionEvents(sessionId))
+    const projected = projectSessionMessages(events)
+    if (projected.length === 0)
+      return
+
+    const projectedById = new Map(projected.flatMap(message => message.id ? [[message.id, message] as const] : []))
+    const used = new Set<string>()
+    const current = chatSession.getSessionMessages(sessionId)
+    const reconciled = current.map((message) => {
+      if (!message.id)
+        return message
+      const replacement = projectedById.get(message.id)
+      if (!replacement)
+        return message
+      used.add(message.id)
+      return replacement
+    })
+    for (const message of projected) {
+      if (!message.id || !used.has(message.id))
+        reconciled.push(message)
+    }
+    chatSession.setSessionMessages(sessionId, reconciled)
+  }
+
+  watch([activeSessionId, chatSessionReady], async ([sessionId, ready], _previous, onCleanup) => {
+    if (!sessionId || !ready)
+      return
+
+    let stale = false
+    onCleanup(() => {
+      stale = true
+    })
+
+    await chatSession.loadSession(sessionId)
+    if (stale || !chatSession.isSessionLoaded(sessionId))
+      return
+
+    const existingEvents = await readChatSessionEvents({ sessionId }, runtime.getSessionEvents(sessionId))
+    // IndexedDB is only a bootstrap source for sessions that have never had
+    // authoritative message events. Re-importing a compacted session would
+    // otherwise recreate its archived history on every renderer startup.
+    if (!existingEvents.some(event => event.type === 'message.appended')) {
+      await importChatSessionMessages(createImportedMessageEvents(
+        sessionId,
+        chatSession.getSessionMessages(sessionId).map(message => toRaw(message)),
+        'import',
+      ))
+    }
+    if (stale)
+      return
+
+    await reconcileSessionMessagesFromEvents(sessionId)
+    if (stale)
+      return
+
+    try {
+      await recoverInterruptedChatTurns(sessionId, {
+        acknowledge: acknowledgeChatTurnRecovery,
+        append: (targetSessionId, message) => chatSession.appendSessionMessageDurably(targetSessionId, message),
+        getMessages: targetSessionId => chatSession.getSessionMessages(targetSessionId),
+        list: listChatTurns,
+        onRecovered: async (message) => {
+          const isAuthoredMessage = message.role === 'assistant' || message.role === 'user'
+          if (isAuthoredMessage && isCloudSyncableMessage(message) && message.id) {
+            await chatSession.pushMessageToCloud(sessionId, {
+              content: extractMessageText(message),
+              id: message.id,
+              role: message.role,
+            })
+          }
+        },
+        shouldContinue: () => !stale,
+      })
+    }
+    catch (error) {
+      // Leave the main-process recovery record unacknowledged so a later
+      // session activation can retry after transient IndexedDB/IPC failures.
+      console.error(`Failed to recover interrupted Agent turns for session ${sessionId}:`, error)
+    }
+  }, { immediate: true })
+
+  // The renderer exposes Schedule state but owns no wake timer. Electron main
+  // persists and drives after/at/every rules, then redelivers a due occurrence
+  // until the chat authority atomically claims it.
+  const selfWakeDeadline = computed(() => selfPromptStore.pendingPrompt?.scheduledAt)
   const selfWakeLastError = shallowRef<string>()
 
   const selfWakeStatus = computed<SelfPromptLoopStatus>(() => {
@@ -448,41 +565,28 @@ The application hides that final line from the user and may revisit it later. Us
     return 'ready'
   })
 
-  function clearSelfWakeTimer() {
-    if (selfWakeTimer) {
-      clearTimeout(selfWakeTimer)
-      selfWakeTimer = undefined
-    }
-    selfWakeDeadline.value = undefined
+  /** Replaces the durable wake rule with a fresh 45-second `after` schedule. */
+  async function restartSelfWakeCountdown() {
+    selfWakeLastError.value = undefined
+    await selfPromptStore.restartWake()
   }
 
-  function scheduleSelfWake() {
-    if (selfWakeTimer)
-      return
-    selfWakeDeadline.value = Date.now() + SELF_WAKE_IDLE_MS
-    selfWakeTimer = setTimeout(() => {
-      selfWakeTimer = undefined
-      selfWakeDeadline.value = undefined
-      void runSelfTurn()
-    }, SELF_WAKE_IDLE_MS)
-  }
-
-  /** Restarts the automatic-send grace period for the current pending prompt. */
-  function restartSelfWakeCountdown() {
-    clearSelfWakeTimer()
-    if (!sending.value && !selfTurnActive.value && selfPromptStore.hasPending && activeProvider.value && activeModel.value)
-      scheduleSelfWake()
-  }
-
-  /** Sends the current self prompt immediately through the same internal-turn path as the timer. */
+  /** Sends the current self prompt immediately through the ordinary self-turn path. */
   async function sendSelfPromptNow() {
-    clearSelfWakeTimer()
-    await runSelfTurn()
+    const pending = selfPromptStore.pendingPrompt
+    if (!pending)
+      return
+    await selfPromptStore.cancelWake(pending)
+    const goal = await admitManualGoalRound(pending)
+    const completed = await runSelfTurn(undefined, pending)
+    if (completed)
+      await completeGoalIfCurrent(pending.sessionId, goal)
+    else
+      await blockGoalIfCurrent(pending.sessionId, goal, selfWakeLastError.value)
   }
 
-  /** Discards the current self prompt and cancels its automatic-send timer. */
+  /** Discards the current self prompt and cancels its durable schedule. */
   async function discardSelfPrompt() {
-    clearSelfWakeTimer()
     selfWakeLastError.value = undefined
     await selfPromptStore.clearPending()
   }
@@ -492,20 +596,14 @@ The application hides that final line from the user and may revisit it later. Us
       runtime.setSending(next)
   })
 
-  // Scheduling depends on every state that can make an autonomous turn safe.
-  // Watching the pending slot also restores a persisted prompt after startup;
-  // watching selfTurnActive re-arms the next turn after the previous one settles.
-  watch([
-    sending,
-    selfTurnActive,
-    () => selfPromptStore.hasPending,
-    activeProvider,
-    activeModel,
-  ], ([isSending, isSelfTurn, hasPending, providerId, modelId]) => {
-    if (!isSending && !isSelfTurn && hasPending && providerId && modelId)
-      scheduleSelfWake()
-    else
-      clearSelfWakeTimer()
+  watch([activeSessionId, chatSessionReady], ([sessionId, ready]) => {
+    if (!ready || !sessionId)
+      return
+    void selfPromptStore.restoreFromAutonomy(sessionId).catch((error) => {
+      console.warn(`Failed to restore Self Prompt autonomy for session ${sessionId}:`, error)
+    })
+    scheduleMemoryProjection(sessionId)
+    void refreshUnfinishedSelfTurns(sessionId)
   }, { immediate: true })
 
   async function ingest(
@@ -514,6 +612,34 @@ The application hides that final line from the user and may revisit it later. Us
     targetSessionId?: string,
   ) {
     return runtime.ingest(sendingMessage, options, targetSessionId)
+  }
+
+  /** Continues one interrupted self turn as a new, explicitly linked execution. */
+  async function resumeUnfinishedSelfTurn(turnId: string) {
+    const thought = unfinishedSelfTurns.value.find(item => item.turnId === turnId && item.state === 'open')
+    if (!thought)
+      throw new Error(`Unfinished self turn ${turnId} is unavailable or already resumed`)
+    const providerId = activeProvider.value
+    const modelId = activeModel.value
+    if (!providerId || !modelId)
+      throw new Error('Chat provider and model must be configured before resuming self-directed work')
+
+    const chatProvider = await providersStore.getProviderInstance(providerId) as ChatProvider
+    if (!chatProvider)
+      throw new Error(`Failed to resolve chat provider instance for: ${providerId}`)
+
+    await runtime.ingest(thought.text, {
+      chatProvider,
+      model: modelId,
+      providerConfig: {
+        ...providersStore.getProviderConfig(providerId),
+        maxTokens: providerMaxTokensStore.getProviderMaxTokens(providerId),
+      },
+      resumesTurnId: thought.turnId,
+      source: 'self',
+      tools: resolveChatAutonomousTools,
+    }, thought.sessionId)
+    await refreshUnfinishedSelfTurns(thought.sessionId)
   }
 
   async function ingestOnFork(
@@ -542,19 +668,21 @@ The application hides that final line from the user and may revisit it later. Us
    * If the turn cannot start, the pending record is retained; on failure it is
    * restored.
    */
-  async function runSelfTurn(targetSessionId?: string) {
+  async function runSelfTurn(targetSessionId?: string, supplied?: PendingSelfPrompt): Promise<boolean> {
     if (selfTurnActive.value || sending.value)
-      return
-    const pending = selfPromptStore.consumePending()
+      return false
+    const pending = supplied ?? selfPromptStore.pendingPrompt
     if (!pending)
-      return
+      return false
+    selfPromptStore.consumePending(pending.scheduleId)
 
     const providerId = activeProvider.value
     const modelId = activeModel.value
     if (!providerId || !modelId) {
       // Missing LLM config — put the prompt back so it is not lost.
       selfPromptStore.restorePending(pending)
-      return
+      selfWakeLastError.value = !providerId ? 'Chat provider is not configured' : 'Chat model is not configured'
+      return false
     }
 
     selfTurnActive.value = true
@@ -572,8 +700,9 @@ The application hides that final line from the user and may revisit it later. Us
           maxTokens: providerMaxTokensStore.getProviderMaxTokens(providerId),
         },
         source: 'self',
+        tools: resolveChatAutonomousTools,
       }, targetSessionId ?? pending.sessionId)
-      await selfPromptStore.markSent(pending.id)
+      return true
     }
     catch (error) {
       console.error('Self turn failed; restoring pending prompt:', error)
@@ -581,21 +710,153 @@ The application hides that final line from the user and may revisit it later. Us
       selfWakeLastError.value = message
       // Keep the prompt pending so the normal quiet-period scheduler can retry.
       await selfPromptStore.restoreFailed(pending, message)
+      return false
     }
     finally {
       selfTurnActive.value = false
     }
   }
 
+  /** Claims and executes one persisted due occurrence as an ordinary chat turn. */
+  async function handleScheduleDue(notice: AgentScheduleDueNotice) {
+    if (selfTurnActive.value || sending.value)
+      return
+
+    const schedule = await claimChatSchedule(notice)
+    if (!schedule || !schedule.dispatchId)
+      return
+
+    const cached = selfPromptStore.pendingPrompt?.scheduleId === schedule.id
+      ? selfPromptStore.pendingPrompt
+      : undefined
+    const pending: PendingSelfPrompt = cached ?? {
+      capturedAt: new Date(schedule.createdAt).toISOString(),
+      createdAt: schedule.createdAt,
+      goalId: schedule.goal?.id,
+      goalRevision: schedule.goal?.revision,
+      id: `schedule:${schedule.id}`,
+      prompt: schedule.prompt,
+      scheduledAt: schedule.scheduledAt,
+      scheduleId: schedule.id,
+      sessionId: notice.sessionId,
+      sourceText: '',
+    }
+    const completed = await runSelfTurn(notice.sessionId, pending)
+    const error = selfWakeLastError.value ?? 'Scheduled self turn could not start'
+
+    await settleChatSchedule({
+      dispatchId: schedule.dispatchId,
+      ...(completed ? {} : { error }),
+      scheduleId: schedule.id,
+      sessionId: notice.sessionId,
+      status: completed ? 'completed' : 'failed',
+    })
+    if (completed)
+      await completeGoalIfCurrent(notice.sessionId, schedule.goal)
+    else
+      await blockGoalIfCurrent(notice.sessionId, schedule.goal, error)
+  }
+
+  async function admitManualGoalRound(pending: PendingSelfPrompt): Promise<AgentScheduleGoalRef | undefined> {
+    let goal = (await getChatAutonomy({ sessionId: pending.sessionId })).goal
+    if (!goal || (pending.goalId && goal.id !== pending.goalId))
+      return undefined
+    if (goal.phase === 'paused' || goal.phase === 'blocked') {
+      goal = await transitionChatGoal({
+        goalId: goal.id,
+        revision: goal.revision,
+        sessionId: pending.sessionId,
+        transition: 'resume',
+      })
+    }
+    if (goal.phase !== 'active' || goal.rounds >= goal.maxRounds)
+      throw new Error(`Goal ${goal.id} cannot admit another self-directed round`)
+    goal = await transitionChatGoal({
+      goalId: goal.id,
+      revision: goal.revision,
+      sessionId: pending.sessionId,
+      transition: 'round',
+    })
+    return { id: goal.id, revision: goal.revision }
+  }
+
+  async function completeGoalIfCurrent(sessionId: string, expected?: AgentScheduleGoalRef) {
+    if (!expected)
+      return
+    const goal = (await getChatAutonomy({ sessionId })).goal
+    if (!goal || goal.id !== expected.id || goal.revision !== expected.revision || goal.phase === 'complete')
+      return
+    await transitionChatGoal({
+      goalId: goal.id,
+      revision: goal.revision,
+      sessionId,
+      transition: 'complete',
+    })
+  }
+
+  async function blockGoalIfCurrent(sessionId: string, expected: AgentScheduleGoalRef | undefined, message?: string) {
+    if (!expected)
+      return
+    const goal = (await getChatAutonomy({ sessionId })).goal
+    if (!goal || goal.id !== expected.id || goal.revision !== expected.revision || goal.phase !== 'active')
+      return
+    await transitionChatGoal({
+      blockedReason: {
+        code: 'scheduled-turn-failed',
+        message: message ?? 'Scheduled continuation failed',
+      },
+      goalId: goal.id,
+      revision: goal.revision,
+      sessionId,
+      transition: 'block',
+    })
+  }
+
   function cancelPendingSends(sessionId?: string) {
     runtime.cancelPendingSends(sessionId)
+  }
+
+  function cancelActiveSend(sessionId?: string, reason: AgentTurnCancellationReason = 'user') {
+    const activeTurn = runtime.getActiveTurn()
+    if (activeTurn && (!sessionId || activeTurn.sessionId === sessionId)) {
+      void requestChatTurnCancellation({
+        reason,
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+      })
+    }
+    return runtime.cancelActiveSend(sessionId)
   }
 
   function getPendingQueuedSendSnapshot() {
     return runtime.getPendingQueuedSendSnapshot()
   }
 
+  function getSessionEvents(sessionId: string, afterSequence?: number) {
+    return readChatSessionEvents(
+      { afterSequence, sessionId },
+      runtime.getSessionEvents(sessionId, afterSequence),
+    )
+  }
+
+  function getTurnStatus(sessionId: string, turnId?: string) {
+    return readChatTurnStatus({ sessionId, turnId })
+  }
+
+  function getRecoverableTurns(sessionId?: string) {
+    return listChatTurns({ recoverableOnly: true, sessionId })
+  }
+
+  async function refreshUnfinishedSelfTurns(sessionId: string) {
+    const events = await readChatSessionEvents({ sessionId }, runtime.getSessionEvents(sessionId))
+    if (activeSessionId.value === sessionId) {
+      unfinishedSelfTurns.value = projectUnfinishedSelfTurns(events)
+      unsettledToolExecutions.value = projectUnsettledToolExecutions(events)
+    }
+  }
+
   return {
+    cancelActiveSend,
     cancelPendingSends,
     clearHooks: runtime.hooks.clearHooks,
 
@@ -613,6 +874,10 @@ The application hides that final line from the user and may revisit it later. Us
     emitTokenLiteralHooks: runtime.hooks.emitTokenLiteralHooks,
     emitTokenSpecialHooks: runtime.hooks.emitTokenSpecialHooks,
     getPendingQueuedSendSnapshot,
+    getRecoverableTurns,
+    getSessionEvents,
+    getTurnStatus,
+    handleScheduleDue,
     ingest,
     ingestOnFork,
     lastTurnOutputTokens,
@@ -629,6 +894,7 @@ The application hides that final line from the user and may revisit it later. Us
     onTokenSpecial: runtime.hooks.onTokenSpecial,
     pendingQueuedSendCount,
     restartSelfWakeCountdown,
+    resumeUnfinishedSelfTurn,
     runSelfTurn,
     selfTurnActive,
     selfWakeDeadline,
@@ -636,5 +902,7 @@ The application hides that final line from the user and may revisit it later. Us
     selfWakeStatus,
     sending,
     sendSelfPromptNow,
+    unfinishedSelfTurns,
+    unsettledToolExecutions,
   }
 })

@@ -25,6 +25,7 @@ import {
 import { SERVER_URL } from '../../libs/server'
 import { capturePosthogEvent } from '../analytics/posthog'
 import { useAuthStore } from '../auth'
+import { createImportedMessageEvents, importChatSessionMessages } from '../chat-session-events'
 import { useAiriCardStore } from '../modules/airi-card'
 import { mergeLoadedSessionMessages } from './session-message-merge'
 
@@ -263,6 +264,21 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       ...(sessionMessages.value[sessionId] ?? []),
       message,
     ])
+  }
+
+  /**
+   * Appends one message and waits until its session snapshot is durable.
+   *
+   * Recovery flows use this barrier before acknowledging main-process state;
+   * ordinary streaming completion can keep using the non-blocking append API.
+   */
+  async function appendSessionMessageDurably(sessionId: string, message: ChatHistoryItem) {
+    ensureSession(sessionId)
+    replaceSessionMessages(sessionId, [
+      ...(sessionMessages.value[sessionId] ?? []),
+      message,
+    ], { persist: false })
+    await persistSession(sessionId)
   }
 
   /**
@@ -608,7 +624,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
    *
    * Persistence is queued through the existing `persistSession` pipeline.
    */
-  function mergeCloudMessagesIntoSession(sessionId: string, payload: CloudMergePayload) {
+  async function mergeCloudMessagesIntoSession(sessionId: string, payload: CloudMergePayload) {
     const meta = sessionMetas.value[sessionId]
     if (!meta)
       return
@@ -617,6 +633,12 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     const merged = mergeCloudMessagesIntoLocal(current, meta.cloudMaxSeq ?? 0, payload)
     if (!merged.dirty)
       return
+
+    const currentIds = new Set(current.flatMap(message => message.id ? [message.id] : []))
+    await importChatSessionMessages(
+      createImportedMessageEvents(sessionId, merged.messages, 'cloud')
+        .filter(event => !currentIds.has(event.payload.messageId)),
+    )
 
     sessionMessages.value[sessionId] = merged.messages
     sessionMetas.value[sessionId] = { ...meta, cloudMaxSeq: merged.maxSeq }
@@ -639,7 +661,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
         afterSeq: meta.cloudMaxSeq ?? 0,
         chatId: meta.cloudChatId,
       })
-      mergeCloudMessagesIntoSession(sessionId, {
+      await mergeCloudMessagesIntoSession(sessionId, {
         messages: result.messages,
         toSeq: result.seq,
       })
@@ -875,7 +897,9 @@ export const useChatSessionStore = defineStore('chat-session', () => {
         void reconcileCloudSessions()
         return
       }
-      mergeCloudMessagesIntoSession(sessionId, payload)
+      void mergeCloudMessagesIntoSession(sessionId, payload).catch((error) => {
+        console.warn('[chat-sync] failed to persist pushed messages for', sessionId, errorMessageFrom(error))
+      })
     })
 
     wsClient.onStatusChange((status) => {
@@ -1288,6 +1312,11 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     return sessionMessages.value[sessionId] ?? []
   }
 
+  /** Returns whether the complete persisted history is present in memory. */
+  function isSessionLoaded(sessionId: string) {
+    return loadedSessions.has(sessionId)
+  }
+
   function getSessionGeneration(sessionId: string) {
     ensureGeneration(sessionId)
     return sessionGenerations.value[sessionId] ?? 0
@@ -1406,6 +1435,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
   return {
     activeSessionId,
     appendSessionMessage,
+    appendSessionMessageDurably,
     applyRemoteSnapshot,
 
     bumpSessionGeneration,
@@ -1426,6 +1456,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     importSessions,
     initialize,
     isReady,
+    isSessionLoaded,
     loadSession,
     messages,
 

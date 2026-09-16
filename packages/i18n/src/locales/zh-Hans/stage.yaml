@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: 重试
+    stop-response: 停止回复
   message:
     character-name:
       airi: AIRI
@@ -47,6 +48,21 @@ self-prompt-loop:
     blocked-chat: 等待当前回复
     blocked-provider: 请选择服务商
     blocked-model: 请选择模型
+unfinished-thoughts:
+  title: 未完成思考
+  description: 被中断的自主回合和未结算工具会保留在这里，不进入语义记忆。
+  empty: 当前没有被中断的自主工作。
+  resume: 继续
+  resume-failed: 无法继续这条思考
+  status:
+    open: 待继续
+    resumed: 已继续
+  tools:
+    description: 尚未记录持久化的最终结果；恢复时 AIRI 不会自动重复执行。
+    status:
+      running: 执行中
+      uncertain: 结果未知
+    title: 未结算的工具调用
 operations:
   load-models: 加载模型
   load-models-status:

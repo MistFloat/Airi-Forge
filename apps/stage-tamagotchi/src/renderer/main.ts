@@ -5,6 +5,10 @@ import Tres from '@tresjs/core'
 
 import { autoAnimatePlugin } from '@formkit/auto-animate/vue'
 import { PiniaColada } from '@pinia/colada'
+import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
+import { configureChatAutonomousToolsResolver } from '@proj-airi/stage-ui/stores/chat-autonomous-tools'
+import { configureChatScheduleDueHandler } from '@proj-airi/stage-ui/stores/chat-autonomy'
+import { resolveLlmTools } from '@proj-airi/stage-ui/stores/llm-tool-resolver'
 import { MotionPlugin } from '@vueuse/motion'
 import { createPinia } from 'pinia'
 import { setupLayouts } from 'virtual:generated-layouts'
@@ -14,7 +18,12 @@ import { routes } from 'vue-router/auto-routes'
 
 import App from './App.vue'
 
+import { initializeAgentAutonomyBridge } from './bridges/agent-autonomy'
+import { initializeAgentSessionEventBridge } from './bridges/agent-session-events'
+import { initializeAgentToolExecutionBridge } from './bridges/agent-tool-executions'
+import { initializeAgentTurnRunnerBridge } from './bridges/agent-turn-runner'
 import { i18n } from './modules/i18n'
+import { autonomousStageTools, useChatSyncStore } from './stores/chat-sync'
 
 import '@unocss/reset/tailwind.css'
 import 'splitpanes/dist/splitpanes.css'
@@ -36,7 +45,27 @@ import '@fontsource/kiwi-maru/index.css'
 import '@fontsource/m-plus-rounded-1c/index.css'
 import '@fontsource-variable/nunito/index.css'
 
+const disposeAgentSessionEventBridge = initializeAgentSessionEventBridge()
+import.meta.hot?.dispose(disposeAgentSessionEventBridge)
+const disposeAgentToolExecutionBridge = initializeAgentToolExecutionBridge()
+import.meta.hot?.dispose(disposeAgentToolExecutionBridge)
+const disposeAgentTurnRunnerBridge = initializeAgentTurnRunnerBridge()
+import.meta.hot?.dispose(disposeAgentTurnRunnerBridge)
+const disposeAgentAutonomyBridge = initializeAgentAutonomyBridge()
+import.meta.hot?.dispose(disposeAgentAutonomyBridge)
+
 const pinia = createPinia()
+const disposeAutonomousToolsResolver = configureChatAutonomousToolsResolver(async () => (
+  await resolveLlmTools({ customTools: autonomousStageTools })
+))
+import.meta.hot?.dispose(disposeAutonomousToolsResolver)
+const disposeScheduleDueHandler = configureChatScheduleDueHandler(async (notice) => {
+  const chatSync = useChatSyncStore(pinia)
+  if (chatSync.mode !== 'authority')
+    return
+  await useChatOrchestratorStore(pinia).handleScheduleDue(notice)
+})
+import.meta.hot?.dispose(disposeScheduleDueHandler)
 
 const router = createRouter({
   history: createWebHashHistory(),

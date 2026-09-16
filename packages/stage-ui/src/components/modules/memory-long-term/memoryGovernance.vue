@@ -58,19 +58,6 @@ async function processJobs() {
   }
 }
 
-async function scanConflicts() {
-  loading.value = true
-  error.value = ''
-  try {
-    await store.startConflictScan()
-    await refresh()
-  }
-  catch (cause) {
-    error.value = errorMessageFrom(cause) ?? 'Failed to scan memory conflicts'
-    loading.value = false
-  }
-}
-
 async function validateAndPromote(claim: LongTermMemoryClaim) {
   loading.value = true
   error.value = ''
@@ -249,7 +236,6 @@ onMounted(refresh)
         <h3 :class="['font-semibold']">
           {{ t('settings.pages.modules.memory-long-term.governance.conflicts') }} · {{ conflicts.length }}
         </h3>
-        <Button :label="t('settings.pages.modules.memory-long-term.governance.scan-conflicts')" size="sm" variant="secondary" @click="scanConflicts" />
         <div :class="['mt-3 max-h-72 flex flex-col gap-2 overflow-auto']">
           <article v-for="conflict in conflicts" :key="text(conflict.id)" :class="['rounded-lg bg-white/60 p-2 text-xs dark:bg-black/20']">
             <pre :class="['whitespace-pre-wrap break-all']">{{ text(conflict) }}</pre>

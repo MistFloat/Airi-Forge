@@ -261,6 +261,8 @@ export async function migrateMemorySchema(sql: postgres.Sql): Promise<void> {
     ALTER TABLE memory_evidence ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS memory_evidence_archive_idx
       ON memory_evidence(namespace, status, created_at);
+    CREATE INDEX IF NOT EXISTS memory_evidence_search_idx
+      ON memory_evidence USING gin(to_tsvector('simple', content));
 
     DO $$ BEGIN
       ALTER TABLE memory_feedback ADD CONSTRAINT memory_feedback_retrieval_fk

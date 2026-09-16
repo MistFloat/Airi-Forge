@@ -722,9 +722,9 @@ pages:
       description: 长期记忆
       title: 长期记忆
       page:
-        description: 长期记忆将会话嵌入向量存储在 PostgreSQL + pgvector 数据库中，用于语义检索。
+        description: 原始证据保留用户与 Agent 的交流；长期记忆仅由 Agent 或用户明确录入，并由 Agent 通过 MCP 进行词语检索。
       enable: 启用长期记忆
-      enable-description: 使用向量相似度搜索存储和检索对话历史
+      enable-description: 保存原始交流，并允许对原始证据和明确录入的长期记忆进行文本检索
       connection-string: PostgreSQL 连接字符串
       connection-string-description: 启用了 pgvector 扩展的 PostgreSQL 数据库连接字符串
       namespace: 记忆命名空间
@@ -749,26 +749,16 @@ pages:
       max-results-description: 每次查询检索的最大记忆数量
       instruction-token-budget: 常驻指令 Token 预算
       instruction-token-budget-description: 每次 LLM 请求为确定性常驻用户指令保留的最大估算 Token 数量。
-      extractor-provider: 候选提取 LLM 提供商
-      extractor-provider-description: API Key 留空时复用这里填写的 AIRI 提供商 ID；填写独立 API Key 时忽略此项。
-      extractor-api-key: 候选提取 API Key
-      extractor-api-key-description: 用于独立的 OpenAI-compatible 候选提取接口，仅保存在当前本地应用配置中；填写后优先于 AIRI 提供商。
-      extractor-base-url: 候选提取 Base URL
-      extractor-base-url-description: OpenAI-compatible API 地址，例如 https://api.openai.com/v1/。
-      extractor-model: 候选提取低成本模型
-      extractor-model-description: 使用便宜文本模型生成结构化 Fact/Preference 候选；留空则仅保存 Evidence，不自动提取。
       configured: 长期 pgvector 记忆已配置；首次召回或写入时会检查数据库连接。
       health:
         database-success: PostgreSQL 连接成功 · pgvector {version} · 共 {count} 条记忆
         embedding-success: Embedding 测试成功 · {dimensions} 维
-        extractor-success: 候选提取 LLM 测试成功 · 返回 {count} 条 Claim · 示例：{sample}
         failed: 连接测试失败
         test-database: 测试数据库
         test-embedding: 测试 Embedding
-        test-extractor: 测试候选 LLM
       lab:
         title: 长时记忆向量召回实验室
-        description: 将正向 Golden Memory 写入独立的 evaluation 命名空间，绕过候选提取 LLM；随后输入任意语句查看 Embedding 最相近的前 10 条测试记忆，不再污染真实聊天召回。
+        description: 将正向 Golden Memory 写入独立的 evaluation 命名空间；随后输入任意语句查看 Embedding 最相近的前 10 条测试记忆，不污染 Agent 管理的长期记忆。
         dataset-file: 长时记忆评测集 JSON
         dataset-file-description: 支持 longttermmemorytest.json 格式。导入 should_recall_memory_ids 与可解析的 must_not_recall_memory_ids（标记为 forbidden），用于测量召回率与错误召回率。
         inspect: 检查文件

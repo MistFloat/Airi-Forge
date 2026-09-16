@@ -22,11 +22,9 @@ const invokeMocks = vi.hoisted(() => ({
 }))
 
 const memoryMocks = vi.hoisted(() => ({
-  recallMemories: vi.fn(async () => ({
-    memories: [],
-    trace: { candidates: [], originalText: '', retrievalId: 'retrieval-1', terms: [] },
-  })),
   saveMemory: vi.fn(async () => 'memory-1'),
+  searchEvidenceText: vi.fn(async () => []),
+  searchMemoriesText: vi.fn(async () => []),
 }))
 
 vi.mock('@proj-airi/stage-ui/stores/modules/memory-long-term', () => ({
@@ -64,14 +62,15 @@ describe('useTamagotchiMcpToolsStore', async () => {
     progressListener = undefined
     invokeMocks.listMcpTools.mockClear()
     invokeMocks.callMcpTool.mockClear()
-    memoryMocks.recallMemories.mockClear()
     memoryMocks.saveMemory.mockClear()
+    memoryMocks.searchEvidenceText.mockClear()
+    memoryMocks.searchMemoriesText.mockClear()
   })
 
   /**
    * @example
    * await store.refresh()
-   * expect(llmToolsStore.toolsByProvider.mcp).toHaveLength(3)
+   * expect(llmToolsStore.toolsByProvider.mcp).toHaveLength(6)
    */
   it('loads MCP tools, proxies execution, and clears them from the shared llm-tools store', async () => {
     const llmToolsStore = useLlmToolsStore()
@@ -84,16 +83,18 @@ describe('useTamagotchiMcpToolsStore', async () => {
     const listTools = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpListTools')
     const callTool = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpCallTool')
     const directTool = mcpTools?.find(tool => tool.function.name === 'filesystem__search')
-    const memorySearch = mcpTools?.find(tool => tool.function.name === 'memory__search')
+    const memoryEvidenceSearch = mcpTools?.find(tool => tool.function.name === 'memory__search_evidence')
+    const memorySearch = mcpTools?.find(tool => tool.function.name === 'memory__search_memories')
 
-    // 2 meta-tools + 1 external direct tool + 2 built-in memory MCP tools.
-    expect(mcpTools).toHaveLength(5)
+    // 2 meta-tools + 1 external direct tool + 3 built-in memory MCP tools.
+    expect(mcpTools).toHaveLength(6)
     expect(mcpTools).toEqual([
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpListTools' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpCallTool' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'filesystem__search' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'memory__remember' }) }),
-      expect.objectContaining({ function: expect.objectContaining({ name: 'memory__search' }) }),
+      expect.objectContaining({ function: expect.objectContaining({ name: 'memory__search_memories' }) }),
+      expect.objectContaining({ function: expect.objectContaining({ name: 'memory__search_evidence' }) }),
     ])
 
     const listResult = await listTools?.execute({}, toolOptions)
@@ -105,13 +106,14 @@ describe('useTamagotchiMcpToolsStore', async () => {
     // Direct tool: model calls `filesystem__search` by sanitized name
     const directResult = await directTool?.execute({ limit: 10, query: 'hello' }, toolOptions)
     await memorySearch?.execute({ limit: 3, query: 'answer style' }, toolOptions)
+    await memoryEvidenceSearch?.execute({ limit: 2, query: 'original wording' }, toolOptions)
 
     expect(invokeMocks.listMcpTools).toHaveBeenCalledTimes(1)
     expect(invokeMocks.callMcpTool).toHaveBeenCalledWith({
       arguments: { limit: 10, query: 'hello' },
       name: 'filesystem::search',
     })
-    expect(listResult).toHaveLength(3)
+    expect(listResult).toHaveLength(4)
     expect(listResult).toEqual(expect.arrayContaining([{
       description: 'Search files.',
       inputSchema: {
@@ -133,7 +135,8 @@ describe('useTamagotchiMcpToolsStore', async () => {
     })
     // callMcpTool was invoked twice: once via meta-tool, once via direct tool
     expect(invokeMocks.callMcpTool).toHaveBeenCalledTimes(2)
-    expect(memoryMocks.recallMemories).toHaveBeenCalledWith('answer style', { maxResults: 3 })
+    expect(memoryMocks.searchMemoriesText).toHaveBeenCalledWith('answer style', { limit: 3 })
+    expect(memoryMocks.searchEvidenceText).toHaveBeenCalledWith('original wording', { limit: 2 })
 
     store.dispose()
 

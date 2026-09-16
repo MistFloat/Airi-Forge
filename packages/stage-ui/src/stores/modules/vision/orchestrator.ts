@@ -4,11 +4,14 @@ import type { VisionWorkloadId } from '../../../composables/vision/use-vision-wo
 
 import { errorMessageFrom } from '@moeru/std'
 import { ContextUpdateStrategy } from '@proj-airi/server-sdk'
+import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
 import { ref } from 'vue'
 
 import { useVisionInference } from '../../../composables/vision'
 import { getVisionWorkload } from '../../../composables/vision/use-vision-workloads'
+import { appendChatSessionEvent } from '../../chat-session-events'
+import { useChatSessionStore } from '../../chat/session-store'
 import { useModsServerChannelStore } from '../../mods/api/channel-server'
 import { useVisionStore } from './store'
 
@@ -51,6 +54,7 @@ function getVisionContextId(payload: Pick<VisionCapturePayload, 'sourceId' | 'wo
  */
 export const useVisionOrchestratorStore = defineStore('vision-orchestrator', () => {
   const visionStore = useVisionStore()
+  const chatSession = useChatSessionStore()
   const { activeModel, activeProvider } = storeToRefs(visionStore)
   const modsServerChannelStore = useModsServerChannelStore()
   const { lastText, runVisionInference } = useVisionInference()
@@ -86,6 +90,8 @@ export const useVisionOrchestratorStore = defineStore('vision-orchestrator', () 
 
       if (payload.publishContext) {
         const workload = getVisionWorkload(payload.workloadId)
+        const contextId = getVisionContextId(payload)
+        const capturedAt = payload.capturedAt ?? Date.now()
         const content: CommonContentPart[] = [
           { text, type: 'text' },
           {
@@ -98,9 +104,9 @@ export const useVisionOrchestratorStore = defineStore('vision-orchestrator', () 
 
         modsServerChannelStore.sendContextUpdate({
           content,
-          contextId: getVisionContextId(payload),
+          contextId,
           metadata: {
-            capturedAt: payload.capturedAt,
+            capturedAt,
             model: activeModel.value,
             module: 'vision',
             provider: activeProvider.value,
@@ -110,6 +116,17 @@ export const useVisionOrchestratorStore = defineStore('vision-orchestrator', () 
           },
           strategy: ContextUpdateStrategy.ReplaceSelf,
           text,
+        })
+        await appendChatSessionEvent({
+          payload: {
+            capturedAt,
+            contextId,
+            observationId: nanoid(),
+            summary: text,
+            workloadId: workload.id,
+          },
+          sessionId: chatSession.activeSessionId,
+          type: 'visual.observed',
         })
         return { contextUpdates: 1, text }
       }

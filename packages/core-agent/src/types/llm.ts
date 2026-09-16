@@ -36,6 +36,14 @@ export interface StreamOptions {
   contentArrayCompatibility?: Map<string, boolean>
   headers?: Record<string, string>
   /**
+   * Additional provider calls allowed when a tool-capable model naturally
+   * stops immediately after promising an action without issuing a tool call.
+   * The retry instruction is provider-local and never persisted as user text.
+   *
+   * @default 1
+   */
+  maxActionContinuationAttempts?: number
+  /**
    * Number of additional provider calls allowed after a completion ends with
    * `finish_reason: "length"`. Each continuation replays the partial assistant
    * response only inside the provider request context; synthetic continuation
@@ -61,9 +69,45 @@ export interface StreamOptions {
    */
   maxTokens?: number
   onStreamEvent?: (event: StreamEvent) => Promise<void> | void
+  /** Durability barrier run after a tool returns or throws. */
+  onToolExecutionFinish?: (context: ToolExecutionFinishContext) => Promise<void> | void
+  /** Durability and idempotency barrier run before a model-requested tool side effect starts. */
+  onToolExecutionStart?: (context: ToolExecutionStartContext) => Promise<ToolExecutionStartDecision | void> | ToolExecutionStartDecision | void
   supportsContentArray?: boolean
   supportsTools?: boolean
   tools?: (() => Promise<Tool[] | undefined>) | Tool[]
   toolsCompatibility?: Map<string, boolean>
   waitForTools?: boolean
 }
+
+/** Terminal context emitted after one admitted tool implementation stops. */
+export interface ToolExecutionFinishContext {
+  /** Tool execution duration measured by the runtime. */
+  durationMs: number
+  /** Original failure when the implementation threw. */
+  error?: unknown
+  /** Parsed provider input committed with the admission. */
+  input: unknown
+  /** Tool output when the implementation returned normally. */
+  output?: unknown
+  /** Provider-issued tool-call correlation key. */
+  toolCallId: string
+  /** Tool name selected by the model. */
+  toolName: string
+}
+
+/** Admission context emitted immediately before a tool implementation runs. */
+export interface ToolExecutionStartContext {
+  /** Parsed provider input. */
+  input: unknown
+  /** Provider-issued tool-call correlation key. */
+  toolCallId: string
+  /** Tool name selected by the model. */
+  toolName: string
+}
+
+/** Runtime decision returned by the durable tool execution owner. */
+export type ToolExecutionStartDecision
+  = | { disposition: 'blocked', status: 'running' | 'uncertain' }
+    | { disposition: 'execute' }
+    | { disposition: 'replay', error?: string, output?: unknown, status: 'completed' | 'failed' }

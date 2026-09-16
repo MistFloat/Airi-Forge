@@ -28,6 +28,7 @@ import { toast } from 'vue-sonner'
 import ChatStatusBadge from './chat-status-badge.vue'
 import JournalToolCallBlock from './chat-tool-renderers/journal-tool-call-block.vue'
 import SelfPromptLoopPanel from './selfPromptLoopPanel.vue'
+import UnfinishedThoughtsPanel from './unfinishedThoughtsPanel.vue'
 
 import { useChatSyncStore } from '../stores/chat-sync'
 import { useTamagotchiMcpToolsStore } from '../stores/mcp-tools'
@@ -55,6 +56,8 @@ const {
   selfWakeLastError,
   selfWakeStatus,
   sending,
+  unsettledToolExecutions,
+  unfinishedSelfTurns,
 } = storeToRefs(chatOrchestrator)
 const { pendingPrompt: pendingSelfPrompt } = storeToRefs(selfPromptStore)
 const { activeCard, activeCardId } = storeToRefs(airiCardStore)
@@ -289,6 +292,19 @@ async function handleCleanupMessages() {
     message_count: messageCount,
   })
 }
+
+async function handleStopResponse() {
+  await chatSyncStore.requestCancel(chatSession.activeSessionId)
+}
+
+async function handleResumeUnfinishedThought(turnId: string) {
+  try {
+    await chatOrchestrator.resumeUnfinishedSelfTurn(turnId)
+  }
+  catch (error) {
+    toast.error(errorMessageFrom(error) ?? t('stage.unfinished-thoughts.resume-failed'))
+  }
+}
 </script>
 
 <template>
@@ -417,6 +433,21 @@ async function handleCleanupMessages() {
         </DropdownMenuRoot>
 
         <button
+          v-if="sending"
+          data-testid="stop-response-button"
+          :aria-label="t('stage.chat.actions.stop-response')"
+          :class="[
+            'max-h-[10lh] min-h-[1lh] flex items-center justify-center rounded-md p-2 outline-none',
+            'bg-red-50 text-lg text-red-500 transition-colors transition-transform active:scale-95',
+            'hover:bg-red-100 hover:text-red-600 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-900/50',
+          ]"
+          :title="t('stage.chat.actions.stop-response')"
+          @click="handleStopResponse"
+        >
+          <div class="i-solar:stop-circle-bold-duotone" />
+        </button>
+
+        <button
           v-if="showStopSpeakingButton"
           data-testid="stop-speaking-button"
           :class="[
@@ -502,19 +533,26 @@ async function handleCleanupMessages() {
       />
     </div>
 
-    <SelfPromptLoopPanel
-      class="w-64 shrink-0"
-      :can-restart="canControlSelfPrompt"
-      :can-send="canControlSelfPrompt"
-      :captured-at="pendingSelfPrompt?.capturedAt"
-      :countdown-seconds="selfPromptCountdownSeconds"
-      :error="selfWakeLastError"
-      :prompt="pendingSelfPrompt?.prompt"
-      :status="selfWakeStatus"
-      @discard="chatOrchestrator.discardSelfPrompt()"
-      @restart="chatOrchestrator.restartSelfWakeCountdown()"
-      @send="chatOrchestrator.sendSelfPromptNow()"
-    />
+    <div class="min-h-0 w-64 flex shrink-0 flex-col gap-2 overflow-y-auto">
+      <SelfPromptLoopPanel
+        :can-restart="canControlSelfPrompt"
+        :can-send="canControlSelfPrompt"
+        :captured-at="pendingSelfPrompt?.capturedAt"
+        :countdown-seconds="selfPromptCountdownSeconds"
+        :error="selfWakeLastError"
+        :prompt="pendingSelfPrompt?.prompt"
+        :status="selfWakeStatus"
+        @discard="chatOrchestrator.discardSelfPrompt()"
+        @restart="chatOrchestrator.restartSelfWakeCountdown()"
+        @send="chatOrchestrator.sendSelfPromptNow()"
+      />
+      <UnfinishedThoughtsPanel
+        :busy="sending"
+        :thoughts="unfinishedSelfTurns"
+        :tools="unsettledToolExecutions"
+        @resume="handleResumeUnfinishedThought"
+      />
+    </div>
 
     <!-- Shared Preview Modal -->
     <JournalPreviewModal />

@@ -29,6 +29,7 @@ type MockListener = (event: MockBroadcastMessageEvent<unknown>) => void
 interface MockState {
   activeSessionId: Ref<string>
   applyRemoteSnapshot: ReturnType<typeof vi.fn>
+  cancelActiveSend: ReturnType<typeof vi.fn>
   getSessionMessages: ReturnType<typeof vi.fn>
   ingest: ReturnType<typeof vi.fn>
   sessionMessages: Ref<Record<string, MockChatMessage[]>>
@@ -136,6 +137,7 @@ vi.mock('@proj-airi/stage-ui/stores/chat/stream-store', () => ({
 
 vi.mock('@proj-airi/stage-ui/stores/chat', () => ({
   useChatOrchestratorStore: () => ({
+    cancelActiveSend: mockState.cancelActiveSend,
     ingest: mockState.ingest,
     lastTurnOutputTokens: ref<number>(),
     sending: ref(false),
@@ -180,6 +182,10 @@ vi.mock('@proj-airi/stage-ui/stores/llm-tool-resolver', async (importOriginal) =
 
 vi.mock('./tools/builtin/widgets', () => ({
   widgetsTools: mockWidgetsTools,
+}))
+
+vi.mock('./tools/builtin/agent-autonomy', () => ({
+  agentAutonomyTools: vi.fn(async () => []),
 }))
 
 vi.mock('./tools/builtin/weather', () => ({
@@ -247,6 +253,7 @@ describe('useChatSyncStore', async () => {
     mockState = {
       activeSessionId,
       applyRemoteSnapshot,
+      cancelActiveSend: vi.fn(),
       getSessionMessages,
       ingest,
       sessionMessages,
@@ -260,6 +267,14 @@ describe('useChatSyncStore', async () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     MockBroadcastChannel.reset()
+  })
+
+  it('routes a follower stop request to the active chat authority', async () => {
+    const { followerStore } = initializeAuthorityAndFollower()
+
+    await followerStore.requestCancel('session-1')
+
+    expect(mockState.cancelActiveSend).toHaveBeenCalledWith('session-1')
   })
 
   it('stores command ingest errors in authority session history', async () => {

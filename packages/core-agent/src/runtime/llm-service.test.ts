@@ -49,7 +49,7 @@ describe('streamFrom tool error capture', () => {
    * @example
    * await streamFrom({ model, chatProvider, messages, options: { captureToolErrors: true } })
    */
-  it('keeps captureToolErrors internal while forwarding failed tool calls as tool-error events', async () => {
+  it('enables native parse-error capture while forwarding failed tool calls as tool-error events', async () => {
     let resolveSteps: ((steps: unknown[]) => void) | undefined
     const events: unknown[] = []
     const failingTool = {
@@ -107,7 +107,7 @@ describe('streamFrom tool error capture', () => {
     })
 
     const streamOptions = streamTextMock.mock.calls[0]?.[0]
-    expect(streamOptions.captureToolErrors).toBeUndefined()
+    expect(streamOptions.captureToolErrors).toBe(true)
     expect(streamOptions.tools?.[0]).not.toBe(failingTool)
     expect(failingTool.execute).toHaveBeenCalledTimes(1)
     expect(events).toContainEqual(expect.objectContaining({
@@ -121,6 +121,165 @@ describe('streamFrom tool error capture', () => {
 })
 
 describe('streamFrom output continuation', () => {
+  // ROOT CAUSE:
+  //
+  // A model can return a natural `stop` after saying it will read, inspect, or
+  // modify something without issuing the promised tool call. AIRI treated any
+  // such stop as a completed Agent turn, leaving only an action preamble in
+  // history. This was observed as "让我重新读……让我看看……" followed by silence.
+  //
+  // The completion gate now gives a tool-capable model one bounded internal
+  // continuation round. The synthetic instruction remains provider-local and
+  // never becomes a durable user message.
+  it('continues a tool-capable turn that stops after an unfulfilled action preamble', async () => {
+    const events: Array<{ finishReason?: string, text?: string, type: string }> = []
+    const readTool = {
+      execute: vi.fn(async () => 'current file contents'),
+      function: {
+        description: 'Read one file.',
+        name: 'read_file',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+    const preamble = '让我重新读这份 8-28.md。让我看看它现在长什么样。'
+
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const assistant = { content: preamble, role: 'assistant' } satisfies Message
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: preamble, type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([{ finishReason: 'stop', text: preamble, toolCalls: [], toolResults: [] }])
+        })
+      })
+      return createMockStreamResult(steps, Promise.resolve([...options.messages, assistant]))
+    })
+    streamTextMock.mockImplementationOnce((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const answer = '已经读取完成，文件包含三项待办。'
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: answer, type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([
+            {
+              finishReason: 'tool_calls',
+              text: '',
+              toolCalls: [{ toolCallId: 'call-read', toolName: 'read_file' }],
+              toolResults: [{ result: 'current file contents', toolCallId: 'call-read', toolName: 'read_file' }],
+            },
+            { finishReason: 'stop', text: answer, toolCalls: [], toolResults: [] },
+          ])
+        })
+      })
+      return createMockStreamResult(steps, Promise.resolve(options.messages))
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Read 8-28.md and compare it.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+        tools: [readTool],
+      },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2)
+    const continuationMessages = streamTextMock.mock.calls[1]?.[0]?.messages as Message[]
+    expect(continuationMessages.at(-2)).toEqual({ content: preamble, role: 'assistant' })
+    expect(String(continuationMessages.at(-1)?.content)).toContain('Carry out the pending action')
+    expect(events.filter(event => event.type === 'finish')).toEqual([
+      expect.objectContaining({ finishReason: 'stop', type: 'finish' }),
+    ])
+  })
+
+  it('does not continue an ordinary final answer merely because tools are available', async () => {
+    const readTool = {
+      execute: vi.fn(async () => 'unused'),
+      function: {
+        description: 'Read one file.',
+        name: 'read_file',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void> }) => {
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: 'The file contains three tasks.', type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([{ finishReason: 'stop', text: 'The file contains three tasks.', toolCalls: [], toolResults: [] }])
+        })
+      })
+      return createMockStreamResult(steps)
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Summarize the result.', role: 'user' }],
+      model: 'model-a',
+      options: { tools: [readTool] },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the turn incomplete when the model repeats an unfulfilled action preamble', async () => {
+    const events: Array<{ finishReason?: string, text?: string, type: string }> = []
+    const readTool = {
+      execute: vi.fn(async () => 'unused'),
+      function: {
+        description: 'Read one file.',
+        name: 'read_file',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+    const preamble = '让我重新读取这份文件。'
+
+    streamTextMock.mockImplementation((options: {
+      messages: Message[]
+      onEvent: (event: unknown) => Promise<void>
+    }) => {
+      const assistant = { content: preamble, role: 'assistant' } satisfies Message
+      const steps = new Promise<unknown[]>((resolve) => {
+        queueMicrotask(async () => {
+          await options.onEvent({ text: preamble, type: 'text-delta' })
+          await options.onEvent({ finishReason: 'stop', type: 'finish' })
+          resolve([{ finishReason: 'stop', text: preamble, toolCalls: [], toolResults: [] }])
+        })
+      })
+      return createMockStreamResult(steps, Promise.resolve([...options.messages, assistant]))
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Read the file.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onStreamEvent: (event) => {
+          events.push(event)
+        },
+        tools: [readTool],
+      },
+    })
+
+    expect(streamTextMock).toHaveBeenCalledTimes(2)
+    expect(events.filter(event => event.type === 'text-delta').at(-1)?.text).toContain('could not complete the promised tool action')
+    expect(events.filter(event => event.type === 'finish')).toEqual([
+      expect.objectContaining({ finishReason: 'incomplete-action', type: 'finish' }),
+    ])
+  })
+
   // ROOT CAUSE:
   //
   // OpenAI-compatible providers end a valid SSE stream with
@@ -397,6 +556,217 @@ describe('streamFrom output continuation', () => {
       finishReason: 'other',
       type: 'finish',
     }))
+  })
+
+  it('commits the tool admission before execution and settlement after the side effect', async () => {
+    const order: string[] = []
+    const tool = {
+      execute: vi.fn(async () => {
+        order.push('execute')
+        return { content: 'done' }
+      }),
+      function: {
+        description: 'Write one file.',
+        name: 'write_file',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+
+    streamTextMock.mockImplementationOnce((options: {
+      onEvent: (event: unknown) => Promise<void>
+      tools?: Tool[]
+    }) => {
+      const steps = new Promise<unknown[]>((resolve, reject) => {
+        queueMicrotask(async () => {
+          try {
+            await options.tools?.[0]?.execute({ path: 'README.md' }, {
+              messages: [],
+              toolCallId: 'call-1',
+            })
+            await options.onEvent({ finishReason: 'stop', type: 'finish' })
+            resolve([])
+          }
+          catch (error) {
+            reject(error)
+          }
+        })
+      })
+      return createMockStreamResult(steps)
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Update the file.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onToolExecutionFinish: async (event) => {
+          order.push('settle')
+          expect(event).toMatchObject({
+            output: { content: 'done' },
+            toolCallId: 'call-1',
+            toolName: 'write_file',
+          })
+        },
+        onToolExecutionStart: async (event) => {
+          order.push('admit')
+          expect(event).toEqual({
+            input: { path: 'README.md' },
+            toolCallId: 'call-1',
+            toolName: 'write_file',
+          })
+        },
+        tools: [tool],
+      },
+    })
+
+    expect(order).toEqual(['admit', 'execute', 'settle'])
+  })
+
+  // ROOT CAUSE:
+  //
+  // If tool admission persistence failed but execution continued, a file or
+  // external API could be mutated without any durable evidence that the model
+  // requested it. Error capture could also turn that infrastructure failure
+  // into an ordinary tool result and let the turn continue.
+  //
+  // We fixed this by making admission a hard precondition and exempting ledger
+  // commit failures from ordinary tool-error capture.
+  it('prevents execution when durable tool admission fails', async () => {
+    const tool = {
+      execute: vi.fn(async () => 'must not run'),
+      function: {
+        description: 'Delete one record.',
+        name: 'delete_record',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+    const admissionError = new Error('session log unavailable')
+
+    streamTextMock.mockImplementationOnce((options: { tools?: Tool[] }) => {
+      const steps = new Promise<unknown[]>((resolve, reject) => {
+        queueMicrotask(async () => {
+          try {
+            await options.tools?.[0]?.execute({ id: 'record-a' }, {
+              messages: [],
+              toolCallId: 'call-1',
+            })
+            resolve([])
+          }
+          catch (error) {
+            reject(error)
+          }
+        })
+      })
+      return createMockStreamResult(steps)
+    })
+
+    await expect(streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Delete it.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        captureToolErrors: true,
+        onToolExecutionStart: async () => {
+          throw admissionError
+        },
+        tools: [tool],
+      },
+    })).rejects.toThrow('Failed to admit tool call call-1')
+    expect(tool.execute).not.toHaveBeenCalled()
+  })
+
+  it('replays a durable tool result without invoking the implementation or settling again', async () => {
+    const tool = {
+      execute: vi.fn(async () => 'must not run'),
+      function: {
+        description: 'Writes one record.',
+        name: 'write_record',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+    const settle = vi.fn()
+
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => unknown, tools?: Tool[] }) => {
+      const steps = new Promise<unknown[]>((resolve, reject) => {
+        queueMicrotask(async () => {
+          try {
+            const output = await options.tools?.[0]?.execute({ id: 'record-a' }, {
+              messages: [],
+              toolCallId: 'call-1',
+            })
+            expect(output).toEqual({ id: 'record-a', written: true })
+            await options.onEvent({ finishReason: 'stop', type: 'finish' })
+            resolve([])
+          }
+          catch (error) {
+            reject(error)
+          }
+        })
+      })
+      return createMockStreamResult(steps)
+    })
+
+    await streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Write it.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onToolExecutionFinish: settle,
+        onToolExecutionStart: async () => ({
+          disposition: 'replay',
+          output: { id: 'record-a', written: true },
+          status: 'completed',
+        }),
+        tools: [tool],
+      },
+    })
+
+    expect(tool.execute).not.toHaveBeenCalled()
+    expect(settle).not.toHaveBeenCalled()
+  })
+
+  it('blocks an uncertain tool side effect from automatic re-execution', async () => {
+    const tool = {
+      execute: vi.fn(async () => 'must not run'),
+      function: {
+        description: 'Deletes one record.',
+        name: 'delete_record',
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function',
+    } satisfies Tool
+
+    streamTextMock.mockImplementationOnce((options: { tools?: Tool[] }) => {
+      const steps = new Promise<unknown[]>((resolve, reject) => {
+        queueMicrotask(async () => {
+          try {
+            await options.tools?.[0]?.execute({ id: 'record-a' }, {
+              messages: [],
+              toolCallId: 'call-1',
+            })
+            resolve([])
+          }
+          catch (error) {
+            reject(error)
+          }
+        })
+      })
+      return createMockStreamResult(steps)
+    })
+
+    await expect(streamFrom({
+      chatProvider: provider,
+      messages: [{ content: 'Delete it.', role: 'user' }],
+      model: 'model-a',
+      options: {
+        onToolExecutionStart: async () => ({ disposition: 'blocked', status: 'uncertain' }),
+        tools: [tool],
+      },
+    })).rejects.toThrow('was not re-executed')
+    expect(tool.execute).not.toHaveBeenCalled()
   })
 })
 

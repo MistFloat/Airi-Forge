@@ -3,6 +3,30 @@ export type { ChatHookRegistry } from './contracts/hook-types'
 export type { AgentLLMPort } from './contracts/llm-port'
 export type { AgentSessionPort } from './contracts/session-port'
 export type { AgentForegroundStreamPort } from './contracts/stream-port'
+export type {
+  AgentToolExecutionClaimInput,
+  AgentToolExecutionClaimResult,
+  AgentToolExecutionControlPort,
+  AgentToolExecutionSettlementInput,
+} from './contracts/tool-execution-control-port'
+export type {
+  AgentTurnCancellationInput,
+  AgentTurnCancellationNotice,
+  AgentTurnCancellationReason,
+  AgentTurnCheckpoint,
+  AgentTurnCheckpointInput,
+  AgentTurnControlPort,
+  AgentTurnInterruptionReason,
+  AgentTurnListQuery,
+  AgentTurnRecord,
+  AgentTurnRecoveryAckInput,
+  AgentTurnSettlementInput,
+  AgentTurnSettlementStatus,
+  AgentTurnSource,
+  AgentTurnStartInput,
+  AgentTurnStatus,
+  AgentTurnStatusQuery,
+} from './contracts/turn-control-port'
 
 export {
   buildContextPromptMessage,
@@ -47,7 +71,73 @@ export type {
 } from './runtime/response-categoriser'
 export { createSelfPromptCapture, extractSelfPrompt } from './runtime/self-prompt'
 export type { SelfPromptCapture, SelfPromptExtraction } from './runtime/self-prompt'
+export {
+  foldAgentAutonomy,
+  latestEveryOccurrence,
+} from './session/autonomy'
+export type {
+  AgentAutonomyProjection,
+  AgentAutonomyQuery,
+  AgentBackgroundTaskChangedPayload,
+  AgentBackgroundTaskSnapshot,
+  AgentBackgroundTaskState,
+  AgentGoalBlockedReason,
+  AgentGoalChangedPayload,
+  AgentGoalOperation,
+  AgentGoalPhase,
+  AgentGoalPutInput,
+  AgentGoalSnapshot,
+  AgentGoalSource,
+  AgentGoalTransitionInput,
+  AgentScheduleCancelInput,
+  AgentScheduleChangedPayload,
+  AgentScheduleClaimInput,
+  AgentScheduleCreateInput,
+  AgentScheduleDueNotice,
+  AgentScheduleGoalRef,
+  AgentScheduleKind,
+  AgentScheduleOperation,
+  AgentScheduleSettlementInput,
+  AgentScheduleSnapshot,
+  AgentScheduleState,
+  LatestEveryOccurrenceInput,
+  LatestEveryOccurrenceResult,
+} from './session/autonomy'
+export { AgentSessionEventLog, normalizeAgentSessionJsonValue } from './session/events'
+export type {
+  AgentSessionEvent,
+  AgentSessionEventEnvelope,
+  AgentSessionEventInput,
+  AgentSessionEventLogOptions,
+  AgentSessionEventPayloadMap,
+  AgentSessionEventPort,
+  AgentSessionEventsQuery,
+  AgentSessionEventType,
+  AgentSessionJsonValue,
+  SessionMemoryProjectedPayload,
+  SessionMessageAppendedPayload,
+  SessionPromptComposedPayload,
+  SessionToolCallReconciledPayload,
+  SessionToolCallSettledPayload,
+  SessionToolCallStartedPayload,
+  SessionTurnAdmittedPayload,
+  SessionTurnCancellationRequestedPayload,
+  SessionTurnCheckpointedPayload,
+  SessionTurnClosedPayload,
+  SessionTurnInterruptedPayload,
+  SessionTurnRecoveryAcknowledgedPayload,
+  SessionTurnSettledPayload,
+  SessionTurnStartedPayload,
+  SessionVisualObservedPayload,
+} from './session/events'
+export { completedMemoryTurns } from './session/memory-projection'
+export type { AgentMemoryTurnProjection } from './session/memory-projection'
 export { mergeLoadedSessionMessages } from './session/merge-loaded-session-messages'
+export { projectSessionMessages } from './session/message-projection'
+export { foldAgentToolExecutions, projectUnsettledToolExecutions } from './session/tool-execution-projection'
+export type { AgentToolExecutionProjection } from './session/tool-execution-projection'
+export { projectUnfinishedSelfTurns } from './session/unfinished-self-turn-projection'
+export type { AgentUnfinishedSelfTurnProjection } from './session/unfinished-self-turn-projection'
 export type {
   ChatAssistantMessage,
   ChatHistoryItem,
@@ -68,4 +158,7 @@ export type {
   StreamEvent,
   StreamFromOptions,
   StreamOptions,
+  ToolExecutionFinishContext,
+  ToolExecutionStartContext,
+  ToolExecutionStartDecision,
 } from './types/llm'

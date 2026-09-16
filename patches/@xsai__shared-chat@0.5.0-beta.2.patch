@@ -63,6 +63,13 @@ diff --git a/dist/index.js b/dist/index.js
 index 34e87341ac400dd8c61457c188485b82a1383300..2e7e1fa99fdbccb7a0be0af92504ed903d95c482 100644
 --- a/dist/index.js
 +++ b/dist/index.js
+@@ -4,5 +4,6 @@ const chat = async (options) => (options.fetch ?? globalThis.fetch)(requestURL("c
+   body: requestBody({
+     ...options,
++    captureToolErrors: void 0,
+     tools: options.tools?.map(({ execute: _execute, ...tool }) => tool)
+   }),
+   headers: requestHeaders({
 @@ -66,57 +66,150 @@ const runTool = async (tool, options) => {
      });
    }

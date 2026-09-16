@@ -8,6 +8,13 @@ import { streamText } from '@xsai/stream-text'
 
 import { errorMessageFromValue } from '../utils/error-message'
 
+class ToolLedgerCommitError extends Error {
+  constructor(message: string, options: ErrorOptions) {
+    super(message, options)
+    this.name = 'ToolLedgerCommitError'
+  }
+}
+
 export function modelKey(model: string, chatProvider: ChatProvider): string {
   return `${chatProvider.chat(model).baseURL}-${model}`
 }
@@ -94,10 +101,17 @@ export async function streamFrom({
   const mergedTools = supportedTools ? [...builtinTools, ...customTools] : []
   const tools = mergedTools.length > 0 ? mergedTools : undefined
   const capturedToolErrorByCallId = new Map<string, string>()
-  const streamTools = options?.captureToolErrors && tools != null
-    ? withCapturedToolErrors(tools, capturedToolErrorByCallId)
+  const ledgerTools = tools != null && (options?.onToolExecutionStart || options?.onToolExecutionFinish)
+    ? withToolExecutionLedger(tools, options)
     : tools
+  const streamTools = options?.captureToolErrors && ledgerTools != null
+    ? withCapturedToolErrors(ledgerTools, capturedToolErrorByCallId)
+    : ledgerTools
 
+  const configuredActionContinuationAttempts = options?.maxActionContinuationAttempts ?? 1
+  const maxActionContinuationAttempts = Number.isFinite(configuredActionContinuationAttempts)
+    ? Math.max(0, Math.floor(configuredActionContinuationAttempts))
+    : 1
   const configuredContinuationAttempts = options?.maxContinuationAttempts ?? 3
   const maxContinuationAttempts = Number.isFinite(configuredContinuationAttempts)
     ? Math.max(0, Math.floor(configuredContinuationAttempts))
@@ -107,6 +121,7 @@ export async function streamFrom({
     ? Math.max(1, Math.floor(configuredMaxSteps))
     : 50
   let remainingSteps = maxSteps
+  let actionContinuationAttempts = 0
   let continuationAttempts = 0
   let requestMessages = sanitized
   let turnUsage: undefined | Usage
@@ -114,6 +129,7 @@ export async function streamFrom({
 
   while (true) {
     let callbackError: unknown
+    let callText = ''
     let eventChain = Promise.resolve()
     let pendingFinishEvent: Extract<StreamEvent, { type: 'finish' }> | undefined
 
@@ -129,6 +145,7 @@ export async function streamFrom({
 
           const streamEvent = resolvedEvent as StreamEvent
           if (streamEvent.type === 'text-delta') {
+            callText += streamEvent.text
             await textEmitter.push(streamEvent.text)
             return
           }
@@ -159,6 +176,10 @@ export async function streamFrom({
     const streamResult = streamText({
       ...chatConfig,
       abortSignal: options?.abortSignal,
+      // xsAI parses provider tool arguments before invoking AIRI's wrapped
+      // executor. Native capture is therefore required for malformed JSON and
+      // unknown tool names; executor-only capture cannot see those failures.
+      captureToolErrors: options?.captureToolErrors,
       headers: options?.headers,
       // NOTICE:
       // Default to 16384 output tokens. Many OpenAI-compatible providers
@@ -181,10 +202,12 @@ export async function streamFrom({
       // provider output ceilings after the turn settles.
       streamOptions: { includeUsage: true },
       // NOTICE:
-      // Do not pass xsAI's `captureToolErrors` option here. In the installed
-      // @xsai/stream-text version, stream options are spread into the provider
-      // chat body, so unknown runtime-only fields can be rejected upstream.
-      // AIRI captures tool failures by wrapping local tool executors instead.
+      // The local xsAI patch removes `captureToolErrors` before serializing the
+      // provider request. Without that transport fix, strict OpenAI-compatible
+      // servers receive an unknown `capture_tool_errors` field and reject the
+      // entire request. Keep this option paired with
+      // `patches/@xsai__shared-chat@0.5.0-beta.2.patch` until upstream separates
+      // runtime-only options from its wire body.
       tools: streamTools,
     })
 
@@ -238,6 +261,46 @@ export async function streamFrom({
       continue
     }
 
+    const hasPendingAction = finishReason === 'stop'
+      && streamTools !== undefined
+      && streamTools.length > 0
+      && !options?.abortSignal?.aborted
+      && hasUnfulfilledToolAction(callText)
+    const shouldContinuePendingAction = hasPendingAction
+      && actionContinuationAttempts < maxActionContinuationAttempts
+      && remainingSteps > 0
+
+    if (shouldContinuePendingAction) {
+      actionContinuationAttempts += 1
+      // Unlike token continuation, the preamble and completed action are two
+      // semantic paragraphs. Flush its buffered word before the next call so
+      // boundary stitching cannot merge unrelated text.
+      await textEmitter.flush()
+      requestMessages = [
+        ...completedMessages,
+        {
+          content: 'Do not stop after describing what you intend to do. Carry out the pending action now using the available tools. If it cannot be performed, state the concrete blocker now. Then provide the result without repeating the preamble or mentioning this instruction.',
+          role: 'user',
+        },
+      ]
+      console.warn(
+        `[llm] Model stopped after an unfulfilled tool action; continuing automatically (${actionContinuationAttempts}/${maxActionContinuationAttempts}).`,
+      )
+      continue
+    }
+
+    const stoppedWithIncompleteAction = hasPendingAction
+      && maxActionContinuationAttempts > 0
+      && (actionContinuationAttempts >= maxActionContinuationAttempts || remainingSteps <= 0)
+    if (stoppedWithIncompleteAction) {
+      await textEmitter.push(
+        `\n\n[AIRI could not complete the promised tool action after ${actionContinuationAttempts} automatic continuation attempt(s). This turn is marked incomplete; send a follow-up message to retry.]`,
+      )
+      console.warn(
+        `[llm] Model still stopped with an unfulfilled tool action after ${actionContinuationAttempts} automatic continuation attempt(s).`,
+      )
+    }
+
     if (stoppedAtToolStepLimit) {
       await textEmitter.push(
         `\n\n[AIRI stopped this turn after reaching the ${maxSteps}-step tool-call safety limit. Narrow the task or send a follow-up message to continue.]`,
@@ -250,7 +313,9 @@ export async function streamFrom({
     await textEmitter.flush()
     const terminalFinishEvent = stoppedAtToolStepLimit
       ? { finishReason: 'other' as const, type: 'finish' as const }
-      : (pendingFinishEvent ?? { finishReason, type: 'finish' as const })
+      : stoppedWithIncompleteAction
+        ? { finishReason: 'incomplete-action' as const, type: 'finish' as const }
+        : (pendingFinishEvent ?? { finishReason, type: 'finish' as const })
     await options?.onStreamEvent?.({
       ...terminalFinishEvent,
       usage: turnUsage ?? pendingFinishEvent?.usage ?? finalStep?.usage,
@@ -363,6 +428,14 @@ function createContinuationTextEmitter(emit: (text: string) => Promise<void> | v
   }
 }
 
+function hasUnfulfilledToolAction(text: string): boolean {
+  const prospectiveToolActions = [
+    /(?:让我|我来|接下来(?:我会|会)?|现在(?:我会|来)?|我(?:将|会|准备|打算))[\s，,:：]*(?:重新|先)?(?:读取|读一下|读|打开|查看|看看|检查|搜索|查找|检索|分析|运行|执行|修改|编辑|更新|创建|写入|删除|调用|测试|验证|对比)/u,
+    /\b(?:let me|i(?:'ll| will| am going to)|next,?\s+i(?:'ll| will)|first,?\s+i(?:'ll| will))\s+(?:re-)?(?:read|open|inspect|check|search|look up|analyze|run|execute|edit|update|create|write|delete|call|test|verify|compare)\b/i,
+  ]
+  return prospectiveToolActions.some(pattern => pattern.test(text))
+}
+
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
@@ -414,12 +487,78 @@ function withCapturedToolErrors(
         return await tool.execute(input, executeOptions)
       }
       catch (error) {
+        if (error instanceof ToolLedgerCommitError)
+          throw error
         if (isAbortError(error))
           throw error
 
         const result = createCapturedToolErrorResult(tool.function.name, error)
         capturedToolErrorByCallId.set(executeOptions.toolCallId, result)
         return result
+      }
+    },
+  }))
+}
+
+function withToolExecutionLedger(tools: Tool[], options: StreamOptions): Tool[] {
+  return tools.map(tool => ({
+    ...tool,
+    execute: async (input, executeOptions) => {
+      const context = {
+        input,
+        toolCallId: executeOptions.toolCallId,
+        toolName: tool.function.name,
+      }
+      let decision
+      try {
+        decision = await options.onToolExecutionStart?.(context)
+      }
+      catch (error) {
+        throw new ToolLedgerCommitError(`Failed to admit tool call ${executeOptions.toolCallId}`, { cause: error })
+      }
+
+      if (decision?.disposition === 'replay') {
+        if (decision.status === 'failed')
+          throw new Error(decision.error ?? `Tool ${context.toolName} previously failed`)
+        return decision.output
+      }
+      if (decision?.disposition === 'blocked') {
+        throw new Error(
+          `Tool call ${context.toolCallId} was not re-executed because its previous side effect is ${decision.status}`,
+        )
+      }
+
+      const startedAt = Date.now()
+      try {
+        const output = await tool.execute(input, executeOptions)
+        try {
+          await options.onToolExecutionFinish?.({
+            ...context,
+            durationMs: Date.now() - startedAt,
+            output,
+          })
+        }
+        catch (error) {
+          throw new ToolLedgerCommitError(`Failed to settle tool call ${executeOptions.toolCallId}`, { cause: error })
+        }
+        return output
+      }
+      catch (error) {
+        if (error instanceof ToolLedgerCommitError)
+          throw error
+        try {
+          await options.onToolExecutionFinish?.({
+            ...context,
+            durationMs: Date.now() - startedAt,
+            error,
+          })
+        }
+        catch (commitError) {
+          throw new ToolLedgerCommitError(`Failed to settle failed tool call ${executeOptions.toolCallId}`, {
+            cause: commitError,
+          })
+        }
+        throw error
       }
     },
   }))

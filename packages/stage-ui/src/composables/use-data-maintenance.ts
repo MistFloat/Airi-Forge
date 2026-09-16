@@ -62,6 +62,7 @@ export function useDataMaintenance() {
   }
 
   function deleteAllChatSessions() {
+    chatOrchestrator.cancelActiveSend()
     chatOrchestrator.cancelPendingSends()
     chatStore.resetAllSessions()
   }

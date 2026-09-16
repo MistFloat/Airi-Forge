@@ -6,6 +6,7 @@ import { useVisionStore } from './store'
 
 const sendContextUpdate = vi.fn()
 const runVisionInference = vi.fn()
+const appendSessionEvent = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -27,6 +28,14 @@ vi.mock('../../../composables/vision/use-vision-workloads', () => ({
   }),
 }))
 
+vi.mock('../../chat-session-events', () => ({
+  appendChatSessionEvent: appendSessionEvent,
+}))
+
+vi.mock('../../chat/session-store', () => ({
+  useChatSessionStore: () => ({ activeSessionId: 'session-vision' }),
+}))
+
 vi.mock('../../mods/api/channel-server', () => ({
   useModsServerChannelStore: () => ({
     sendContextUpdate,
@@ -37,6 +46,8 @@ describe('vision orchestrator', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     sendContextUpdate.mockReset()
+    appendSessionEvent.mockReset()
+    appendSessionEvent.mockResolvedValue(undefined)
     runVisionInference.mockReset()
     runVisionInference.mockResolvedValue('Frame summary')
 
@@ -104,6 +115,30 @@ describe('vision orchestrator', () => {
     })).rejects.toThrow('Vision inference failed')
 
     expect(store.lastError).toBe('Vision inference failed')
+  })
+
+  it('appends a compact visual observation after context becomes model-visible', async () => {
+    const store = useVisionOrchestratorStore()
+
+    await store.processCapture({
+      capturedAt: 123,
+      imageDataUrl: 'data:image/jpeg;base64,frame',
+      publishContext: true,
+      sourceId: 'desktop',
+      workloadId: 'screen:interpret',
+    })
+
+    expect(appendSessionEvent).toHaveBeenCalledWith({
+      payload: {
+        capturedAt: 123,
+        contextId: 'vision:screen:interpret:desktop',
+        observationId: expect.any(String),
+        summary: 'Frame summary',
+        workloadId: 'screen:interpret',
+      },
+      sessionId: 'session-vision',
+      type: 'visual.observed',
+    })
   })
 
   it('keeps only the latest queued frame while inference is busy', async () => {

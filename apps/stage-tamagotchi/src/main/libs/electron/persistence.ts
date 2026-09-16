@@ -33,6 +33,8 @@ const persistenceMap = new Map<string, unknown>()
 const diagnosticsMap = new Map<string, ConfigDiagnostics<unknown>>()
 
 export interface Config<TSchema extends PersistedSchema> {
+  /** Persists the latest in-memory value after all earlier writes complete. */
+  flush: () => Promise<void>
   get: () => InferOutput<TSchema> | undefined
   getDiagnostics: () => ConfigDiagnostics<InferOutput<TSchema>> | undefined
   setup: () => ConfigDiagnostics<InferOutput<TSchema>>
@@ -57,17 +59,27 @@ export function createConfig<TSchema extends PersistedSchema>(
     return diagnostics
   }
 
-  const save = throttle(async () => {
-    try {
+  let writeQueue = Promise.resolve()
+
+  const enqueueWrite = () => {
+    // Capture the snapshot when the write enters the queue. Serial execution
+    // prevents a slower older rename from overwriting a newer config value.
+    const serialized = JSON.stringify(persistenceMap.get(key))
+    const write = writeQueue.then(async () => {
       const path = configPath()
       await ensureConfigDirectory(path)
       const tmpPath = `${path}.${randomUUID()}.tmp`
-      await writeFile(tmpPath, JSON.stringify(persistenceMap.get(key)))
+      await writeFile(tmpPath, serialized)
       await rename(tmpPath, path)
-    }
-    catch (error) {
+    })
+    writeQueue = write.catch((error) => {
       console.error('Failed to save config', error)
-    }
+    })
+    return write
+  }
+
+  const save = throttle(() => {
+    void enqueueWrite()
   }, 250)
 
   const writeHealingConfig = async (value: InferOutput<TSchema>) => {
@@ -150,11 +162,19 @@ export function createConfig<TSchema extends PersistedSchema>(
     save()
   }
 
+  const flush = async () => {
+    // Cancel the trailing throttled callback, then enqueue exactly the latest
+    // snapshot behind every write already in progress.
+    save.cancel()
+    await enqueueWrite()
+  }
+
   const get = () => persistenceMap.get(key) as InferOutput<TSchema> | undefined
 
   const getDiagnostics = () => diagnosticsMap.get(key) as ConfigDiagnostics<InferOutput<TSchema>> | undefined
 
   return {
+    flush,
     get,
     getDiagnostics,
     setup,

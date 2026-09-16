@@ -42,15 +42,20 @@ export const useMemoryShortTermStore = defineStore('memory-short-term', () => {
       && Number(contextCharacterBudget.value) >= 500
   })
 
-  async function rememberTurn(sessionId: string, userText: string, assistantText: string): Promise<void> {
+  async function rememberTurn(
+    sessionId: string,
+    userText: string,
+    assistantText: string,
+    options: { createdAt?: number, id?: string } = {},
+  ): Promise<void> {
     if (!configured.value || !userText.trim() || !assistantText.trim())
       return
 
     const repo = await getRepo()
     await repo.remember({
       assistantText: assistantText.trim(),
-      createdAt: Date.now(),
-      id: nanoid(),
+      createdAt: options.createdAt ?? Date.now(),
+      id: options.id ?? nanoid(),
       sessionId,
       userText: userText.trim(),
     }, Number(maxItems.value))

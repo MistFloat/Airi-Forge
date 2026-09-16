@@ -139,8 +139,10 @@ export function createPgvectorMemoryStore(connectionString: string) {
     })
   }
 
-  async function listEvidence(namespace: string, limit = 50, offset = 0, options: { status?: 'active' | 'all' | 'archived' } = {}) {
+  async function listEvidence(namespace: string, limit = 50, offset = 0, options: { search?: string, status?: 'active' | 'all' | 'archived' } = {}) {
     const status = options.status ?? 'all'
+    const search = options.search?.trim() ?? ''
+    const searchPatterns = textSearchPatterns(search)
     return await withDatabase(sql => sql`
       SELECT id, namespace, source_type AS "sourceType", source_id AS "sourceId",
         source_role AS "sourceRole", source_session_id AS "sourceSessionId",
@@ -149,6 +151,7 @@ export function createPgvectorMemoryStore(connectionString: string) {
         metadata, created_at::TEXT AS "createdAt"
       FROM memory_evidence WHERE namespace = ${namespace}
         AND (${status} = 'all' OR status = ${status})
+        AND (${search} = '' OR content ILIKE ANY(${searchPatterns}))
       ORDER BY created_at DESC LIMIT ${bounded(limit, 1, 100)} OFFSET ${Math.max(0, Math.trunc(offset))}
     `)
   }
@@ -395,6 +398,7 @@ export function createPgvectorMemoryStore(connectionString: string) {
   }
 
   async function upsertManualMemory(memory: PgvectorMemoryRecord): Promise<void> {
+    const createdBy = memory.createdBy === 'agent' ? 'agent' : 'user'
     await withDatabase(async sql => await sql.begin(async (transaction) => {
       await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${memory.namespace}, 0))`
       const before = (await transaction`SELECT * FROM canonical_memories WHERE id = ${memory.memoryId} FOR UPDATE`)[0] ?? null
@@ -411,7 +415,7 @@ export function createPgvectorMemoryStore(connectionString: string) {
           'user', 'manual_note', 'global', ${`user/manual_note/${memory.memoryId}`}, ${polarity},
           ${memory.content.trim()}, ${cleanTags(memory.tags)}, ${normalizedScore(memory.importance, 0.5)},
           1, ${canonicalStatus(memory.status)}, ${memory.effectiveFrom ?? null}, ${memory.effectiveUntil ?? null},
-          'user', ${memory.supersedesId ?? null}
+          ${createdBy}, ${memory.supersedesId ?? null}
         ) ON CONFLICT (id) DO UPDATE SET
           title = EXCLUDED.title, value_text = EXCLUDED.value_text, tags = EXCLUDED.tags,
           importance = EXCLUDED.importance, status = EXCLUDED.status, valid_from = EXCLUDED.valid_from,
@@ -422,7 +426,7 @@ export function createPgvectorMemoryStore(connectionString: string) {
       await enqueueEmbeddingJobs(transaction, memory.namespace, memory.memoryId, rows[0]?.revision ?? 1)
       if (memory.embedding)
         await putCompatibilityEmbedding(transaction, memory, rows[0]?.revision ?? 1)
-      await recordChange(transaction, 'memory', memory.memoryId, before ? 'update' : 'create', before, memory, 'user')
+      await recordChange(transaction, 'memory', memory.memoryId, before ? 'update' : 'create', before, memory, createdBy)
     }))
   }
 
@@ -1336,6 +1340,7 @@ async function lockRollbackEntity(sql: postgres.ISql, entityType: string, entity
 }
 
 function memoryProjection(sql: postgres.Sql, namespaces: string[], status: string, search: string) {
+  const searchPatterns = textSearchPatterns(search)
   return sql`
     SELECT id AS "memoryId", namespace, title, value_text AS content, kind, tags,
       importance, confidence, status, NULL::TEXT AS "sourceSessionId", ARRAY[]::TEXT[] AS "sourceMessageIds",
@@ -1345,14 +1350,14 @@ function memoryProjection(sql: postgres.Sql, namespaces: string[], status: strin
       revision, created_at::TEXT AS "createdAt", updated_at::TEXT AS "updatedAt"
     FROM canonical_memories WHERE namespace = ANY(${namespaces})
       AND (${status} = 'all' OR status = ${status})
-      AND (${search} = '' OR title ILIKE ${`%${search}%`} OR value_text ILIKE ${`%${search}%`} OR array_to_string(tags, ' ') ILIKE ${`%${search}%`})
+      AND (${search} = '' OR title ILIKE ANY(${searchPatterns}) OR value_text ILIKE ANY(${searchPatterns}) OR array_to_string(tags, ' ') ILIKE ANY(${searchPatterns}))
     UNION ALL
     SELECT id, namespace, title, content, 'instruction', tags, 1::REAL, 1::REAL, status,
       NULL, ARRAY[]::TEXT[], '', '', NULL, scope, priority, rule_key,
       valid_from::TEXT, valid_until::TEXT, created_by, revision, created_at::TEXT, updated_at::TEXT
     FROM memory_instructions WHERE namespace = ANY(${namespaces})
       AND (${status} = 'all' OR status = ${status})
-      AND (${search} = '' OR title ILIKE ${`%${search}%`} OR content ILIKE ${`%${search}%`} OR array_to_string(tags, ' ') ILIKE ${`%${search}%`})
+      AND (${search} = '' OR title ILIKE ANY(${searchPatterns}) OR content ILIKE ANY(${searchPatterns}) OR array_to_string(tags, ' ') ILIKE ANY(${searchPatterns}))
   `
 }
 
@@ -1494,6 +1499,20 @@ function stringOrNull(value: unknown): null | string {
   if (value instanceof Date)
     return value.toISOString()
   return typeof value === 'string' ? value : null
+}
+
+/**
+ * Normalizes a word query into case-insensitive PostgreSQL substring patterns.
+ *
+ * Before:
+ * - "answer style"
+ *
+ * After:
+ * - ["%answer%", "%style%"]
+ */
+function textSearchPatterns(search: string): string[] {
+  const terms = search.split(/\s+/).filter(Boolean)
+  return terms.length > 0 ? [...new Set(terms)].map(term => `%${term}%`) : ['%']
 }
 
 function toJsonValue(value: unknown): postgres.JSONValue {

@@ -28,6 +28,9 @@ import { createGlobalAppConfig } from './configs/global'
 import { emitAppBeforeQuit, emitAppReady, emitAppWindowAllClosed } from './libs/bootkit/lifecycle'
 import { setElectronMainDirname } from './libs/electron/location'
 import { createI18n } from './libs/i18n'
+import { setupAgentAutonomyService } from './services/airi/agent-runtime/autonomy'
+import { setupAgentSessionEventService } from './services/airi/agent-runtime/session-events'
+import { setupAgentTurnRunnerService } from './services/airi/agent-runtime/turn-runner'
 import { createWindowAuthManagerService } from './services/airi/auth'
 import { setupServerChannel } from './services/airi/channel-server'
 import { setupGodotStageManager } from './services/airi/godot-stage'
@@ -187,6 +190,21 @@ app.whenReady().then(async () => {
 
   const globalShortcut = injeca.provide('services:global-shortcut', () => setupGlobalShortcutService())
 
+  const agentSessionEvents = injeca.provide(
+    'services:agent-session-events',
+    () => setupAgentSessionEventService(),
+  )
+
+  const agentTurnRunner = injeca.provide('services:agent-turn-runner', {
+    build: ({ dependsOn }) => setupAgentTurnRunnerService(dependsOn.lifecycle, dependsOn.agentSessionEvents),
+    dependsOn: { agentSessionEvents, lifecycle },
+  })
+
+  const agentAutonomy = injeca.provide('services:agent-autonomy', {
+    build: ({ dependsOn }) => setupAgentAutonomyService(dependsOn.lifecycle, dependsOn.agentSessionEvents),
+    dependsOn: { agentSessionEvents, lifecycle },
+  })
+
   // BeatSync will create a background window to capture and process audio.
   const beatSync = injeca.provide('windows:beat-sync', () => setupBeatSync())
 
@@ -209,7 +227,7 @@ app.whenReady().then(async () => {
 
   const chatWindow = injeca.provide('windows:chat', {
     build: ({ dependsOn }) => setupChatWindowReusableFunc(dependsOn),
-    dependsOn: { i18n, mcpStdioManager, serverChannel, widgetsManager },
+    dependsOn: { agentAutonomy, agentSessionEvents, agentTurnRunner, i18n, mcpStdioManager, serverChannel, widgetsManager },
   })
 
   const spotlightWindow = injeca.provide('windows:spotlight', {

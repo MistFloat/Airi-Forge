@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: Retry
+    stop-response: Stop response
   message:
     character-name:
       airi: AIRI
@@ -47,6 +48,21 @@ self-prompt-loop:
     blocked-chat: Waiting for reply
     blocked-provider: Select a provider
     blocked-model: Select a model
+unfinished-thoughts:
+  title: Unfinished thoughts
+  description: Interrupted self-directed turns and unsettled tools retained outside semantic memory.
+  empty: No interrupted self-directed work.
+  resume: Continue
+  resume-failed: Failed to continue this thought
+  status:
+    open: Open
+    resumed: Continued
+  tools:
+    description: No durable final outcome is recorded. AIRI will not run it again automatically during recovery.
+    status:
+      running: Running
+      uncertain: Outcome unknown
+    title: Unsettled tool calls
 operations:
   load-models: Load Models
   load-models-status:

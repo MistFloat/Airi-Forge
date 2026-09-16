@@ -14,6 +14,7 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
       await store.upsert({
         confidence: 0.95,
         content: 'The user prefers blue.',
+        createdBy: 'agent',
         embedding: [1, 0, 0],
         embeddingModel: 'test-3d',
         embeddingProvider: 'integration',
@@ -36,6 +37,7 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
       })
       expect(listed.total).toBe(1)
       expect(listed.memories[0]?.memoryId).toBe(memoryId)
+      expect(listed.memories[0]?.createdBy).toBe('agent')
       expect(listed.memories[0]?.tags).toEqual(['profile', 'color'])
 
       const recalled = await store.recall({
@@ -70,6 +72,31 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
     finally {
       await store.remove(namespace, memoryId)
     }
+  })
+
+  it('filters immutable evidence by a text fragment', async () => {
+    const store = createPgvectorMemoryStore(connectionString!)
+    const namespace = `integration:evidence-search:${Date.now()}`
+
+    await store.ingestEvidence({
+      content: 'The original exchange mentions a cobalt notebook.',
+      namespace,
+      sourceId: 'message-1',
+      sourceRole: 'user',
+      sourceType: 'user_assertion',
+    })
+    await store.ingestEvidence({
+      content: 'This unrelated exchange mentions a pencil.',
+      namespace,
+      sourceId: 'message-2',
+      sourceRole: 'assistant',
+      sourceType: 'assistant_inference',
+    })
+
+    const evidence = await store.listEvidence(namespace, 10, 0, { search: 'cobalt absentword', status: 'all' })
+
+    expect(evidence).toHaveLength(1)
+    expect(evidence[0]?.content).toContain('cobalt notebook')
   })
 
   it('stores optional and competing instruction rule keys without embeddings', async () => {

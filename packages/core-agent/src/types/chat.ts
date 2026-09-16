@@ -6,6 +6,8 @@ export interface ChatAssistantMessage extends AssistantMessage {
     reasoning: string
     speech: string
   }
+  /** True when provider failure or cancellation ended the stream before normal completion. */
+  interrupted?: boolean
   slices: ChatSlices[]
   tool_results: {
     id: string

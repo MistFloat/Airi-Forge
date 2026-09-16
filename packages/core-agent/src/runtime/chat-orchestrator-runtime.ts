@@ -3,6 +3,9 @@ import type { CommonContentPart, Message, ToolMessage } from '@xsai/shared-chat'
 
 import type { AgentContextPort } from '../contracts/context-port'
 import type { AgentForegroundStreamPort } from '../contracts/stream-port'
+import type { AgentToolExecutionControlPort } from '../contracts/tool-execution-control-port'
+import type { AgentTurnCheckpointInput, AgentTurnControlPort } from '../contracts/turn-control-port'
+import type { AgentSessionEvent, AgentSessionEventPort } from '../session/events'
 import type { ChatAssistantMessage, ChatHistoryItem, ChatSlices, ChatStreamEventContext, ContextMessage, StreamingAssistantMessage } from '../types/chat'
 import type { StreamEvent, StreamOptions } from '../types/llm'
 
@@ -10,6 +13,8 @@ import { createQueue } from '@proj-airi/stream-kit'
 
 import { formatContextPromptText } from '../messages/context-prompt'
 import { formatTimePrefix } from '../messages/datetime-prefix'
+import { AgentSessionEventLog, normalizeAgentSessionJsonValue } from '../session/events'
+import { errorMessageFromValue } from '../utils/error-message'
 import { createChatHooks } from './agent-hooks'
 import { useLlmmarkerParser } from './llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from './response-categoriser'
@@ -42,16 +47,10 @@ export interface ChatOrchestratorLLMPort {
   stream: (model: string, chatProvider: ChatProvider, messages: Message[], options?: StreamOptions) => Promise<void>
 }
 
-/** Durable memory boundary used to recall context and persist completed turns. */
+/** Memory boundary used only to recall a projection of prior session events. */
 export interface ChatOrchestratorMemoryPort {
   /** Returns prompt-ready memory scoped to the active conversation. */
   recall: (sessionId: string, query: string) => Promise<string | undefined>
-  /** Persists one completed user/assistant exchange. */
-  rememberTurn: (turn: {
-    assistantText: string
-    sessionId: string
-    userText: string
-  }) => Promise<void>
 }
 
 /**
@@ -74,14 +73,22 @@ export interface ChatOrchestratorPromptProjection {
  * Platform-agnostic chat orchestrator runtime API.
  */
 export interface ChatOrchestratorRuntime {
+  /** Aborts the provider request and tools owned by the active send. */
+  cancelActiveSend: (sessionId?: string) => boolean
+  /** Aborts the active execution only when its exact turn key matches. */
+  cancelActiveTurn: (turnId: string) => boolean
   /** Rejects queued sends that have not started yet. */
   cancelPendingSends: (sessionId?: string) => void
+  /** Returns correlation keys for the active renderer execution. */
+  getActiveTurn: () => undefined | { sessionId: string, turnId: string }
   /** Returns the current queued send count. */
   getPendingQueuedSendCount: () => number
   /** Returns serializable snapshots of currently queued sends. */
   getPendingQueuedSendSnapshot: () => QueuedSendSnapshot[]
   /** Reads the writable sending flag. */
   getSending: () => boolean
+  /** Returns ordered runtime events after an optional per-session cursor. */
+  getSessionEvents: (sessionId: string, afterSequence?: number) => AgentSessionEvent[]
   /** Hook registry preserved from the previous stage-ui store API. */
   hooks: ReturnType<typeof createChatHooks>
   /** Enqueues a user send for the target session, preserving FIFO order. */
@@ -231,6 +238,12 @@ export interface ChatOrchestratorRuntimeDeps {
   runtimeContextProviders?: Array<() => ContextMessage | null | undefined>
   /** Session persistence and generation guard port. */
   session: ChatOrchestratorSessionPort
+  /** Session event storage/query boundary. @default in-process event log */
+  sessionEvents?: AgentSessionEventPort
+  /** Optional host owner that atomically prevents duplicate tool side effects. */
+  toolExecutionControl?: AgentToolExecutionControlPort
+  /** Optional platform owner for durable turn admission and recovery checkpoints. */
+  turnControl?: AgentTurnControlPort
   /** Optional adapter for removing framework proxies before provider composition. */
   unwrapMessage?: <T>(message: T) => T
 }
@@ -259,6 +272,8 @@ export interface ChatOrchestratorSendOptions {
   model: string
   /** Provider-specific request options, including headers and output-token limits. */
   providerConfig?: Record<string, unknown>
+  /** Earlier interrupted self turn explicitly continued by this send. */
+  resumesTurnId?: string
   /**
    * Send origin classification. Defaults to `voice` when `input` is present,
    * otherwise `text`. `self` marks an internal turn (e.g. answering a captured
@@ -299,6 +314,15 @@ export interface QueuedSendSnapshot {
   messagePreview: string
   /** Session that owns the queued send. */
   sessionId: string
+}
+
+interface ActiveSend {
+  /** Cancellation source passed through the LLM port to provider and tool work. */
+  abortController: AbortController
+  /** Session that owns the running send. */
+  sessionId: string
+  /** Correlation key used to isolate remote cancellation requests. */
+  turnId: string
 }
 
 /** Correlation keys shared by every analytics milestone from one user-to-assistant round. */
@@ -343,8 +367,10 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
   const monotonicNow = deps.monotonicNow ?? (() => globalThis.performance?.now?.() ?? Date.now())
   const createId = deps.createId ?? defaultCreateId
   const unwrapMessage = deps.unwrapMessage ?? (<T>(message: T) => message)
+  const sessionEvents = deps.sessionEvents ?? new AgentSessionEventLog({ now })
 
   let sending = false
+  let activeSend: ActiveSend | undefined
   let pendingQueuedSends: QueuedSend[] = []
 
   function emitStateChange() {
@@ -397,7 +423,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       }
 
       if (rawMessage.role === 'assistant') {
-        const { categorization: _categorization, slices: _slices, tool_results: _toolResults, ...rest } = rawMessage as ChatAssistantMessage
+        const { categorization: _categorization, interrupted: _interrupted, slices: _slices, tool_results: _toolResults, ...rest } = rawMessage as ChatAssistantMessage
         return unwrapMessage(rest)
       }
 
@@ -457,10 +483,10 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     })
 
     const isStaleGeneration = () => deps.session.getSessionGeneration(sessionId) !== generation
-    const shouldAbort = () => isStaleGeneration()
-    if (shouldAbort())
+    if (isStaleGeneration())
       return
 
+    const abortController = new AbortController()
     setSending(true)
 
     const buildingMessage: StreamingAssistantMessage = {
@@ -476,6 +502,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     // The user message is the durable start of a round, so its ID also serves
     // as the correlation key for every telemetry milestone emitted by it.
     const roundId = createId()
+    activeSend = { abortController, sessionId, turnId: roundId }
     const correlation: ChatRoundCorrelation = {
       conversationId: sessionId,
       roundId,
@@ -497,26 +524,136 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     })
     const roundStartedAt = monotonicNow()
 
+    let assistantCommitted = false
     let finalizeStream: (() => Promise<void>) | undefined
-    try {
-      await hooks.emitBeforeMessageComposedHooks(sendingMessage, streamingMessageContext)
+    let finalizingStream = false
+    let fullText = ''
+    let terminalFinishReason: Extract<StreamEvent, { type: 'finish' }>['finishReason'] | undefined
+    let turnControlAdmissionResolved = false
+    let turnControlStarted = false
+    let turnControlSettled = false
+    let checkpointDrain: Promise<void> | undefined
+    let pendingCheckpoint: AgentTurnCheckpointInput | undefined
 
-      const contentParts: CommonContentPart[] = [{ text: sendingMessage, type: 'text' }]
+    function checkpointAssistant() {
+      if (!turnControlStarted || !deps.turnControl)
+        return
 
-      if (options.attachments) {
-        for (const attachment of options.attachments) {
-          if (attachment.type === 'image') {
-            contentParts.push({
-              image_url: {
-                url: `data:${attachment.mimeType};base64,${attachment.data}`,
-              },
-              type: 'image_url',
-            })
+      const reasoningText = buildingMessage.categorization?.reasoning
+      pendingCheckpoint = {
+        assistantMessageId: buildingMessage.id ?? roundId,
+        assistantText: typeof buildingMessage.content === 'string' ? buildingMessage.content : '',
+        ...(reasoningText ? { reasoningText } : {}),
+        sessionId,
+        turnId: roundId,
+      }
+      if (checkpointDrain)
+        return
+
+      checkpointDrain = (async () => {
+        while (pendingCheckpoint) {
+          // Only the latest visible prefix matters while an earlier IPC write
+          // is running. Replacing intermediate snapshots keeps long streams
+          // from building an unbounded post-response checkpoint backlog.
+          const checkpoint = pendingCheckpoint
+          pendingCheckpoint = undefined
+          try {
+            await deps.turnControl?.checkpoint(checkpoint)
+          }
+          catch (error) {
+            // Streaming remains usable when a platform checkpoint temporarily
+            // fails; the final settlement gets another durability opportunity.
+            console.error('Failed to checkpoint active Agent turn:', error)
           }
         }
-      }
+      })().finally(() => {
+        checkpointDrain = undefined
+        if (pendingCheckpoint)
+          checkpointAssistant()
+      })
+    }
 
-      const finalContent = contentParts.length > 1 ? contentParts : sendingMessage
+    async function waitForCheckpointDrain() {
+      for (;;) {
+        const drain = checkpointDrain
+        if (!drain)
+          return
+        await drain
+      }
+    }
+
+    function publishStreamingMessage() {
+      patchForegroundStream(sessionId, buildingMessage)
+      checkpointAssistant()
+    }
+
+    // Provider cancellation stops new network/tool output immediately. Parser
+    // finalization is still allowed to flush already-received text so the
+    // interrupted assistant snapshot matches what the user saw.
+    const shouldIgnoreStreamUpdate = () => isStaleGeneration()
+      || (abortController.signal.aborted && !finalizingStream)
+    const prepareAssistantMessage = (status: 'complete' | 'interrupted') => {
+      const reasoning = buildingMessage.categorization?.reasoning?.trim()
+      const hasOutput = !!reasoning
+        || (typeof buildingMessage.content === 'string' && !!buildingMessage.content.trim())
+        || buildingMessage.slices.length > 0
+        || buildingMessage.tool_results.length > 0
+
+      if (assistantCommitted || isStaleGeneration() || !hasOutput)
+        return undefined
+
+      if (status === 'interrupted')
+        buildingMessage.interrupted = true
+
+      return buildingMessage
+    }
+
+    const commitAssistantMessage = (message: StreamingAssistantMessage) => {
+      deps.session.appendSessionMessage(sessionId, message)
+      deps.onAssistantMessageAppended?.({
+        message,
+        messageText: fullText,
+        sessionId,
+      })
+      assistantCommitted = true
+    }
+
+    const contentParts: CommonContentPart[] = [{ text: sendingMessage, type: 'text' }]
+    if (options.attachments) {
+      for (const attachment of options.attachments) {
+        if (attachment.type === 'image') {
+          contentParts.push({
+            image_url: {
+              url: `data:${attachment.mimeType};base64,${attachment.data}`,
+            },
+            type: 'image_url',
+          })
+        }
+      }
+    }
+    const finalContent = contentParts.length > 1 ? contentParts : sendingMessage
+    const userMessage = {
+      content: finalContent,
+      createdAt: sendingCreatedAt,
+      id: roundId,
+      role: 'user' as const,
+      ...(sendSource === 'self' ? { source: 'self' as const } : {}),
+    }
+
+    try {
+      turnControlStarted = await deps.turnControl?.start({
+        assistantMessageId: buildingMessage.id ?? roundId,
+        ...(options.resumesTurnId ? { resumesTurnId: options.resumesTurnId } : {}),
+        sessionId,
+        source: sendSource,
+        turnId: roundId,
+        userMessage,
+        userMessageId: roundId,
+        userText: sendingMessage,
+      }) ?? false
+      turnControlAdmissionResolved = true
+      abortController.signal.throwIfAborted()
+      await hooks.emitBeforeMessageComposedHooks(sendingMessage, streamingMessageContext)
       if (!streamingMessageContext.input) {
         streamingMessageContext.input = {
           data: {
@@ -526,20 +663,34 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         }
       }
 
-      if (shouldAbort())
+      abortController.signal.throwIfAborted()
+      if (isStaleGeneration())
         return
 
-      const userMessage = {
-        content: finalContent,
-        createdAt: sendingCreatedAt,
-        id: roundId,
-        role: 'user' as const,
-        ...(sendSource === 'self' ? { source: 'self' as const } : {}),
-      }
       // Self prompts intentionally remain `role: 'user'` in the durable raw
       // history. The `source: 'self'` metadata preserves their real origin for
       // auditing, while the complete user/assistant sequence makes autonomous
       // activity queryable through the same database path as ordinary turns.
+      if (!turnControlStarted) {
+        await sessionEvents.append(sessionId, 'turn.admitted', {
+          assistantMessageId: buildingMessage.id ?? roundId,
+          ownerId: 'local-runtime',
+          ...(options.resumesTurnId ? { resumesTurnId: options.resumesTurnId } : {}),
+          sessionId,
+          source: sendSource,
+          turnId: roundId,
+          userMessage,
+          userMessageId: userMessage.id,
+          userText: sendingMessage,
+        })
+        await sessionEvents.append(sessionId, 'message.appended', {
+          message: userMessage,
+          messageId: userMessage.id,
+          role: 'user',
+          status: 'complete',
+          turnId: roundId,
+        })
+      }
       deps.session.appendSessionMessage(sessionId, userMessage)
 
       // Cloud sync v1: only the raw text part round-trips; image attachments
@@ -565,14 +716,12 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       }
 
       const categorizer = createStreamingCategorizer(deps.getActiveProvider())
-      let fullText = ''
       let streamPosition = 0
-      let terminalFinishReason: Extract<StreamEvent, { type: 'finish' }>['finishReason'] | undefined
 
       // Self-prompt capture: the trailing `//` line of a reply is withheld from
       // the visible/TTS stream and surfaced via onSelfPromptCaptured instead.
       const capture = createSelfPromptCapture(async (literal) => {
-        if (shouldAbort())
+        if (shouldIgnoreStreamUpdate())
           return
 
         categorizer.consume(literal)
@@ -595,7 +744,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
               type: 'text',
             })
           }
-          patchForegroundStream(sessionId, buildingMessage)
+          publishStreamingMessage()
         }
       })
 
@@ -633,15 +782,15 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
             reasoning: reasoningContentField || finalCategorization.reasoning,
             speech: finalCategorization.speech,
           }
-          patchForegroundStream(sessionId, buildingMessage)
+          publishStreamingMessage()
         },
         onLiteral: async (literal) => {
-          if (shouldAbort())
+          if (shouldIgnoreStreamUpdate())
             return
           await capture.consume(literal)
         },
         onSpecial: async (special) => {
-          if (shouldAbort())
+          if (shouldIgnoreStreamUpdate())
             return
 
           await hooks.emitTokenSpecialHooks(special, streamingMessageContext)
@@ -651,10 +800,12 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       finalizeStream = async () => {
         if (parserEnded)
           return
+        finalizingStream = true
         try {
           await parser.end()
         }
         finally {
+          finalizingStream = false
           parserEnded = true
         }
       }
@@ -662,17 +813,17 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const toolCallQueue = createQueue<ChatSlices>({
         handlers: [
           async (ctx) => {
-            if (shouldAbort())
+            if (shouldIgnoreStreamUpdate())
               return
             if (ctx.data.type === 'tool-call') {
               buildingMessage.slices.push(ctx.data)
-              patchForegroundStream(sessionId, buildingMessage)
+              publishStreamingMessage()
               return
             }
 
             if (ctx.data.type === 'tool-call-result') {
               buildingMessage.tool_results.push(ctx.data)
-              patchForegroundStream(sessionId, buildingMessage)
+              publishStreamingMessage()
             }
           },
         ],
@@ -748,6 +899,10 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       }
 
       streamingMessageContext.composedMessage = newMessages as Message[]
+      await sessionEvents.append(sessionId, 'prompt.composed', {
+        messages: newMessages as Message[],
+        turnId: roundId,
+      })
       deps.onPromptProjection?.({
         composedMessage: newMessages as Message[],
         contexts: contextsSnapshot,
@@ -776,7 +931,8 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         ? Math.floor(configuredMaxTokens)
         : undefined
 
-      if (shouldAbort())
+      abortController.signal.throwIfAborted()
+      if (isStaleGeneration())
         return
 
       const llmRequestStartedAt = monotonicNow()
@@ -789,18 +945,19 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       })
 
       await deps.llm.stream(options.model, options.chatProvider, newMessages as Message[], {
+        abortSignal: abortController.signal,
         captureToolErrors: true,
         headers,
         maxTokens,
         onStreamEvent: async (event: StreamEvent) => {
+          if (shouldIgnoreStreamUpdate())
+            return
+
           switch (event.type) {
             case 'finish':
               terminalFinishReason = event.finishReason
               break
             case 'reasoning-delta': {
-              if (shouldAbort())
-                return
-
               const { reasoning = '' } = buildingMessage.categorization ?? {}
               const nextReasoning = reasoning + event.text
               buildingMessage.categorization = {
@@ -811,7 +968,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
                 = Math.floor(nextReasoning.length / STREAMING_UI_FLUSH_CHUNK_SIZE)
                   > Math.floor(reasoning.length / STREAMING_UI_FLUSH_CHUNK_SIZE)
               if (!reasoning || crossesBoundary)
-                patchForegroundStream(sessionId, buildingMessage)
+                publishStreamingMessage()
               break
             }
             case 'text-delta':
@@ -854,26 +1011,101 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
               throw event.error ?? new Error('Stream error')
           }
         },
+        onToolExecutionFinish: async (event) => {
+          if (deps.toolExecutionControl) {
+            await deps.toolExecutionControl.settle({
+              callId: event.toolCallId,
+              durationMs: event.durationMs,
+              ...(event.error === undefined
+                ? { output: normalizeAgentSessionJsonValue(event.output), status: 'completed' as const }
+                : { error: errorMessageFromValue(event.error), status: 'failed' as const }),
+              input: normalizeAgentSessionJsonValue(event.input),
+              sessionId,
+              toolName: event.toolName,
+              turnId: roundId,
+            })
+            return
+          }
+          await sessionEvents.append(sessionId, 'tool.call-settled', {
+            callId: event.toolCallId,
+            durationMs: event.durationMs,
+            ...(event.error === undefined
+              ? { output: normalizeAgentSessionJsonValue(event.output), status: 'completed' as const }
+              : { error: errorMessageFromValue(event.error), status: 'failed' as const }),
+            toolName: event.toolName,
+            turnId: roundId,
+          })
+        },
+        onToolExecutionStart: async (event) => {
+          if (deps.toolExecutionControl) {
+            return await deps.toolExecutionControl.claim({
+              callId: event.toolCallId,
+              input: normalizeAgentSessionJsonValue(event.input),
+              sessionId,
+              toolName: event.toolName,
+              turnId: roundId,
+            })
+          }
+          await sessionEvents.append(sessionId, 'tool.call-started', {
+            callId: event.toolCallId,
+            input: normalizeAgentSessionJsonValue(event.input),
+            toolName: event.toolName,
+            turnId: roundId,
+          })
+          return { disposition: 'execute' as const }
+        },
         tools: options.tools,
         waitForTools: true,
       })
 
       await finalizeStream()
+      abortController.signal.throwIfAborted()
+      // `incomplete-action` is emitted only after the bounded completion gate
+      // also failed to turn an action preamble into a real tool call. Treating
+      // that as a normal stop would reintroduce the original false-completion
+      // bug and would project the promise itself into semantic memory.
+      if (terminalFinishReason === 'incomplete-action')
+        throw new Error('AIRI could not complete the promised tool action')
       deps.onAssistantResponseRendered?.({
         ...correlation,
         latencyMs: Math.round(monotonicNow() - llmRequestStartedAt),
         model: options.model,
       })
 
-      if (!isStaleGeneration() && buildingMessage.slices.length > 0) {
-        const finalAssistant = buildingMessage
-        deps.session.appendSessionMessage(sessionId, finalAssistant)
-        deps.onAssistantMessageAppended?.({
-          message: finalAssistant,
-          messageText: fullText,
+      const completedAssistantMessage = prepareAssistantMessage('complete')
+      await waitForCheckpointDrain()
+      if (turnControlStarted) {
+        await deps.turnControl?.settle({
+          ...(completedAssistantMessage
+            ? { assistantMessage: completedAssistantMessage, assistantMessageStatus: 'complete' as const }
+            : {}),
+          ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
           sessionId,
+          status: 'completed',
+          turnId: roundId,
+        })
+        turnControlSettled = true
+      }
+      else if (completedAssistantMessage) {
+        await sessionEvents.append(sessionId, 'message.appended', {
+          message: completedAssistantMessage,
+          messageId: completedAssistantMessage.id ?? roundId,
+          role: 'assistant',
+          status: 'complete',
+          turnId: roundId,
         })
       }
+      if (!turnControlStarted) {
+        await sessionEvents.append(sessionId, 'turn.closed', {
+          ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
+          status: 'completed',
+          turnId: roundId,
+        })
+      }
+      if (completedAssistantMessage)
+        commitAssistantMessage(completedAssistantMessage)
+      if (activeSend?.abortController === abortController)
+        activeSend = undefined
 
       await hooks.emitStreamEndHooks(streamingMessageContext)
       await hooks.emitAssistantResponseEndHooks(fullText, streamingMessageContext)
@@ -890,21 +1122,6 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         messageText: fullText,
         sessionMessages: sessionMessagesForSend,
       })
-
-      if (deps.memory && fullText.trim()) {
-        try {
-          await deps.memory.rememberTurn({
-            assistantText: fullText,
-            sessionId,
-            userText: sendingMessage,
-          })
-        }
-        catch (error) {
-          // The response is already complete and visible. Keep it successful
-          // while surfacing persistence failure for diagnostics.
-          console.error('Failed to persist conversation memory:', error)
-        }
-      }
 
       resetForegroundStream(sessionId)
       const durationMs = Math.round(monotonicNow() - roundStartedAt)
@@ -934,17 +1151,44 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       catch (finalizeError) {
         console.error('Failed to flush interrupted assistant stream:', finalizeError)
       }
-      console.error('Error sending message:', error)
-      deps.onMessageRoundFailed?.({
-        ...correlation,
-        errorCode: 'llm_response_failed',
-        failureStage: 'llm_response',
-        model: options.model,
-        provider: activeProvider,
-        source: sendSource,
-      })
-      if (isActivationAttempt) {
-        deps.onChatActivationFailed?.({
+      const interruptedAssistantMessage = prepareAssistantMessage('interrupted')
+      const wasCancelled = abortController.signal.aborted
+      const status = wasCancelled ? 'cancelled' : 'failed'
+      if (turnControlStarted && !turnControlSettled) {
+        await waitForCheckpointDrain()
+        await deps.turnControl?.settle({
+          ...(interruptedAssistantMessage
+            ? { assistantMessage: interruptedAssistantMessage, assistantMessageStatus: 'interrupted' as const }
+            : {}),
+          ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
+          sessionId,
+          status,
+          turnId: roundId,
+        })
+        turnControlSettled = true
+      }
+      else if (turnControlAdmissionResolved && !turnControlStarted && interruptedAssistantMessage) {
+        await sessionEvents.append(sessionId, 'message.appended', {
+          message: interruptedAssistantMessage,
+          messageId: interruptedAssistantMessage.id ?? roundId,
+          role: 'assistant',
+          status: 'interrupted',
+          turnId: roundId,
+        })
+      }
+      if (turnControlAdmissionResolved && !turnControlStarted) {
+        await sessionEvents.append(sessionId, 'turn.closed', {
+          ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
+          status,
+          turnId: roundId,
+        })
+      }
+      if (interruptedAssistantMessage)
+        commitAssistantMessage(interruptedAssistantMessage)
+      resetForegroundStream(sessionId)
+      if (!wasCancelled) {
+        console.error('Error sending message:', error)
+        deps.onMessageRoundFailed?.({
           ...correlation,
           errorCode: 'llm_response_failed',
           failureStage: 'llm_response',
@@ -952,10 +1196,22 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
           provider: activeProvider,
           source: sendSource,
         })
+        if (isActivationAttempt) {
+          deps.onChatActivationFailed?.({
+            ...correlation,
+            errorCode: 'llm_response_failed',
+            failureStage: 'llm_response',
+            model: options.model,
+            provider: activeProvider,
+            source: sendSource,
+          })
+        }
       }
       throw error
     }
     finally {
+      if (activeSend?.abortController === abortController)
+        activeSend = undefined
       setSending(false)
       deps.onSendSettled?.({ sessionId })
     }
@@ -1029,6 +1285,22 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     emitStateChange()
   }
 
+  function cancelActiveSend(sessionId?: string) {
+    if (!activeSend || activeSend.abortController.signal.aborted)
+      return false
+    if (sessionId && activeSend.sessionId !== sessionId)
+      return false
+
+    activeSend.abortController.abort(new DOMException('Chat send was cancelled', 'AbortError'))
+    return true
+  }
+
+  function cancelActiveTurn(turnId: string) {
+    if (!activeSend || activeSend.turnId !== turnId)
+      return false
+    return cancelActiveSend(activeSend.sessionId)
+  }
+
   function getPendingQueuedSendSnapshot() {
     return pendingQueuedSends.map(queued => ({
       cancelled: !!queued.cancelled,
@@ -1041,10 +1313,16 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
   }
 
   return {
+    cancelActiveSend,
+    cancelActiveTurn,
     cancelPendingSends,
+    getActiveTurn: () => activeSend
+      ? { sessionId: activeSend.sessionId, turnId: activeSend.turnId }
+      : undefined,
     getPendingQueuedSendCount: () => pendingQueuedSends.length,
     getPendingQueuedSendSnapshot,
     getSending: () => sending,
+    getSessionEvents: (sessionId, afterSequence) => sessionEvents.list(sessionId, afterSequence),
     hooks,
     ingest,
     setSending,

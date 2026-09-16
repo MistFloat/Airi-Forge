@@ -756,10 +756,10 @@ pages:
       title: Long-Term Memory
       page:
         description: >-
-          Long-term memory stores conversation embeddings in a PostgreSQL database
-          with pgvector extension. Configure the connection and embedding model below.
+          Raw evidence preserves user and assistant exchanges. Long-term memories are
+          written explicitly by the agent or user and searched by words through MCP.
       enable: Enable Long-Term Memory
-      enable-description: Store and retrieve conversation history using vector similarity search
+      enable-description: Preserve raw exchanges and enable explicit text search over evidence and authored memories
       connection-string: PostgreSQL Connection String
       connection-string-description: Connection string for the pgvector-enabled PostgreSQL database
       namespace: Memory Namespace
@@ -784,26 +784,16 @@ pages:
       max-results-description: Maximum number of memories to retrieve per query
       instruction-token-budget: Persistent instruction token budget
       instruction-token-budget-description: Maximum estimated tokens reserved for deterministic, always-present user instructions on every LLM request.
-      extractor-provider: Candidate extractor LLM provider
-      extractor-provider-description: AIRI provider ID used when API Key is empty. Ignored when a dedicated API Key is supplied.
-      extractor-api-key: Candidate extractor API Key
-      extractor-api-key-description: Used by the dedicated OpenAI-compatible extraction endpoint and stored only in this local app profile. Takes precedence over the AIRI provider.
-      extractor-base-url: Candidate extractor Base URL
-      extractor-base-url-description: OpenAI-compatible API endpoint, for example https://api.openai.com/v1/.
-      extractor-model: Low-cost candidate extractor model
-      extractor-model-description: Uses a cheap text model to propose structured Fact/Preference candidates. Leave blank to retain Evidence without automatic extraction.
       configured: Long-term pgvector memory is configured. The database connection is checked on first recall or write.
       health:
         database-success: PostgreSQL connected · pgvector {version} · {count} memories
         embedding-success: Embedding succeeded · {dimensions} dimensions
-        extractor-success: 'Candidate extractor succeeded · {count} claims · sample: {sample}'
         failed: Connection test failed
         test-database: Test database
         test-embedding: Test embedding
-        test-extractor: Test candidate LLM
       lab:
         title: Long-term memory retrieval lab
-        description: Import positive golden targets into an isolated evaluation namespace without using the candidate extractor, then inspect the ten nearest Embedding matches without contaminating real chat recall.
+        description: Import positive golden targets into an isolated evaluation namespace, then inspect the ten nearest Embedding matches without contaminating agent-managed memory.
         dataset-file: Long-term memory evaluation JSON
         dataset-file-description: Accepts longttermmemorytest.json. Imports should_recall_memory_ids and parseable must_not_recall_memory_ids (tagged forbidden) to measure both recall and leakage.
         inspect: Inspect file

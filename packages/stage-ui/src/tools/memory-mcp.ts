@@ -1,13 +1,11 @@
-import type { LongTermMemoryDraft, LongTermMemoryRecallResult, LongTermMemoryRecallTrace } from '../stores/modules/memory-long-term'
+import type { LongTermMemoryDraft, LongTermMemoryEvidence, LongTermMemoryItem } from '../stores/modules/memory-long-term'
 import type { McpCallToolResult, McpToolRuntime } from './mcp'
 
 /** Long-term memory operations exposed through the built-in memory MCP. */
 export interface MemoryMcpPort {
-  recallMemories: (query: string, options?: { maxResults?: number }) => Promise<{
-    memories: LongTermMemoryRecallResult[]
-    trace: LongTermMemoryRecallTrace
-  }>
   saveMemory: (draft: LongTermMemoryDraft, options?: { createdBy?: 'agent' | 'user' }) => Promise<string>
+  searchEvidenceText: (query: string, options?: { limit?: number }) => Promise<Array<Pick<LongTermMemoryEvidence, 'content' | 'id' | 'sourceRole' | 'sourceType'>>>
+  searchMemoriesText: (query: string, options?: { limit?: number }) => Promise<Array<Pick<LongTermMemoryItem, 'content' | 'createdBy' | 'memoryId' | 'title'>>>
 }
 
 const memoryToolDescriptors = [
@@ -30,19 +28,34 @@ const memoryToolDescriptors = [
     toolName: 'remember',
   },
   {
-    description: 'Semantically search AIRI long-term memory with the configured Embedding model. Use this when prior user facts, preferences, or summaries may help the current task.',
+    description: 'Search explicitly authored long-term memories by words or phrases.',
     inputSchema: {
       additionalProperties: false,
       properties: {
         limit: { default: 5, maximum: 10, minimum: 1, type: 'integer' },
-        query: { description: 'Meaning-focused search query.', minLength: 1, type: 'string' },
+        query: { description: 'Word or phrase to find in long-term memory.', minLength: 1, type: 'string' },
       },
       required: ['query'],
       type: 'object',
     },
-    name: 'memory::search',
+    name: 'memory::search_memories',
     serverName: 'memory',
-    toolName: 'search',
+    toolName: 'search_memories',
+  },
+  {
+    description: 'Search immutable raw user and assistant conversation evidence by words or phrases.',
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        limit: { default: 5, maximum: 10, minimum: 1, type: 'integer' },
+        query: { description: 'Word or phrase to find in original conversation evidence.', minLength: 1, type: 'string' },
+      },
+      required: ['query'],
+      type: 'object',
+    },
+    name: 'memory::search_evidence',
+    serverName: 'memory',
+    toolName: 'search_evidence',
   },
 ] satisfies Awaited<ReturnType<McpToolRuntime['listTools']>>
 
@@ -52,8 +65,10 @@ export function createMemoryMcpRuntime(memory: MemoryMcpPort): McpToolRuntime {
     async callTool(payload) {
       if (payload.name === 'memory::remember')
         return await remember(payload.arguments, memory)
-      if (payload.name === 'memory::search')
-        return await search(payload.arguments, memory)
+      if (payload.name === 'memory::search_memories')
+        return await searchMemories(payload.arguments, memory)
+      if (payload.name === 'memory::search_evidence')
+        return await searchEvidence(payload.arguments, memory)
       throw new Error(`Unknown memory MCP tool: ${payload.name}`)
     },
     async listTools() {
@@ -101,18 +116,34 @@ function requiredString(value: unknown, field: string): string {
   return value.trim()
 }
 
-async function search(args: Record<string, unknown> | undefined, memory: MemoryMcpPort): Promise<McpCallToolResult> {
+async function searchEvidence(args: Record<string, unknown> | undefined, memory: MemoryMcpPort): Promise<McpCallToolResult> {
   const query = requiredString(args?.query, 'query')
   const limit = Math.trunc(boundedNumber(args?.limit, 5, 1, 10))
-  const result = await memory.recallMemories(query, { maxResults: limit })
-  const memories = result.memories.map(item => ({
+  const result = await memory.searchEvidenceText(query, { limit })
+  const evidence = result.map(item => ({
     content: item.content,
+    evidenceId: item.id,
+    sourceRole: item.sourceRole,
+    sourceType: item.sourceType,
+  }))
+  return {
+    content: [{ text: evidence.length ? JSON.stringify(evidence, null, 2) : 'No matching original evidence found.', type: 'text' }],
+    structuredContent: { evidence, query },
+  }
+}
+
+async function searchMemories(args: Record<string, unknown> | undefined, memory: MemoryMcpPort): Promise<McpCallToolResult> {
+  const query = requiredString(args?.query, 'query')
+  const limit = Math.trunc(boundedNumber(args?.limit, 5, 1, 10))
+  const result = await memory.searchMemoriesText(query, { limit })
+  const memories = result.map(item => ({
+    content: item.content,
+    createdBy: item.createdBy,
     memoryId: item.memoryId,
-    similarity: item.similarity,
     title: item.title,
   }))
   return {
     content: [{ text: memories.length ? JSON.stringify(memories, null, 2) : 'No matching long-term memories found.', type: 'text' }],
-    structuredContent: { memories, query, retrievalId: result.trace.retrievalId },
+    structuredContent: { memories, query },
   }
 }
