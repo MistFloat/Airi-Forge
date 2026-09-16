@@ -24,6 +24,7 @@ lerna-debug.log*
 .superpowers/
 .trae/
 seethrough_output*.psd
+DeepSeekdsh/
 
 # Anything .local, especially for .env.local
 *.local
