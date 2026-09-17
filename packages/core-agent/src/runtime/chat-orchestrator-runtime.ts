@@ -1156,16 +1156,28 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const status = wasCancelled ? 'cancelled' : 'failed'
       if (turnControlStarted && !turnControlSettled) {
         await waitForCheckpointDrain()
-        await deps.turnControl?.settle({
-          ...(interruptedAssistantMessage
-            ? { assistantMessage: interruptedAssistantMessage, assistantMessageStatus: 'interrupted' as const }
-            : {}),
-          ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
-          sessionId,
-          status,
-          turnId: roundId,
-        })
-        turnControlSettled = true
+        try {
+          await deps.turnControl?.settle({
+            ...(interruptedAssistantMessage
+              ? { assistantMessage: interruptedAssistantMessage, assistantMessageStatus: 'interrupted' as const }
+              : {}),
+            ...(terminalFinishReason === undefined ? {} : { finishReason: terminalFinishReason }),
+            sessionId,
+            status,
+            turnId: roundId,
+          })
+          turnControlSettled = true
+        }
+        catch (settleError) {
+          // NOTICE:
+          // A rejected settlement must not mask the original provider/stream
+          // failure. A lifecycle interrupt can close the turn between the
+          // stream failure and this settlement, and throwing the guard error
+          // here would replace the real cause the UI needs to surface.
+          // The main-process runner converges interrupted turns on its own,
+          // so logging is enough for every legitimate conflict.
+          console.error('Failed to settle Agent turn after stream failure:', settleError)
+        }
       }
       else if (turnControlAdmissionResolved && !turnControlStarted && interruptedAssistantMessage) {
         await sessionEvents.append(sessionId, 'message.appended', {

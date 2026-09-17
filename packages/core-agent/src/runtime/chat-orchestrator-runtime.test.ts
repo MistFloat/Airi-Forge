@@ -858,6 +858,38 @@ describe('createChatOrchestratorRuntime', () => {
 
   // ROOT CAUSE:
   //
+  // A lifecycle-interrupted turn rejected the failed settlement with
+  // "already terminal with status interrupted". Throwing that rejection from
+  // the stream-failure handler replaced the original provider error, so the
+  // UI surfaced the state-machine guard instead of the real failure.
+  //
+  // We fixed this by logging the settlement conflict and re-throwing the
+  // original stream error.
+  it('keeps the original provider error when the failed settlement is rejected', async () => {
+    const harness = createHarness()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ text: 'partial reply', type: 'text-delta' })
+      throw new Error('connection lost')
+    })
+    harness.settleTurn.mockRejectedValueOnce(
+      new Error('Agent turn user-id is already terminal with status interrupted'),
+    )
+
+    await expect(harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })).rejects.toThrow('connection lost')
+
+    expect(consoleError).toHaveBeenCalledWith(
+      'Failed to settle Agent turn after stream failure:',
+      expect.any(Error),
+    )
+    consoleError.mockRestore()
+  })
+
+  // ROOT CAUSE:
+  //
   // Queue cancellation never reached the currently running provider request,
   // so a reset or explicit stop left the active stream and its tools running.
   //
