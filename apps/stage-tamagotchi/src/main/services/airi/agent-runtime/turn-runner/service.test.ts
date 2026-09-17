@@ -223,4 +223,58 @@ describe('agent turn runner', () => {
       }),
     ])
   })
+
+  // ROOT CAUSE:
+  //
+  // The main process closes a turn as interrupted when its renderer detaches
+  // (did-start-loading / render-process-gone / destroyed). A renderer that
+  // survives the navigation race then settles the same turn as failed or
+  // cancelled, and the terminal guard used to throw, masking the original
+  // provider failure behind "already terminal with status interrupted".
+  //
+  // We fixed this by converging late failed/cancelled settlements of
+  // lifecycle-interrupted turns instead of throwing, while keeping the guard
+  // for every other terminal mismatch.
+  it('converges late failed/cancelled settlements of a lifecycle-interrupted turn', async () => {
+    const eventStore = createEventStore([], () => 100)
+    const runner = await createAgentTurnRunner({ eventStore: eventStore.service })
+    await runner.start({
+      assistantMessageId: 'assistant-a',
+      sessionId: 'session-a',
+      source: 'text',
+      turnId: 'turn-a',
+      userMessage,
+      userMessageId: 'user-a',
+      userText: 'hello',
+    }, 'renderer-1')
+    await runner.interruptOwner('renderer-1', 'renderer-detached')
+    const eventCountAfterInterrupt = eventStore.events.length
+
+    const convergedFailed = await runner.settle({
+      sessionId: 'session-a',
+      status: 'failed',
+      turnId: 'turn-a',
+    }, 'renderer-1')
+    expect(convergedFailed).toEqual(expect.objectContaining({
+      interruptionReason: 'renderer-detached',
+      status: 'interrupted',
+    }))
+
+    const convergedCancelled = await runner.settle({
+      sessionId: 'session-a',
+      status: 'cancelled',
+      turnId: 'turn-a',
+    }, 'renderer-1')
+    expect(convergedCancelled.status).toBe('interrupted')
+
+    // Convergence only returns the current record; it never appends events.
+    expect(eventStore.events.length).toBe(eventCountAfterInterrupt)
+
+    // The guard still rejects settlements that contradict a terminal turn.
+    await expect(runner.settle({
+      sessionId: 'session-a',
+      status: 'completed',
+      turnId: 'turn-a',
+    }, 'renderer-1')).rejects.toThrow(/already terminal with status interrupted/)
+  })
 })

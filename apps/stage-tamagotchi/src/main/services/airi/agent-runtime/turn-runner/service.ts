@@ -145,6 +145,18 @@ export async function createAgentTurnRunner(options: AgentTurnRunnerOptions): Pr
         await options.eventStore.flush()
         return cloneRecord(current)
       }
+      // The main process closes a turn as interrupted when its renderer
+      // detaches (did-start-loading, render-process-gone, destroyed) or the
+      // host restarts. A renderer that survives the navigation race can still
+      // converge its failed/cancelled settlement afterwards. The visible
+      // assistant prefix is already durable through turn.checkpointed events
+      // and the recovery flow, so converging instead of throwing keeps the
+      // original stream failure observable instead of masking it behind this
+      // state-machine guard.
+      if (current.status === 'interrupted' && (input.status === 'failed' || input.status === 'cancelled')) {
+        await options.eventStore.flush()
+        return cloneRecord(current)
+      }
       throw new Error(`Agent turn ${input.turnId} is already terminal with status ${current.status}`)
     }
 
