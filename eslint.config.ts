@@ -28,11 +28,6 @@ export default defineConfig({
     '.agents/**',
     '.github/**',
     'CLAUDE.md', // Skip the symbolic link
-    // NOTICE:
-    // Debug PRDs and investigation notes are not production code; they contain
-    // ad-hoc markdown (images without alt text, inline diffs) that the markdown
-    // linter flags. Excluded so pre-commit --fix does not block commits.
-    'PRD&debug/**',
   ],
 }, {
   rules: {

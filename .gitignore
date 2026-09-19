@@ -24,7 +24,12 @@ lerna-debug.log*
 .superpowers/
 .trae/
 seethrough_output*.psd
-DeepSeekdsh/
+
+# Local runtime state written by the desktop app in a dev checkout
+.airi/
+
+# A project-local pnpm store directory, if one is configured
+.pnpm-store/
 
 # Anything .local, especially for .env.local
 *.local
