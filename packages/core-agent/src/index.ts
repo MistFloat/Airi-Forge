@@ -29,6 +29,17 @@ export type {
 } from './contracts/turn-control-port'
 
 export {
+  compactProviderMessages,
+  countMessageCharacters,
+  findRecentWindowStart,
+  TOOL_RESULT_TRUNCATION_MARKER,
+} from './messages/context-budget'
+export type {
+  BudgetableMessage,
+  ContextBudgetOptions,
+  ContextBudgetStats,
+} from './messages/context-budget'
+export {
   buildContextPromptMessage,
   formatContextPromptText,
 } from './messages/context-prompt'

@@ -5,12 +5,14 @@ import type { AgentContextPort } from '../contracts/context-port'
 import type { AgentForegroundStreamPort } from '../contracts/stream-port'
 import type { AgentToolExecutionControlPort } from '../contracts/tool-execution-control-port'
 import type { AgentTurnCheckpointInput, AgentTurnControlPort } from '../contracts/turn-control-port'
+import type { ContextBudgetOptions } from '../messages/context-budget'
 import type { AgentSessionEvent, AgentSessionEventPort } from '../session/events'
 import type { ChatAssistantMessage, ChatHistoryItem, ChatSlices, ChatStreamEventContext, ContextMessage, StreamingAssistantMessage } from '../types/chat'
 import type { StreamEvent, StreamOptions } from '../types/llm'
 
 import { createQueue } from '@proj-airi/stream-kit'
 
+import { compactProviderMessages } from '../messages/context-budget'
 import { formatContextPromptText } from '../messages/context-prompt'
 import { formatTimePrefix } from '../messages/datetime-prefix'
 import { AgentSessionEventLog, normalizeAgentSessionJsonValue } from '../session/events'
@@ -101,6 +103,15 @@ export interface ChatOrchestratorRuntime {
 export interface ChatOrchestratorRuntimeDeps {
   /** Context registry facade used for runtime context ingest and prompt snapshots. */
   context: Pick<AgentContextPort, 'ingest' | 'snapshot'>
+  /**
+   * Prompt budget applied to the assembled provider messages.
+   *
+   * When omitted, assembled history is sent as-is and long sessions rely on the
+   * provider to accept them. Supplying a budget enables the tiered compaction
+   * policy (tool-result truncation, then folding the oldest turns into a
+   * summary) documented in `messages/context-budget`.
+   */
+  contextBudget?: ContextBudgetOptions
   /** ID factory used for persisted chat messages. @default crypto.randomUUID fallback */
   createId?: () => string
   /** Foreground assistant stream port controlled by the UI facade. */
@@ -392,7 +403,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
   function buildProviderMessages(sessionMessagesForSend: ChatHistoryItem[]) {
     const nowTs = now()
 
-    return sessionMessagesForSend.map((msg) => {
+    const providerMessages = sessionMessagesForSend.map((msg) => {
       const { context: _context, createdAt, id: _id, ...withoutContext } = msg
       const rawMessage = unwrapMessage(withoutContext)
 
@@ -408,6 +419,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
       return rawMessage
     })
+
+    if (!deps.contextBudget)
+      return providerMessages
+
+    // Compaction happens after assembly so the policy sees exactly what the
+    // provider would receive; the durable session history is never rewritten.
+    return compactProviderMessages(providerMessages, deps.contextBudget).messages
   }
 
   async function performSend(
