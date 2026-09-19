@@ -551,5 +551,20 @@ export const electronSkillsList = defineInvokeEventa<SkillSnapshot>('eventa:invo
 export const electronSkillsRead = defineInvokeEventa<SkillReadResult, SkillReadInput>('eventa:invoke:electron:skills:read')
 export const electronSkillsChanged = defineEventa<SkillSnapshot>('eventa:event:electron:skills:changed')
 
+/** Directory the agent is allowed to operate in; absent until one is chosen. */
+export interface ElectronWorkspaceState {
+  /**
+   * Absolute path of the bundled coding-agent service, used by the renderer to
+   * point that MCP server at {@link root}. Absent when the app cannot resolve a
+   * development checkout.
+   */
+  mcpServiceDirectory?: string
+  root?: string
+}
+export const electronWorkspaceGet = defineInvokeEventa<ElectronWorkspaceState>('eventa:invoke:electron:workspace:get')
+export const electronWorkspaceSet = defineInvokeEventa<ElectronWorkspaceState, { root: null | string }>('eventa:invoke:electron:workspace:set')
+export const electronWorkspacePick = defineInvokeEventa<ElectronWorkspaceState>('eventa:invoke:electron:workspace:pick')
+export const electronWorkspaceChanged = defineEventa<ElectronWorkspaceState>('eventa:event:electron:workspace:changed')
+
 export { electron } from '@proj-airi/electron-eventa'
 export * from '@proj-airi/electron-eventa/electron-updater'

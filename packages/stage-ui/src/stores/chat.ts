@@ -54,6 +54,7 @@ import { useConsciousnessStore } from './modules/consciousness'
 import { useInstructionStore } from './modules/instruction-store'
 import { useMemoryShortTermStore } from './modules/memory-short-term'
 import { useSkillStore } from './modules/skill-store'
+import { useWorkspaceStore } from './modules/workspace'
 
 interface ForkOptions {
   atIndex?: number
@@ -82,6 +83,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const shortTermMemoryStore = useMemoryShortTermStore()
   const instructionStore = useInstructionStore()
   const skillStore = useSkillStore()
+  const workspaceStore = useWorkspaceStore()
   // Standing rules (ACT / DELAY / CALL policy etc.) must be present even when
   // long-term memory is not configured, so seed them at runtime start.
   instructionStore.seedStageControl()
@@ -234,6 +236,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       llmToolsetPromptsStore.activeToolsetPrompt,
       instructionStore.compiled.prompt,
       skillStore.promptListing,
+      workspaceStore.promptLine,
     ].filter((value): value is string => !!value).join('\n\n'),
     llm: {
       stream: streamWithStageAdapters,

@@ -21,6 +21,7 @@ import { initializeAgentSessionEventBridge } from './bridges/agent-session-event
 import { initializeAgentSkillsBridge } from './bridges/agent-skills'
 import { initializeAgentToolExecutionBridge } from './bridges/agent-tool-executions'
 import { initializeAgentTurnRunnerBridge } from './bridges/agent-turn-runner'
+import { initializeAgentWorkspaceBridge } from './bridges/agent-workspace'
 import { i18n } from './modules/i18n'
 import { autonomousStageTools } from './stores/chat-sync'
 
@@ -79,3 +80,6 @@ createApp(App)
 // Skill listing reaches the chat store, so it starts after Pinia is installed.
 const disposeAgentSkillsBridge = initializeAgentSkillsBridge()
 import.meta.hot?.dispose(disposeAgentSkillsBridge)
+// The workspace bridge reads the store and rewrites the MCP config on change.
+const disposeAgentWorkspaceBridge = initializeAgentWorkspaceBridge()
+import.meta.hot?.dispose(disposeAgentWorkspaceBridge)
