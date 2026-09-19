@@ -208,6 +208,16 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       ingest: envelope => chatContext.ingestContextMessage(envelope),
       snapshot: () => chatContext.getContextsSnapshot(),
     },
+    // Long sessions are folded to fit the model window before dispatch: older
+    // tool results shrink first, then the oldest turns collapse into one
+    // summary. The budget is a character estimate targeting a ~32k token
+    // window; once the provider catalog exposes real context sizes this can be
+    // derived per model instead of fixed here.
+    contextBudget: {
+      maxCharacters: 120_000,
+      recentTurnLimit: 6,
+      toolResultCharacterLimit: 240,
+    },
     createId: nanoid,
     foregroundStream: {
       patch: (message) => {
