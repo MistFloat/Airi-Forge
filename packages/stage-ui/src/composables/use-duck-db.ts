@@ -40,21 +40,6 @@ export function useDuckDb() {
           );
           CREATE INDEX IF NOT EXISTS short_term_memory_session_created_idx
             ON short_term_memory_turns (session_id, created_at);
-
-          CREATE TABLE IF NOT EXISTS self_prompt_turns (
-            id VARCHAR PRIMARY KEY,
-            session_id VARCHAR NOT NULL,
-            prompt TEXT NOT NULL,
-            source_text TEXT NOT NULL,
-            delivery_status VARCHAR NOT NULL DEFAULT 'pending'
-              CHECK (delivery_status IN ('pending', 'sent', 'discarded')),
-            created_at BIGINT NOT NULL,
-            sent_at BIGINT,
-            discarded_at BIGINT,
-            last_error TEXT
-          );
-          CREATE INDEX IF NOT EXISTS self_prompt_delivery_created_idx
-            ON self_prompt_turns (delivery_status, created_at);
         `)
         db.value = dbInstance
         return db

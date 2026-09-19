@@ -57,8 +57,9 @@ export interface ChatStreamEventContext {
   message: ChatHistoryItem
 }
 
-/** User-role message with provenance retained for autonomous self-prompt turns. */
+/** User-role message carrying its provenance for attribution. */
 export interface ChatUserMessage extends UserMessage {
+  /** Present for internal turns; omitted for user-authored messages. */
   source?: 'self'
 }
 

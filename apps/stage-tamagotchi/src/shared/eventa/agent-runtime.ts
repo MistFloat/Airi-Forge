@@ -1,15 +1,4 @@
 import type {
-  AgentAutonomyProjection,
-  AgentAutonomyQuery,
-  AgentGoalPutInput,
-  AgentGoalSnapshot,
-  AgentGoalTransitionInput,
-  AgentScheduleCancelInput,
-  AgentScheduleClaimInput,
-  AgentScheduleCreateInput,
-  AgentScheduleDueNotice,
-  AgentScheduleSettlementInput,
-  AgentScheduleSnapshot,
   AgentSessionEvent,
   AgentSessionEventInput,
   AgentSessionEventsQuery,
@@ -28,46 +17,6 @@ import type {
 } from '@proj-airi/core-agent'
 
 import { defineEventa, defineInvokeEventa } from '@moeru/eventa'
-
-/** Creates or revises the current long-term goal. */
-export const electronAgentGoalPut = defineInvokeEventa<AgentGoalSnapshot, AgentGoalPutInput>(
-  'eventa:invoke:electron:agent-runtime:goals:put',
-)
-
-/** Applies a compare-and-set Goal phase or round transition. */
-export const electronAgentGoalTransition = defineInvokeEventa<AgentGoalSnapshot, AgentGoalTransitionInput>(
-  'eventa:invoke:electron:agent-runtime:goals:transition',
-)
-
-/** Reads event-derived Goal, Schedule, and background task state. */
-export const electronAgentAutonomyGet = defineInvokeEventa<AgentAutonomyProjection, AgentAutonomyQuery>(
-  'eventa:invoke:electron:agent-runtime:autonomy:get',
-)
-
-/** Creates a durable after/at/every autonomous wake schedule. */
-export const electronAgentScheduleCreate = defineInvokeEventa<AgentScheduleSnapshot, AgentScheduleCreateInput>(
-  'eventa:invoke:electron:agent-runtime:schedules:create',
-)
-
-/** Cancels one not-yet-claimed autonomous wake schedule. */
-export const electronAgentScheduleCancel = defineInvokeEventa<AgentScheduleSnapshot, AgentScheduleCancelInput>(
-  'eventa:invoke:electron:agent-runtime:schedules:cancel',
-)
-
-/** Claims one exact due dispatch for the invoking renderer. */
-export const electronAgentScheduleClaim = defineInvokeEventa<AgentScheduleSnapshot | undefined, AgentScheduleClaimInput>(
-  'eventa:invoke:electron:agent-runtime:schedules:claim',
-)
-
-/** Records completion or failure of one claimed scheduled turn. */
-export const electronAgentScheduleSettle = defineInvokeEventa<AgentScheduleSnapshot, AgentScheduleSettlementInput>(
-  'eventa:invoke:electron:agent-runtime:schedules:settle',
-)
-
-/** Main-process push for one persisted schedule occurrence awaiting delivery. */
-export const electronAgentScheduleDue = defineEventa<AgentScheduleDueNotice>(
-  'eventa:event:electron:agent-runtime:schedules:due',
-)
 
 /** Appends one renderer-produced fact to the main-process session event log. */
 export const electronAgentSessionEventAppend = defineInvokeEventa<AgentSessionEvent, AgentSessionEventInput>(

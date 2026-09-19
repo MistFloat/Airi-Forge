@@ -236,21 +236,21 @@ describe('agent session event service', () => {
     })
     service.append({
       payload: {
-        goal: {
-          createdAt: 100,
-          id: 'goal-a',
-          maxRounds: 8,
-          objective: 'Keep the current control state.',
-          phase: 'active',
-          revision: 1,
-          rounds: 0,
-          source: 'user',
-          updatedAt: 100,
+        assistantMessageId: 'assistant-control',
+        ownerId: 'renderer-control',
+        sessionId: 'session-a',
+        source: 'text',
+        turnId: 'control-turn',
+        userMessage: {
+          content: 'control',
+          id: 'user-control',
+          role: 'user',
         },
-        operation: 'create',
+        userMessageId: 'user-control',
+        userText: 'control',
       },
       sessionId: 'session-a',
-      type: 'goal.changed',
+      type: 'turn.admitted',
     })
     service.append({
       payload: {

@@ -18,10 +18,8 @@ import { errorMessageFromValue } from '../utils/error-message'
 import { createChatHooks } from './agent-hooks'
 import { useLlmmarkerParser } from './llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from './response-categoriser'
-import { createSelfPromptCapture } from './self-prompt'
 
 const STREAMING_UI_FLUSH_CHUNK_SIZE = 24
-const SELF_PROMPT_MESSAGE_SOURCE = '[Message source: AIRI self-prompt loop; not sent by the user]\n'
 
 /**
  * Lifecycle record emitted around prompt composition.
@@ -111,14 +109,6 @@ export interface ChatOrchestratorRuntimeDeps {
   getActiveProvider: () => string | undefined
   /** Returns the currently visible session ID. */
   getActiveSessionId: () => string
-  /**
-   * Optional introspection prompt prepended to the provider system message
-   * when this send is a `self` turn (source === 'self'). It reframes the
-   * round from "respond to the user" to "respond to yourself", so a captured
-   * `//` self prompt is answered as self-dialogue instead of as a regular
-   * user message. When omitted, no introspection block is injected.
-   */
-  getSelfTurnIntrospection?: () => string | undefined
   /** Returns the active character card's system prompt (identity) for this send. */
   getSystemPrompt?: () => string | undefined
   /** Returns optional prompt text appended to the provider system message for this send. */
@@ -202,16 +192,6 @@ export interface ChatOrchestratorRuntimeDeps {
   }) => void
   /** Called with the final provider prompt projection. */
   onPromptProjection?: (payload: ChatOrchestratorPromptProjection) => void
-  /**
-   * Called when a trailing `//` self-prompt line is captured from the reply.
-   * The line is withheld from the visible/TTS stream; this callback persists it
-   * so a future turn can act on it. Failures here must not abort the turn.
-   */
-  onSelfPromptCaptured?: (event: {
-    prompt: string
-    sessionId: string
-    sourceText: string
-  }) => Promise<void> | void
   /** Called after a runtime-owned send completes or fails and `sending` has been cleared. */
   onSendSettled?: (event: { sessionId: string }) => void
   /** Called whenever writable runtime state changes. */
@@ -276,8 +256,8 @@ export interface ChatOrchestratorSendOptions {
   resumesTurnId?: string
   /**
    * Send origin classification. Defaults to `voice` when `input` is present,
-   * otherwise `text`. `self` marks an internal turn (e.g. answering a captured
-   * self prompt) that is not a direct user message.
+   * otherwise `text`. `self` marks an internal turn that is not a direct user
+   * message.
    */
   source?: 'self' | 'text' | 'voice'
   /** Tool definitions passed through to the LLM stream port. */
@@ -417,9 +397,8 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const rawMessage = unwrapMessage(withoutContext)
 
       if (rawMessage.role === 'user') {
-        const sourcePrefix = rawMessage.source === 'self' ? SELF_PROMPT_MESSAGE_SOURCE : ''
         const { source: _source, ...providerMessage } = rawMessage
-        return prependTextToContent(providerMessage, `${formatTimePrefix(createdAt ?? nowTs)}${sourcePrefix}`)
+        return prependTextToContent(providerMessage, `${formatTimePrefix(createdAt ?? nowTs)}`)
       }
 
       if (rawMessage.role === 'assistant') {
@@ -667,10 +646,6 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       if (isStaleGeneration())
         return
 
-      // Self prompts intentionally remain `role: 'user'` in the durable raw
-      // history. The `source: 'self'` metadata preserves their real origin for
-      // auditing, while the complete user/assistant sequence makes autonomous
-      // activity queryable through the same database path as ordinary turns.
       if (!turnControlStarted) {
         await sessionEvents.append(sessionId, 'turn.admitted', {
           assistantMessageId: buildingMessage.id ?? roundId,
@@ -718,62 +693,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const categorizer = createStreamingCategorizer(deps.getActiveProvider())
       let streamPosition = 0
 
-      // Self-prompt capture: the trailing `//` line of a reply is withheld from
-      // the visible/TTS stream and surfaced via onSelfPromptCaptured instead.
-      const capture = createSelfPromptCapture(async (literal) => {
-        if (shouldIgnoreStreamUpdate())
-          return
-
-        categorizer.consume(literal)
-
-        const speechOnly = categorizer.filterToSpeech(literal, streamPosition)
-        streamPosition += literal.length
-
-        if (speechOnly.trim()) {
-          buildingMessage.content += speechOnly
-
-          await hooks.emitTokenLiteralHooks(speechOnly, streamingMessageContext)
-
-          const lastSlice = buildingMessage.slices.at(-1)
-          if (lastSlice?.type === 'text') {
-            lastSlice.text += speechOnly
-          }
-          else {
-            buildingMessage.slices.push({
-              text: speechOnly,
-              type: 'text',
-            })
-          }
-          publishStreamingMessage()
-        }
-      })
-
       const parser = useLlmmarkerParser({
         minLiteralEmitLength: STREAMING_UI_FLUSH_CHUNK_SIZE,
         onEnd: async (parserFullText) => {
           if (isStaleGeneration())
             return
 
-          // Flush any buffered tail; capture the self prompt if the reply ended
-          // with a `//` line. Persistence failures must not abort the turn.
-          const sourceText = parserFullText
-          const captured = await capture.finish({ allowCapture: terminalFinishReason === 'stop' })
-          // Downstream hooks and conversation memory receive the same text the
-          // user can see. The captured private line is available separately in
-          // `captured.prompt` and must not leak back into ordinary chat history.
-          fullText = captured.text
-          if (captured.prompt) {
-            try {
-              await deps.onSelfPromptCaptured?.({
-                prompt: captured.prompt,
-                sessionId,
-                sourceText,
-              })
-            }
-            catch (error) {
-              console.error('Failed to persist self prompt:', error)
-            }
-          }
+          fullText = parserFullText
 
           const finalCategorization = categorizeResponse(fullText, deps.getActiveProvider())
 
@@ -787,7 +713,29 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         onLiteral: async (literal) => {
           if (shouldIgnoreStreamUpdate())
             return
-          await capture.consume(literal)
+
+          categorizer.consume(literal)
+
+          const speechOnly = categorizer.filterToSpeech(literal, streamPosition)
+          streamPosition += literal.length
+
+          if (speechOnly.trim()) {
+            buildingMessage.content += speechOnly
+
+            await hooks.emitTokenLiteralHooks(speechOnly, streamingMessageContext)
+
+            const lastSlice = buildingMessage.slices.at(-1)
+            if (lastSlice?.type === 'text') {
+              lastSlice.text += speechOnly
+            }
+            else {
+              buildingMessage.slices.push({
+                text: speechOnly,
+                type: 'text',
+              })
+            }
+            publishStreamingMessage()
+          }
         },
         onSpecial: async (special) => {
           if (shouldIgnoreStreamUpdate())
@@ -847,14 +795,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       // memory. Replacing (not appending) keeps identity current when the card
       // changes and prevents the same prompt from stacking inside long
       // sessions whose history already carries an initial system snapshot.
-      // For `self` turns (a captured `//` prompt answered back), an optional
-      // introspection block is prepended so the model knows this is self-
-      // dialogue rather than a regular user message.
-      const selfTurnIntrospection = options.source === 'self'
-        ? deps.getSelfTurnIntrospection?.()?.trim()
-        : undefined
       const systemPrompt = [
-        selfTurnIntrospection,
         deps.getSystemPrompt?.()?.trim(),
         deps.getSystemPromptSupplement?.()?.trim(),
         memoryPrompt,
@@ -1144,8 +1085,8 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     catch (error) {
       try {
         // A failed provider/tool stream has no trustworthy natural-stop
-        // reason. Finalizing still flushes a buffered `//` candidate visibly,
-        // preventing the filtering layer from swallowing the response tail.
+        // reason. Finalizing still flushes parser-buffered text so the
+        // interrupted snapshot matches what the user saw.
         await finalizeStream?.()
       }
       catch (finalizeError) {

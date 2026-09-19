@@ -15,9 +15,8 @@ import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-sto
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
 import { useJournalPreviewStore } from '@proj-airi/stage-ui/stores/journal-preview'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
-import { useSelfPromptStore } from '@proj-airi/stage-ui/stores/modules/self-prompt'
 import { BasicTextarea } from '@proj-airi/ui'
-import { useLocalStorage, useNow } from '@vueuse/core'
+import { useLocalStorage } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger } from 'reka-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -27,8 +26,7 @@ import { toast } from 'vue-sonner'
 
 import ChatStatusBadge from './chat-status-badge.vue'
 import JournalToolCallBlock from './chat-tool-renderers/journal-tool-call-block.vue'
-import SelfPromptLoopPanel from './selfPromptLoopPanel.vue'
-import UnfinishedThoughtsPanel from './unfinishedThoughtsPanel.vue'
+import UnsettledToolCallsPanel from './unsettledToolCallsPanel.vue'
 
 import { useChatSyncStore } from '../stores/chat-sync'
 import { useTamagotchiMcpToolsStore } from '../stores/mcp-tools'
@@ -47,19 +45,10 @@ const backgroundStore = useBackgroundStore()
 const journalPreviewStore = useJournalPreviewStore()
 const airiCardStore = useAiriCardStore()
 const mcpToolsStore = useTamagotchiMcpToolsStore()
-const selfPromptStore = useSelfPromptStore()
 
 const { messages } = storeToRefs(chatSession)
 const { streamingMessage } = storeToRefs(chatStream)
-const {
-  selfWakeDeadline,
-  selfWakeLastError,
-  selfWakeStatus,
-  sending,
-  unsettledToolExecutions,
-  unfinishedSelfTurns,
-} = storeToRefs(chatOrchestrator)
-const { pendingPrompt: pendingSelfPrompt } = storeToRefs(selfPromptStore)
+const { sending, unsettledToolExecutions } = storeToRefs(chatOrchestrator)
 const { activeCard, activeCardId } = storeToRefs(airiCardStore)
 const { t } = useI18n()
 const { openImagePreview } = journalPreviewStore
@@ -89,15 +78,6 @@ const {
 } = useAnalytics()
 const { showStopSpeakingButton, stopSpeakingFromChat } = useStopSpeakingButton()
 const { runVisionInference } = useVisionInference()
-const selfPromptClock = useNow({ interval: 1_000 })
-
-const selfPromptCountdownSeconds = computed(() => {
-  if (!selfWakeDeadline.value)
-    return undefined
-
-  return Math.max(0, Math.ceil((selfWakeDeadline.value - selfPromptClock.value.getTime()) / 1_000))
-})
-const canControlSelfPrompt = computed(() => selfWakeStatus.value === 'countdown' || selfWakeStatus.value === 'ready')
 
 const latestImageEntries = computed(() => {
   if (!activeCardId.value)
@@ -295,15 +275,6 @@ async function handleCleanupMessages() {
 
 async function handleStopResponse() {
   await chatSyncStore.requestCancel(chatSession.activeSessionId)
-}
-
-async function handleResumeUnfinishedThought(turnId: string) {
-  try {
-    await chatOrchestrator.resumeUnfinishedSelfTurn(turnId)
-  }
-  catch (error) {
-    toast.error(errorMessageFrom(error) ?? t('stage.unfinished-thoughts.resume-failed'))
-  }
 }
 </script>
 
@@ -533,26 +504,11 @@ async function handleResumeUnfinishedThought(turnId: string) {
       />
     </div>
 
-    <div class="min-h-0 w-64 flex shrink-0 flex-col gap-2 overflow-y-auto">
-      <SelfPromptLoopPanel
-        :can-restart="canControlSelfPrompt"
-        :can-send="canControlSelfPrompt"
-        :captured-at="pendingSelfPrompt?.capturedAt"
-        :countdown-seconds="selfPromptCountdownSeconds"
-        :error="selfWakeLastError"
-        :prompt="pendingSelfPrompt?.prompt"
-        :status="selfWakeStatus"
-        @discard="chatOrchestrator.discardSelfPrompt()"
-        @restart="chatOrchestrator.restartSelfWakeCountdown()"
-        @send="chatOrchestrator.sendSelfPromptNow()"
-      />
-      <UnfinishedThoughtsPanel
-        :busy="sending"
-        :thoughts="unfinishedSelfTurns"
-        :tools="unsettledToolExecutions"
-        @resume="handleResumeUnfinishedThought"
-      />
-    </div>
+    <UnsettledToolCallsPanel
+      v-if="unsettledToolExecutions.length > 0"
+      class="w-72 shrink-0"
+      :tools="unsettledToolExecutions"
+    />
 
     <!-- Shared Preview Modal -->
     <JournalPreviewModal />

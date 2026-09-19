@@ -12,7 +12,6 @@ import type { AgentSessionEventCompaction } from './repository'
 import {
   AgentSessionEventLog,
   foldAgentToolExecutions,
-  projectUnfinishedSelfTurns,
 } from '@proj-airi/core-agent'
 
 /** Persistence boundary owned by the Electron main process event service. */
@@ -51,18 +50,12 @@ export interface AgentSessionEventServiceOptions {
   now?: () => number
   /** Recent authored facts retained for renderer replay. @default 200 */
   recentMessageLimit?: number
-  /** Recent terminal schedules/tasks retained beside all live ones. @default 32 */
-  recentTerminalAutonomyLimit?: number
   /** Main-process persistence repository. */
   repository: AgentSessionEventRepository
-  /** Recently continued self turns retained beside all open ones. @default 20 */
-  resumedSelfTurnLimit?: number
 }
 
 interface HotRetentionPolicy {
   recentMessageLimit: number
-  recentTerminalAutonomyLimit: number
-  resumedSelfTurnLimit: number
 }
 
 interface ToolExecutionState extends AgentToolExecutionClaimInput {
@@ -81,11 +74,6 @@ interface ToolExecutionState extends AgentToolExecutionClaimInput {
  */
 export function createAgentSessionEventService(options: AgentSessionEventServiceOptions): AgentSessionEventService {
   const recentMessageLimit = positiveLimit(options.recentMessageLimit ?? 200, 'recent message')
-  const recentTerminalAutonomyLimit = positiveLimit(
-    options.recentTerminalAutonomyLimit ?? 32,
-    'recent terminal autonomy',
-  )
-  const resumedSelfTurnLimit = positiveLimit(options.resumedSelfTurnLimit ?? 20, 'resumed self turn')
   const listeners = new Set<(event: AgentSessionEvent) => void>()
   const initialEvents = options.repository.load()
   const pendingCompactions = new Map<string, number>()
@@ -121,17 +109,11 @@ export function createAgentSessionEventService(options: AgentSessionEventService
         return structuredClone(existing)
     }
     switch (input.type) {
-      case 'goal.changed':
-        return log.append(input.sessionId, input.type, input.payload)
       case 'memory.projected':
         return log.append(input.sessionId, input.type, input.payload)
       case 'message.appended':
         return log.append(input.sessionId, input.type, input.payload)
       case 'prompt.composed':
-        return log.append(input.sessionId, input.type, input.payload)
-      case 'schedule.changed':
-        return log.append(input.sessionId, input.type, input.payload)
-      case 'task.changed':
         return log.append(input.sessionId, input.type, input.payload)
       case 'tool.call-reconciled':
         return log.append(input.sessionId, input.type, input.payload)
@@ -177,8 +159,6 @@ export function createAgentSessionEventService(options: AgentSessionEventService
         const residentEvents = await options.repository.compact({
           retainedSequences: retainedHotSequences(events, throughSequence, {
             recentMessageLimit,
-            recentTerminalAutonomyLimit,
-            resumedSelfTurnLimit,
           }),
           sessionId,
           throughSequence,
@@ -414,18 +394,6 @@ function rebuildSessionDerivedState(
   }
 }
 
-function retainCurrentAndRecentTerminal<TEvent extends AgentSessionEvent>(
-  events: readonly TEvent[],
-  isCurrent: (event: TEvent) => boolean,
-  terminalLimit: number,
-  retained: Set<number>,
-) {
-  for (const event of events.filter(isCurrent))
-    retained.add(event.sequence)
-  for (const event of events.filter(event => !isCurrent(event)).sort((left, right) => right.sequence - left.sequence).slice(0, terminalLimit))
-    retained.add(event.sequence)
-}
-
 /**
  * Selects the bounded recovery checkpoint copied out of memory-consumed logs.
  *
@@ -444,37 +412,15 @@ function retainedHotSequences(
   for (const event of consumed.filter(event => event.type === 'message.appended').slice(-policy.recentMessageLimit))
     retained.add(event.sequence)
 
-  const latestGoal = consumed.findLast(event => event.type === 'goal.changed')
   const latestMemoryCursor = consumed.findLast(event => event.type === 'memory.projected')
-  if (latestGoal)
-    retained.add(latestGoal.sequence)
   if (latestMemoryCursor)
     retained.add(latestMemoryCursor.sequence)
 
-  const latestSchedules = new Map<string, Extract<AgentSessionEvent, { type: 'schedule.changed' }>>()
-  const latestTasks = new Map<string, Extract<AgentSessionEvent, { type: 'task.changed' }>>()
   const latestVisuals = new Map<string, Extract<AgentSessionEvent, { type: 'visual.observed' }>>()
   for (const event of consumed) {
-    if (event.type === 'schedule.changed')
-      latestSchedules.set(event.payload.schedule.id, event)
-    if (event.type === 'task.changed')
-      latestTasks.set(event.payload.task.id, event)
     if (event.type === 'visual.observed')
       latestVisuals.set(event.payload.contextId, event)
   }
-
-  retainCurrentAndRecentTerminal(
-    [...latestSchedules.values()],
-    event => ['claimed', 'pending', 'scheduled'].includes(event.payload.schedule.state),
-    policy.recentTerminalAutonomyLimit,
-    retained,
-  )
-  retainCurrentAndRecentTerminal(
-    [...latestTasks.values()],
-    event => ['blocked', 'paused', 'queued', 'running'].includes(event.payload.task.state),
-    policy.recentTerminalAutonomyLimit,
-    retained,
-  )
   for (const event of [...latestVisuals.values()].sort((left, right) => right.sequence - left.sequence).slice(0, 32))
     retained.add(event.sequence)
 
@@ -499,15 +445,6 @@ function retainedHotSequences(
   for (const turnId of interruptedTurns) {
     if (!recoveredTurns.has(turnId))
       protectedTurnIds.add(turnId)
-  }
-  const unfinishedSelfTurns = projectUnfinishedSelfTurns(events)
-  for (const thought of [
-    ...unfinishedSelfTurns.filter(thought => thought.state === 'open'),
-    ...unfinishedSelfTurns.filter(thought => thought.state === 'resumed').slice(0, policy.resumedSelfTurnLimit),
-  ]) {
-    protectedTurnIds.add(thought.turnId)
-    if (thought.resumedByTurnId)
-      protectedTurnIds.add(thought.resumedByTurnId)
   }
   for (const execution of foldAgentToolExecutions(events)) {
     if (execution.status === 'running' || execution.status === 'uncertain')

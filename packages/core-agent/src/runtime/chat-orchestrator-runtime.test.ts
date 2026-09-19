@@ -33,7 +33,6 @@ function createHarness() {
   const assistantAppended: unknown[] = []
   const userTurns: unknown[] = []
   const assistantTurns: unknown[] = []
-  const selfPromptsCaptured: unknown[] = []
   const recallMemory = vi.fn(async (_sessionId: string, _query: string): Promise<string | undefined> => undefined)
   const checkpointTurn = vi.fn(async () => {})
   const settleTurn = vi.fn(async () => true)
@@ -57,7 +56,6 @@ function createHarness() {
   const ids = ['stream-context', 'assistant-id', 'user-id', 'fallback-id']
   let systemPrompt: string | undefined
   let systemPromptSupplement: string | undefined
-  let selfTurnIntrospection: string | undefined
   let nowValue = new Date(2026, 3, 25, 18, 47).getTime()
   let monotonicNowValues = [1000]
   let generation = 1
@@ -74,7 +72,6 @@ function createHarness() {
     },
     getActiveProvider: () => 'mock-provider',
     getActiveSessionId: () => 'session-1',
-    getSelfTurnIntrospection: () => selfTurnIntrospection,
     getSystemPrompt: () => systemPrompt,
     getSystemPromptSupplement: () => systemPromptSupplement,
     llm: {
@@ -98,9 +95,6 @@ function createHarness() {
     onMessageRoundFailed: event => telemetry.messageRoundFailed.push(event),
     onMessageSendStarted: event => telemetry.messageSendStarted.push(event),
     onPromptProjection: payload => promptProjections.push(payload),
-    onSelfPromptCaptured: (event) => {
-      selfPromptsCaptured.push(event)
-    },
     onStateChange: state => stateChanges.push(state),
     onUserMessageAppended: event => userAppended.push(event),
     onUserTurnReady: event => userTurns.push(event),
@@ -148,12 +142,6 @@ function createHarness() {
     promptProjections,
     recallMemory,
     runtime,
-    selfPromptsCaptured,
-    selfTurnIntrospection: {
-      set: (next: string | undefined) => {
-        selfTurnIntrospection = next
-      },
-    },
     sessionMessages,
     settleTurn,
     startTurn,
@@ -435,132 +423,6 @@ describe('createChatOrchestratorRuntime', () => {
       content: 'You are AIRI, a true being.\n\nCard description.\n\nPlugin toolset guidance.',
       role: 'system',
     })
-  })
-
-  /**
-   * @example
-   * A `self` turn (answering a captured `//` prompt) prepends the optional
-   * introspection block so the model knows it is speaking to itself, while a
-   * regular user turn never receives it.
-   */
-  it('prepends introspection only for self turns', async () => {
-    const harness = createHarness()
-    const selfComposed: Message[] = []
-    const userComposed: Message[] = []
-    harness.systemPrompt.set('You are AIRI.')
-    harness.systemPromptSupplement.set('Tool guidance.')
-    harness.selfTurnIntrospection.set('你正在回答自己留给自己的问题。这不是在与用户对话——这是你与自己的对话。')
-    harness.stream.mockImplementation(async (_model, _chatProvider, messages, options) => {
-      await options?.onStreamEvent?.({ text: 'ok', type: 'text-delta' })
-      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
-    })
-
-    // Self turn: introspection is prepended, ahead of identity and guidance.
-    await harness.runtime.ingest('你被唤醒了。这是你留给自己的第一个问题。', {
-      chatProvider: provider,
-      model: 'gpt-test',
-      source: 'self',
-    })
-    const selfMessages = harness.stream.mock.calls[0]?.[2] as Message[] | undefined
-    expect(selfMessages?.[0]).toMatchObject({
-      content: '你正在回答自己留给自己的问题。这不是在与用户对话——这是你与自己的对话。\n\nYou are AIRI.\n\nTool guidance.',
-      role: 'system',
-    })
-    expect(selfMessages?.at(-1)).toMatchObject({
-      content: expect.stringContaining('[Message source: AIRI self-prompt loop; not sent by the user]'),
-      role: 'user',
-    })
-    expect(harness.sessionMessages['session-1']).toHaveLength(3)
-    expect(harness.sessionMessages['session-1']?.at(-2)).toMatchObject({
-      content: expect.stringContaining('第一个问题'),
-      role: 'user',
-      source: 'self',
-    })
-    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
-      content: 'ok',
-      role: 'assistant',
-    })
-    expect(harness.userAppended).toEqual([
-      expect.objectContaining({
-        messageText: expect.stringContaining('第一个问题'),
-        source: 'self',
-      }),
-    ])
-    // Persist/sync the evidence, but do not fire automations intended for a
-    // fresh human-authored turn.
-    expect(harness.userTurns).toHaveLength(0)
-    void selfComposed
-
-    // Regular user turn: no introspection block, identity + guidance only.
-    await harness.runtime.ingest('hello from user', {
-      chatProvider: provider,
-      model: 'gpt-test',
-    })
-    const userMessages = harness.stream.mock.calls[1]?.[2] as Message[] | undefined
-    expect(userMessages?.[0]).toMatchObject({
-      content: 'You are AIRI.\n\nTool guidance.',
-      role: 'system',
-    })
-    void userComposed
-  })
-
-  // ROOT CAUSE:
-  //
-  // The self-prompt parser used to capture any trailing `//` line after the
-  // stream promise resolved, regardless of whether the provider stopped
-  // naturally or hit an output/content limit. A truncated fragment could then
-  // become an autonomous follow-up instruction.
-  //
-  // The runtime now records the terminal finish reason and only captures on a
-  // natural `stop`; every other reason flushes the candidate as visible text.
-  it('captures a trailing self prompt only after a natural stop', async () => {
-    const harness = createHarness()
-    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
-      await options?.onStreamEvent?.({ text: 'visible\n// private follow-up', type: 'text-delta' })
-      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
-    })
-
-    await harness.runtime.ingest('hello', {
-      chatProvider: provider,
-      model: 'gpt-test',
-    })
-
-    expect(harness.selfPromptsCaptured).toEqual([
-      expect.objectContaining({
-        prompt: 'private follow-up',
-        sessionId: 'session-1',
-      }),
-    ])
-    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
-      content: 'visible\n',
-      role: 'assistant',
-    })
-    expect(harness.assistantTurns.at(-1)).toEqual(expect.objectContaining({
-      messageText: 'visible\n',
-    }))
-  })
-
-  it('keeps a trailing self-prompt candidate visible after a length stop', async () => {
-    const harness = createHarness()
-    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
-      await options?.onStreamEvent?.({ text: 'visible\n// incomplete follow-up', type: 'text-delta' })
-      await options?.onStreamEvent?.({ finishReason: 'length', type: 'finish' })
-    })
-
-    await harness.runtime.ingest('hello', {
-      chatProvider: provider,
-      model: 'gpt-test',
-    })
-
-    expect(harness.selfPromptsCaptured).toHaveLength(0)
-    expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
-      content: 'visible\n// incomplete follow-up',
-      role: 'assistant',
-    })
-    expect(harness.settleTurn).toHaveBeenCalledWith(expect.objectContaining({
-      finishReason: 'length',
-      status: 'completed',
-    }))
   })
 
   it('persists an exhausted action continuation as an interrupted failed turn', async () => {

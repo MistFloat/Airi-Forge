@@ -37,7 +37,7 @@ export interface AgentTurnCheckpoint extends AgentTurnCheckpointInput {
 export interface AgentTurnCheckpointInput {
   /** Assistant message reconstructed after renderer loss. */
   assistantMessageId: string
-  /** Visible assistant text; private self-prompt tails are excluded. */
+  /** Visible assistant text as shown to the user. */
   assistantText: string
   /** Optional visible reasoning prefix. */
   reasoningText?: string

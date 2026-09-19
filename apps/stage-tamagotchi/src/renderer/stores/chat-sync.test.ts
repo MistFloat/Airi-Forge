@@ -184,10 +184,6 @@ vi.mock('./tools/builtin/widgets', () => ({
   widgetsTools: mockWidgetsTools,
 }))
 
-vi.mock('./tools/builtin/agent-autonomy', () => ({
-  agentAutonomyTools: vi.fn(async () => []),
-}))
-
 vi.mock('./tools/builtin/weather', () => ({
   weatherTools: mockWeatherTools,
 }))

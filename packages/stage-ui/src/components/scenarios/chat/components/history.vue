@@ -44,7 +44,6 @@ const labels = computed(() => ({
   assistant: props.assistantLabel ?? t('stage.chat.message.character-name.airi'),
   error: props.errorLabel ?? t('stage.chat.message.character-name.core-system'),
   retry: props.retryLabel ?? t('stage.chat.actions.retry'),
-  selfPrompt: t('stage.chat.message.character-name.self-prompt'),
   user: props.userLabel ?? t('stage.chat.message.character-name.you'),
 }))
 
@@ -151,7 +150,7 @@ function emitToolCallRerun(
         <ChatUserItem
           v-else-if="message.role === 'user'"
           :message="message"
-          :label="message.source === 'self' ? labels.selfPrompt : labels.user"
+          :label="labels.user"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"

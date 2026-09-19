@@ -8,11 +8,6 @@ import type {
   AgentTurnStartInput,
 } from '../contracts/turn-control-port'
 import type { ChatHistoryItem } from '../types/chat'
-import type {
-  AgentBackgroundTaskChangedPayload,
-  AgentGoalChangedPayload,
-  AgentScheduleChangedPayload,
-} from './autonomy'
 
 /** Ordered union of all session events emitted by the runtime. */
 export type AgentSessionEvent = {
@@ -61,18 +56,12 @@ export interface AgentSessionEventLogOptions {
 
 /** Type-safe payload lookup for session runtime events. */
 export interface AgentSessionEventPayloadMap {
-  /** A complete long-term goal snapshot changed. */
-  'goal.changed': AgentGoalChangedPayload
   /** Memory adapters successfully projected completed turns through a log cursor. */
   'memory.projected': SessionMemoryProjectedPayload
   /** A durable user or assistant message was appended. */
   'message.appended': SessionMessageAppendedPayload
   /** Complete provider-visible input was composed for one turn. */
   'prompt.composed': SessionPromptComposedPayload
-  /** A complete autonomous schedule snapshot changed. */
-  'schedule.changed': AgentScheduleChangedPayload
-  /** A complete background task snapshot changed. */
-  'task.changed': AgentBackgroundTaskChangedPayload
   /** A previous process left a tool side effect without a durable outcome. */
   'tool.call-reconciled': SessionToolCallReconciledPayload
   /** One admitted tool execution reached a durable terminal outcome. */

@@ -76,49 +76,12 @@ const chatSessionReadyRef = ref(false)
 const activeProviderRef = ref('mock-provider')
 const activeModelRef = ref('gpt-test')
 const streamingMessageRef = ref<any>({ content: '', role: 'assistant', slices: [], tool_results: [] })
-const pendingSelfPromptRef = ref<null | {
-  capturedAt: string
-  createdAt: number
-  goalId?: string
-  goalRevision?: number
-  id: string
-  prompt: string
-  scheduledAt?: number
-  scheduleId?: string
-  sessionId: string
-  sourceText: string
-}>(null)
 const sessionMessages: Record<string, any[]> = {}
 let currentGeneration = 1
 let activePinia: ReturnType<typeof createPinia> | undefined
 const getProviderInstanceMock = vi.fn()
 const getProviderConfigMock = vi.fn()
 const getProviderMaxTokensMock = vi.fn()
-const captureSelfPromptMock = vi.fn(async (event: { prompt: string, sessionId: string, sourceText: string }) => {
-  pendingSelfPromptRef.value = {
-    capturedAt: '2026-08-08T00:00:00.000Z',
-    createdAt: Date.now(),
-    id: `self-prompt-${captureSelfPromptMock.mock.calls.length}`,
-    ...event,
-  }
-})
-const consumePendingSelfPromptMock = vi.fn(() => {
-  const pending = pendingSelfPromptRef.value
-  pendingSelfPromptRef.value = null
-  return pending
-})
-const clearPendingSelfPromptMock = vi.fn(async () => {
-  pendingSelfPromptRef.value = null
-})
-const cancelSelfPromptWakeMock = vi.fn().mockResolvedValue(undefined)
-const restartSelfPromptWakeMock = vi.fn().mockResolvedValue(undefined)
-const restoreSelfPromptAutonomyMock = vi.fn().mockResolvedValue(undefined)
-const restoreFailedSelfPromptMock = vi.fn(async (record: NonNullable<typeof pendingSelfPromptRef.value>) => {
-  pendingSelfPromptRef.value = record
-})
-const restorePendingSelfPromptMock = vi.fn((record: NonNullable<typeof pendingSelfPromptRef.value>) => {
-  pendingSelfPromptRef.value = record
-})
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -162,20 +125,6 @@ vi.mock('../composables/use-io-tracer', () => ({
 
 vi.mock('./chat/context-providers', () => ({
   createMinecraftContext: () => createMinecraftContextMock(),
-}))
-
-const autonomyMocks = vi.hoisted(() => ({
-  claimSchedule: vi.fn(),
-  get: vi.fn(),
-  settleSchedule: vi.fn(),
-  transitionGoal: vi.fn(),
-}))
-
-vi.mock('./chat-autonomy', () => ({
-  claimChatSchedule: autonomyMocks.claimSchedule,
-  getChatAutonomy: autonomyMocks.get,
-  settleChatSchedule: autonomyMocks.settleSchedule,
-  transitionChatGoal: autonomyMocks.transitionGoal,
 }))
 
 vi.mock('./chat-memory-projection', () => ({
@@ -258,25 +207,6 @@ vi.mock('./modules/instruction-store', () => ({
   }),
 }))
 
-vi.mock('./modules/self-prompt', () => ({
-  useSelfPromptStore: () => ({
-    cancelWake: cancelSelfPromptWakeMock,
-    captureSelfPrompt: captureSelfPromptMock,
-    clearPending: clearPendingSelfPromptMock,
-    consumePending: consumePendingSelfPromptMock,
-    get hasPending() {
-      return pendingSelfPromptRef.value != null
-    },
-    get pendingPrompt() {
-      return pendingSelfPromptRef.value
-    },
-    restartWake: restartSelfPromptWakeMock,
-    restoreFailed: restoreFailedSelfPromptMock,
-    restoreFromAutonomy: restoreSelfPromptAutonomyMock,
-    restorePending: restorePendingSelfPromptMock,
-  }),
-}))
-
 vi.mock('./provider-max-tokens', () => ({
   useProviderMaxTokensStore: () => ({
     getProviderMaxTokens: getProviderMaxTokensMock,
@@ -330,21 +260,7 @@ describe('chat orchestrator contract', () => {
     activeProviderRef.value = 'mock-provider'
     activeModelRef.value = 'gpt-test'
     streamingMessageRef.value = { content: '', role: 'assistant', slices: [], tool_results: [] }
-    pendingSelfPromptRef.value = null
     currentGeneration = 1
-    captureSelfPromptMock.mockClear()
-    clearPendingSelfPromptMock.mockClear()
-    cancelSelfPromptWakeMock.mockClear()
-    consumePendingSelfPromptMock.mockClear()
-    restoreFailedSelfPromptMock.mockClear()
-    restorePendingSelfPromptMock.mockClear()
-    restartSelfPromptWakeMock.mockClear()
-    restoreSelfPromptAutonomyMock.mockClear()
-    autonomyMocks.claimSchedule.mockReset()
-    autonomyMocks.get.mockReset()
-    autonomyMocks.get.mockResolvedValue({ schedules: [], tasks: [], workflows: [] })
-    autonomyMocks.settleSchedule.mockReset()
-    autonomyMocks.transitionGoal.mockReset()
     getProviderInstanceMock.mockReset()
     getProviderInstanceMock.mockResolvedValue(provider)
     getProviderConfigMock.mockReset()
@@ -601,8 +517,6 @@ describe('chat orchestrator contract', () => {
     const systemText = typeof systemContent === 'string' ? systemContent : systemContent.map((p: any) => p.text).join('')
     expect(systemText).toContain('durable instruction guidance')
     expect(systemText).toContain('Plugin toolset guidance.')
-    expect(systemText).toContain('private self-prompt channel')
-    expect(systemText).toContain(String.raw`write \/\/.`)
 
     // The user turn is prefixed with [YYYY-MM-DD HH:MM]. Both historic and
     // current turns share the same shape so prefix-cache stays valid when a
@@ -907,131 +821,5 @@ describe('chat orchestrator contract', () => {
       reason: 'retry',
     })
     expect(ensureSessionMock).toHaveBeenCalledWith('session-forked')
-  })
-
-  // ROOT CAUSE:
-  //
-  // A renderer-local setTimeout disappeared on refresh and could not recover a
-  // claimed turn. The deadline now comes from a durable Schedule snapshot and
-  // the main process redelivers its exact dispatch until an authority claims it.
-  it('exposes the durable Schedule deadline without starting a renderer timer', async () => {
-    pendingSelfPromptRef.value = {
-      capturedAt: '2026-08-10T00:00:00.000Z',
-      createdAt: Date.now(),
-      id: 'self-prompt-deadline',
-      prompt: 'inspect the unresolved question',
-      scheduledAt: Date.now() + 45_000,
-      scheduleId: 'schedule-1',
-      sessionId: 'session-1',
-      sourceText: 'answer',
-    }
-
-    const store = useChatOrchestratorStore()
-    await nextTick()
-
-    expect(store.selfWakeStatus).toBe('countdown')
-    expect(store.selfWakeDeadline).toBe(pendingSelfPromptRef.value.scheduledAt)
-    await store.restartSelfWakeCountdown()
-    expect(restartSelfPromptWakeMock).toHaveBeenCalledTimes(1)
-    expect(llmStreamMock).not.toHaveBeenCalled()
-  })
-
-  it('claims a persisted due Schedule and settles its ordinary self turn', async () => {
-    pendingSelfPromptRef.value = {
-      capturedAt: '2026-08-10T00:00:00.000Z',
-      createdAt: 1,
-      id: 'self-prompt-due',
-      prompt: 'continue from durable schedule',
-      scheduleId: 'schedule-due',
-      sessionId: 'session-1',
-      sourceText: 'answer',
-    }
-    autonomyMocks.claimSchedule.mockResolvedValue({
-      createdAt: 1,
-      dispatchId: 'dispatch-1',
-      id: 'schedule-due',
-      kind: 'after',
-      prompt: 'continue from durable schedule',
-      revision: 3,
-      scheduledAt: 45_001,
-      state: 'claimed',
-      updatedAt: 45_001,
-    })
-    llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
-      await options.onStreamEvent({ text: 'scheduled reply', type: 'text-delta' })
-      await options.onStreamEvent({ finishReason: 'stop', type: 'finish' })
-    })
-
-    const store = useChatOrchestratorStore()
-    await store.handleScheduleDue({
-      dispatchId: 'dispatch-1',
-      scheduleId: 'schedule-due',
-      sessionId: 'session-1',
-    })
-
-    expect(autonomyMocks.claimSchedule).toHaveBeenCalledTimes(1)
-    expect(autonomyMocks.settleSchedule).toHaveBeenCalledWith({
-      dispatchId: 'dispatch-1',
-      scheduleId: 'schedule-due',
-      sessionId: 'session-1',
-      status: 'completed',
-    })
-    expect(sessionMessages['session-1']).toContainEqual(expect.objectContaining({
-      role: 'user',
-      source: 'self',
-    }))
-  })
-
-  it('explains when a scheduled self prompt is blocked by model configuration', async () => {
-    activeModelRef.value = ''
-    pendingSelfPromptRef.value = {
-      capturedAt: '2026-08-10T00:00:00.000Z',
-      createdAt: Date.now(),
-      id: 'self-prompt-blocked',
-      prompt: 'wait for a configured model',
-      scheduledAt: Date.now() + 45_000,
-      sessionId: 'session-1',
-      sourceText: 'answer',
-    }
-
-    const store = useChatOrchestratorStore()
-    await nextTick()
-    expect(store.selfWakeStatus).toBe('blocked-model')
-
-    activeModelRef.value = 'gpt-test'
-    await nextTick()
-    expect(store.selfWakeStatus).toBe('countdown')
-  })
-
-  it('lets the user send or discard a pending self prompt', async () => {
-    pendingSelfPromptRef.value = {
-      capturedAt: '2026-08-10T00:00:00.000Z',
-      createdAt: Date.now(),
-      id: 'self-prompt-send-now',
-      prompt: 'send this now',
-      scheduleId: 'schedule-manual',
-      sessionId: 'session-1',
-      sourceText: 'answer',
-    }
-
-    const store = useChatOrchestratorStore()
-    await store.sendSelfPromptNow()
-
-    expect(cancelSelfPromptWakeMock).toHaveBeenCalledTimes(1)
-    expect(llmStreamMock).toHaveBeenCalledTimes(1)
-
-    pendingSelfPromptRef.value = {
-      capturedAt: '2026-08-10T00:01:00.000Z',
-      createdAt: Date.now(),
-      id: 'self-prompt-discard',
-      prompt: 'discard this',
-      sessionId: 'session-1',
-      sourceText: 'answer',
-    }
-    await store.discardSelfPrompt()
-
-    expect(clearPendingSelfPromptMock).toHaveBeenCalledTimes(1)
-    expect(pendingSelfPromptRef.value).toBeNull()
-    expect(llmStreamMock).toHaveBeenCalledTimes(1)
   })
 })

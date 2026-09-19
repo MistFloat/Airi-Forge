@@ -6,7 +6,6 @@ chat:
     character-name:
       airi: AIRI
       core-system: Core System
-      self-prompt: AIRI self-prompt loop
       you: You
   reasoning: Reasoning
   sessions:
@@ -29,40 +28,12 @@ send-mode:
   enter: Enter
   ctrl-enter: Ctrl + Enter
   double-enter: Double Enter
-self-prompt-loop:
-  title: Self-prompt loop
-  description: A prompt AIRI wrote for its next autonomous turn.
-  empty: No pending self-prompt. The next one will appear here before it is sent.
-  auto-send: Automatic send
-  pending-prompt: Pending prompt
-  captured-at: 'Captured {time}'
-  send-now: Send now
-  restart: Restart timer
-  discard: Discard
-  last-error: 'Last attempt failed: {error}'
+unsettled-tool-calls:
+  description: No durable final outcome is recorded. AIRI will not run it again automatically during recovery.
   status:
-    idle: Waiting
-    ready: Ready
-    countdown: Scheduled
-    sending: Sending
-    blocked-chat: Waiting for reply
-    blocked-provider: Select a provider
-    blocked-model: Select a model
-unfinished-thoughts:
-  title: Unfinished thoughts
-  description: Interrupted self-directed turns and unsettled tools retained outside semantic memory.
-  empty: No interrupted self-directed work.
-  resume: Continue
-  resume-failed: Failed to continue this thought
-  status:
-    open: Open
-    resumed: Continued
-  tools:
-    description: No durable final outcome is recorded. AIRI will not run it again automatically during recovery.
-    status:
-      running: Running
-      uncertain: Outcome unknown
-    title: Unsettled tool calls
+    running: Running
+    uncertain: Outcome unknown
+  title: Unsettled tool calls
 operations:
   load-models: Load Models
   load-models-status:

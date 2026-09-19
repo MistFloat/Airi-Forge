@@ -30,95 +30,6 @@ import { agentSessionJsonValueSchema, authoredChatMessageSchema } from '../schem
 const identifierSchema = pipe(string(), minLength(1))
 const timestampSchema = pipe(number(), integer(), minValue(0))
 
-const blockedReasonSchema = object({
-  code: string(),
-  message: string(),
-})
-
-const goalSnapshotSchema = object({
-  blockedReason: optional(blockedReasonSchema),
-  createdAt: timestampSchema,
-  id: identifierSchema,
-  maxRounds: pipe(number(), integer(), minValue(1)),
-  objective: identifierSchema,
-  phase: union([literal('active'), literal('paused'), literal('blocked'), literal('complete')]),
-  revision: pipe(number(), integer(), minValue(1)),
-  rounds: pipe(number(), integer(), minValue(0)),
-  source: union([literal('self-prompt'), literal('system'), literal('user')]),
-  sourceText: optional(string()),
-  updatedAt: timestampSchema,
-})
-
-const goalChangedPayloadSchema = object({
-  goal: goalSnapshotSchema,
-  operation: union([
-    literal('block'),
-    literal('complete'),
-    literal('create'),
-    literal('edit'),
-    literal('pause'),
-    literal('resume'),
-    literal('round'),
-  ]),
-})
-
-const scheduleSnapshotSchema = object({
-  afterMs: optional(pipe(number(), integer(), minValue(1))),
-  claimedBy: optional(identifierSchema),
-  createdAt: timestampSchema,
-  dispatchId: optional(identifierSchema),
-  everyMs: optional(pipe(number(), integer(), minValue(1))),
-  goal: optional(object({ id: identifierSchema, revision: pipe(number(), integer(), minValue(1)) })),
-  id: identifierSchema,
-  kind: union([literal('after'), literal('at'), literal('every')]),
-  lastError: optional(string()),
-  occurrenceAt: optional(timestampSchema),
-  prompt: identifierSchema,
-  revision: pipe(number(), integer(), minValue(1)),
-  scheduledAt: timestampSchema,
-  state: union([
-    literal('cancelled'),
-    literal('claimed'),
-    literal('completed'),
-    literal('failed'),
-    literal('pending'),
-    literal('scheduled'),
-  ]),
-  updatedAt: timestampSchema,
-})
-
-const scheduleChangedPayloadSchema = object({
-  operation: union([
-    literal('cancel'),
-    literal('claim'),
-    literal('complete'),
-    literal('create'),
-    literal('fail'),
-    literal('release'),
-    literal('trigger'),
-  ]),
-  schedule: scheduleSnapshotSchema,
-})
-
-const taskChangedPayloadSchema = object({
-  task: object({
-    error: optional(string()),
-    id: identifierSchema,
-    objective: identifierSchema,
-    revision: pipe(number(), integer(), minValue(1)),
-    state: union([
-      literal('blocked'),
-      literal('cancelled'),
-      literal('completed'),
-      literal('failed'),
-      literal('paused'),
-      literal('queued'),
-      literal('running'),
-    ]),
-    updatedAt: timestampSchema,
-  }),
-})
-
 const visualObservedPayloadSchema = object({
   capturedAt: timestampSchema,
   contextId: identifierSchema,
@@ -311,21 +222,6 @@ export const agentSessionEventSchema = variant('type', [
     ...eventEnvelopeFields,
     payload: turnRecoveryAcknowledgedPayloadSchema,
     type: literal('turn.recovery-acknowledged'),
-  }),
-  object({
-    ...eventEnvelopeFields,
-    payload: goalChangedPayloadSchema,
-    type: literal('goal.changed'),
-  }),
-  object({
-    ...eventEnvelopeFields,
-    payload: scheduleChangedPayloadSchema,
-    type: literal('schedule.changed'),
-  }),
-  object({
-    ...eventEnvelopeFields,
-    payload: taskChangedPayloadSchema,
-    type: literal('task.changed'),
   }),
   object({
     ...eventEnvelopeFields,

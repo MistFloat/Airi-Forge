@@ -20,7 +20,6 @@ import { executeToolCallRerun } from '@proj-airi/stage-ui/stores/tool-call-rerun
 import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
-import { agentAutonomyTools } from './tools/builtin/agent-autonomy'
 import { imageJournalTools } from './tools/builtin/image-journal'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
@@ -103,15 +102,14 @@ type ToolsetId = 'artistry' | 'widgets'
 
 const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
 
-/** Desktop tool bundle available to ordinary and scheduled Agent turns. */
+/** Desktop tool bundle available to ordinary Agent turns. */
 export async function autonomousStageTools(): Promise<Tool[]> {
-  const [autonomy, imageJournal, widgets, weather] = await Promise.all([
-    agentAutonomyTools(),
+  const [imageJournal, widgets, weather] = await Promise.all([
     imageJournalTools(),
     widgetsTools(),
     weatherTools(),
   ])
-  return [...autonomy, ...imageJournal, ...widgets, ...weather]
+  return [...imageJournal, ...widgets, ...weather]
 }
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
 // Fast commands (delete/cleanup) never touch the LLM and must settle quickly.
@@ -325,12 +323,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
         return await autonomousStageTools()
       },
       widgets: async () => {
-        const [autonomy, widgets, weather] = await Promise.all([
-          agentAutonomyTools(),
+        const [widgets, weather] = await Promise.all([
           widgetsTools(),
           weatherTools(),
         ])
-        return [...autonomy, ...widgets, ...weather]
+        return [...widgets, ...weather]
       },
     }
 
