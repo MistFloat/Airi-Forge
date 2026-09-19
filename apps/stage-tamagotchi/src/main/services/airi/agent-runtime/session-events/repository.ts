@@ -19,7 +19,7 @@ import { createGzip, gunzipSync } from 'node:zlib'
 import { app } from 'electron'
 
 import { createConfig } from '../../../../libs/electron/persistence'
-import { agentSessionEventStateSchema, parseAgentSessionEvents } from './schemas'
+import { agentSessionEventStateSchema, isKnownAgentSessionEventType, parseAgentSessionEvents } from './schemas'
 
 /** One semantic-consumer boundary that permits older hot events to become cold. */
 export interface AgentSessionEventCompaction {
@@ -291,6 +291,10 @@ function encodeSessionId(sessionId: string): string {
   return Buffer.from(sessionId, 'utf8').toString('base64url')
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function loadAllEvents(
   checkpointEvents: Map<string, AgentSessionEvent[]>,
   segments: Map<string, EventSegment[]>,
@@ -324,7 +328,7 @@ function loadArchivedReplayAdmissions(
     // left a replay transition without its causal admission in the hot log.
     const buffer = gunzipSync(readFileSync(path))
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseAgentSessionEvents([JSON.parse(line)]))
+    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
     const archiveSessionId = validateSegmentEvents(name, encodedSession, events)
     if (archiveSessionId !== undefined && archiveSessionId !== sessionId)
       throw new Error(`Agent event archive ${name} does not match session ${sessionId}`)
@@ -357,7 +361,7 @@ function loadCheckpointFiles(rootDirectory: string, checkpointEvents: Map<string
       throw new Error(`Invalid Agent event checkpoint name: ${checkpoint.name}`)
     const buffer = readFileSync(join(rootDirectory, checkpoint.name))
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseAgentSessionEvents([JSON.parse(line)]))
+    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
     const sessionId = validateSegmentEvents(checkpoint.name, encodedSession, events)
     if (sessionId)
       checkpointEvents.set(sessionId, deduplicateEvents(events))
@@ -384,7 +388,7 @@ function loadRepositoryState(
     const path = join(rootDirectory, file.name)
     const buffer = readCompleteSegment(path)
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseAgentSessionEvents([JSON.parse(line)]))
+    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
     const sessionId = validateSegmentEvents(file.name, file.encodedSession, events)
     if (!sessionId)
       continue
@@ -463,6 +467,27 @@ function missingReplayDependencies(events: readonly AgentSessionEvent[]): Map<st
 
 function parseCheckpointName(name: string): string | undefined {
   return /^([\w-]+)--compacted\.jsonl$/.exec(name)?.[1]
+}
+
+/**
+ * Parses one JSONL event record, dropping events from subsystems that later
+ * refactors removed from the durable contract.
+ *
+ * Files written by older builds may retain retired event types (for example
+ * `task.changed` from the autonomy runtime removed by the de-experimentalized
+ * fork). Those orphans have no consumers and never appear in replay dependency
+ * keys, so dropping them keeps the surviving monotonic sequence safe for
+ * replay and compaction. Records of known types that fail payload validation
+ * are still fatal.
+ */
+function parseEventLine(rawLine: string): AgentSessionEvent | undefined {
+  const value: unknown = JSON.parse(rawLine)
+  const type = isRecord(value) ? value.type : undefined
+  if (!isKnownAgentSessionEventType(type)) {
+    console.warn(`Dropped an Agent session event of retired type ${JSON.stringify(type)}`)
+    return undefined
+  }
+  return parseAgentSessionEvents([value])[0]
 }
 
 function parseSegmentName(name: string): undefined | { encodedSession: string, index: number } {

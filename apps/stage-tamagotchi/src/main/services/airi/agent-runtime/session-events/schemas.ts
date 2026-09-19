@@ -201,6 +201,31 @@ const eventEnvelopeFields = {
   sessionId: string(),
 }
 
+/**
+ * Event discriminators persisted by the current runtime.
+ *
+ * Must stay in sync with the variants of `agentSessionEventSchema` below;
+ * loading uses this to drop orphaned events written by subsystems that later
+ * refactors removed from the contract.
+ */
+const agentSessionEventTypeNames = [
+  'memory.projected',
+  'turn.admitted',
+  'turn.cancellation-requested',
+  'turn.checkpointed',
+  'turn.closed',
+  'turn.interrupted',
+  'turn.recovery-acknowledged',
+  'tool.call-started',
+  'tool.call-settled',
+  'tool.call-reconciled',
+  'message.appended',
+  'prompt.composed',
+  'turn.settled',
+  'turn.started',
+  'visual.observed',
+] as const
+
 /** Validated on-disk representation of one authoritative event. */
 export const agentSessionEventSchema = variant('type', [
   object({
@@ -279,6 +304,14 @@ export const agentSessionEventSchema = variant('type', [
     type: literal('visual.observed'),
   }),
 ])
+
+/** Guards loading against events written by subsystems removed from the contract. */
+export function isKnownAgentSessionEventType(
+  type: unknown,
+): type is typeof agentSessionEventTypeNames[number] {
+  return typeof type === 'string'
+    && (agentSessionEventTypeNames as readonly string[]).includes(type)
+}
 
 /** Validated main-process persistence document grouped by session owner. */
 export const agentSessionEventStateSchema = object({

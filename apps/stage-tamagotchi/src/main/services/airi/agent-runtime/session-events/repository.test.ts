@@ -191,6 +191,70 @@ describe('agent session event repository', () => {
     ).trim().split('\n').map(line => JSON.parse(line))
     expect(checkpoint).toEqual([admitted, started])
   })
+
+  it('loads a segment that still contains events from a removed subsystem', async () => {
+    const rootDirectory = createTemporaryDirectory()
+    const first = event({ occurredAt: 90, sequence: 1, sessionId: 'session-a', turnId: 'turn-a' })
+    const third = event({ occurredAt: 110, sequence: 3, sessionId: 'session-a', turnId: 'turn-c' })
+    const orphan = {
+      occurredAt: 100,
+      payload: { task: { id: 'task-a', objective: 'cleanup', revision: 1, state: 'queued', updatedAt: 100 } },
+      sequence: 2,
+      sessionId: 'session-a',
+      type: 'task.changed',
+    }
+    const encodedSessionId = Buffer.from(first.sessionId, 'utf8').toString('base64url')
+    writeFileSync(
+      join(rootDirectory, `${encodedSessionId}--00000001.jsonl`),
+      `${JSON.stringify(first)}\n${JSON.stringify(orphan)}\n${JSON.stringify(third)}\n`,
+    )
+
+    const repository = createAgentSessionEventRepository({
+      legacyStore: { get: () => ({ sessions: {} }), setup: vi.fn() },
+      rootDirectory,
+    })
+
+    expect(repository.load()).toEqual([first, third])
+    const fourth = event({ occurredAt: 120, sequence: 4, sessionId: 'session-a', turnId: 'turn-d' })
+    repository.append(fourth)
+    await repository.flush()
+    expect(repository.load()).toEqual([first, third, fourth])
+  })
+
+  it('drops orphaned events from a compacted checkpoint before rewriting it', async () => {
+    const rootDirectory = createTemporaryDirectory()
+    const first = event({ occurredAt: 90, sequence: 1, sessionId: 'session-a', turnId: 'turn-a' })
+    const orphan = {
+      occurredAt: 100,
+      payload: { task: { id: 'task-a', objective: 'cleanup', revision: 1, state: 'queued', updatedAt: 100 } },
+      sequence: 2,
+      sessionId: 'session-a',
+      type: 'task.changed',
+    }
+    const encodedSessionId = Buffer.from(first.sessionId, 'utf8').toString('base64url')
+    writeFileSync(
+      join(rootDirectory, `${encodedSessionId}--compacted.jsonl`),
+      `${JSON.stringify(first)}\n${JSON.stringify(orphan)}\n`,
+    )
+
+    const repository = createAgentSessionEventRepository({
+      legacyStore: { get: () => ({ sessions: {} }), setup: vi.fn() },
+      rootDirectory,
+    })
+    expect(repository.load()).toEqual([first])
+
+    await repository.compact({
+      retainedSequences: [1],
+      sessionId: 'session-a',
+      throughSequence: 1,
+    })
+
+    const checkpoint = readFileSync(
+      join(rootDirectory, `${encodedSessionId}--compacted.jsonl`),
+      'utf8',
+    ).trim().split('\n').map(line => JSON.parse(line))
+    expect(checkpoint).toEqual([first])
+  })
 })
 
 function createTemporaryDirectory(): string {
