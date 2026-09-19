@@ -17,14 +17,6 @@ describe('promo banner visuals', () => {
         key: 'build',
       },
       {
-        action: { to: '/settings/flux', type: 'route' },
-        key: 'spring',
-      },
-      {
-        action: { to: '/settings/flux', type: 'route' },
-        key: 'coupon',
-      },
-      {
         action: { to: '/settings/scene', type: 'route' },
         key: 'home',
       },

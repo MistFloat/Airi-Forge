@@ -1,5 +1,3 @@
-import { isFluxPurchaseDisabled } from '@proj-airi/stage-shared'
-
 import factorioPoster from '../../../assets/factorio-simple.png'
 import onboardingPoster from '../../../assets/onboarding.avif'
 
@@ -51,28 +49,6 @@ export const promoBannerVisuals: PromoBannerVisual[] = [
     image: factorioPoster,
     key: 'build',
   },
-  ...(isFluxPurchaseDisabled()
-    ? []
-    : [
-      {
-        accentClass: 'from-amber-400/30 via-orange-300/18 to-transparent',
-        action: { to: '/settings/flux', type: 'route' },
-        fallbackClass: 'from-amber-300/25 via-rose-300/14 to-fuchsia-400/20',
-        fallbackIcon: 'i-solar:gift-bold-duotone',
-        fallbackIconClass: 'text-white/88',
-        image: '',
-        key: 'spring',
-      },
-      {
-        accentClass: 'from-emerald-400/28 via-teal-300/16 to-transparent',
-        action: { to: '/settings/flux', type: 'route' },
-        fallbackClass: 'from-emerald-300/24 via-cyan-300/12 to-teal-400/18',
-        fallbackIcon: 'i-solar:ticket-sale-bold-duotone',
-        fallbackIconClass: 'text-emerald-100',
-        image: '',
-        key: 'coupon',
-      },
-    ] satisfies PromoBannerVisual[]),
   {
     accentClass: 'from-sky-400/28 via-indigo-300/14 to-transparent',
     action: { to: '/settings/scene', type: 'route' },
