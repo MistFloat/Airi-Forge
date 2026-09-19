@@ -93,20 +93,32 @@ export async function streamFrom({
   const supportsContentArray = streamOptionsContentArrayCompatibilityOk(model, chatProvider, options)
   const sanitized = sanitizeMessages(messages as unknown[], supportsContentArray)
 
-  const supportedTools = streamOptionsToolsCompatibilityOk(model, chatProvider, options)
-  const builtinTools = supportedTools
-    ? await (builtinToolsResolver?.(model, chatProvider) ?? Promise.resolve([]))
-    : []
-  const customTools = supportedTools ? await resolveTools(options) : []
-  const mergedTools = supportedTools ? [...builtinTools, ...customTools] : []
-  const tools = mergedTools.length > 0 ? mergedTools : undefined
   const capturedToolErrorByCallId = new Map<string, string>()
-  const ledgerTools = tools != null && (options?.onToolExecutionStart || options?.onToolExecutionFinish)
-    ? withToolExecutionLedger(tools, options)
-    : tools
-  const streamTools = options?.captureToolErrors && ledgerTools != null
-    ? withCapturedToolErrors(ledgerTools, capturedToolErrorByCallId)
-    : ledgerTools
+
+  /**
+   * Resolves the tools for one provider call.
+   *
+   * Evaluation happens per call rather than once, because a tool-related
+   * provider failure can disable tools mid-turn so the retry still answers.
+   */
+  const resolveStreamTools = async () => {
+    if (!streamOptionsToolsCompatibilityOk(model, chatProvider, options))
+      return undefined
+
+    const builtinTools = await (builtinToolsResolver?.(model, chatProvider) ?? Promise.resolve([]))
+    const customTools = await resolveTools(options)
+    const mergedTools = [...builtinTools, ...customTools]
+    if (mergedTools.length === 0)
+      return undefined
+
+    const ledgerTools = options?.onToolExecutionStart || options?.onToolExecutionFinish
+      ? withToolExecutionLedger(mergedTools, options)
+      : mergedTools
+
+    return options?.captureToolErrors
+      ? withCapturedToolErrors(ledgerTools, capturedToolErrorByCallId)
+      : ledgerTools
+  }
 
   const configuredActionContinuationAttempts = options?.maxActionContinuationAttempts ?? 1
   const maxActionContinuationAttempts = Number.isFinite(configuredActionContinuationAttempts)
@@ -125,9 +137,13 @@ export async function streamFrom({
   let continuationAttempts = 0
   let requestMessages = sanitized
   let turnUsage: undefined | Usage
+  // Guards the one-shot mid-turn tool degrade so a provider that keeps rejecting
+  // the request cannot make this turn retry forever.
+  let toolsDegradeAttempted = false
   const textEmitter = createContinuationTextEmitter(text => options?.onStreamEvent?.({ text, type: 'text-delta' }))
 
   while (true) {
+    const streamTools = await resolveStreamTools()
     let callbackError: unknown
     let callText = ''
     let eventChain = Promise.resolve()
@@ -226,8 +242,39 @@ export async function streamFrom({
     ])
     turnUsage = addUsage(turnUsage, callUsage)
     await eventChain
-    if (callbackError !== undefined)
-      throw callbackError
+    if (callbackError !== undefined) {
+      // Only errors that name a tool-capability problem are handled here; every
+      // other failure (network, rate limit, provider 5xx, auth) propagates
+      // unchanged so the caller can surface it.
+      if (!isToolRelatedError(callbackError))
+        throw callbackError
+
+      // A resolved step proves the provider accepted the request, tools
+      // included. A tool-shaped error afterwards is a provider contradiction,
+      // not a capability signal, so tools stay enabled and the call finishes
+      // with whatever it already produced.
+      const resolvedStepCount = steps.length
+      if (resolvedStepCount > 0) {
+        console.warn(
+          `[llm] Ignoring a tool-related provider error after ${resolvedStepCount} resolved step(s); tools stay enabled:`,
+          callbackError,
+        )
+      }
+      else if (streamTools != null && streamTools.length > 0 && !toolsDegradeAttempted) {
+        // Nothing resolved and tool schemas were sent: they are the likely
+        // cause. Disable tools for this model and retry the call once so the
+        // turn still answers instead of failing outright.
+        toolsDegradeAttempted = true
+        options?.toolsCompatibility?.set(modelKey(model, chatProvider), false)
+        console.warn(
+          `[llm] Auto-disabling tools for "${modelKey(model, chatProvider)}" after a tool-related provider error; retrying this call without tools.`,
+        )
+        continue
+      }
+      else {
+        throw callbackError
+      }
+    }
 
     const finalStep = steps.at(-1)
     const finishReason = finalStep?.finishReason ?? pendingFinishEvent?.finishReason ?? 'other'

@@ -178,7 +178,17 @@ describe('isToolRelatedError', () => {
     await expect(pending).resolves.toBeUndefined()
   })
 
-  it('keeps builtin tools when stream steps resolve before a tool-related error event', async () => {
+  // ROOT CAUSE:
+  //
+  // Every tool-shaped provider error used to be swallowed for this store, so a
+  // model that genuinely rejects tool schemas failed the turn instead of
+  // degrading, and a network failure was indistinguishable from a capability
+  // failure.
+  //
+  // The stream runtime now handles tool-capability errors only: with no resolved
+  // step it disables tools for that model and retries the same call without
+  // them, so the turn still answers.
+  it('retries without tools when the provider rejects tool schemas before any step resolves', async () => {
     const store = useLLM()
     const llmToolsStore = useLlmToolsStore()
     const customTool = { name: 'custom-tool' } as any
@@ -199,17 +209,67 @@ describe('isToolRelatedError', () => {
       })
       return createMockStreamResult()
     })
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
+      queueMicrotask(async () => {
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
+      })
+      return createMockStreamResult()
+    })
 
     await expect(store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
       tools: [customTool],
     })).resolves.toBeUndefined()
 
     const firstCallTools = streamTextMock.mock.calls[0]?.[0]?.tools
-    expect(Array.isArray(firstCallTools)).toBe(true)
-    expect(mcpMock).toHaveBeenCalledTimes(1)
-    expect(debugMock).toHaveBeenCalledTimes(1)
     expect(firstCallTools).toContain(customTool)
     expect(firstCallTools?.map(toolNameFrom)).toContain('runtime_play_chess_match')
+    expect(mcpMock).toHaveBeenCalledTimes(1)
+    expect(debugMock).toHaveBeenCalledTimes(1)
+
+    // The retry drops every tool instead of failing the turn.
+    expect(streamTextMock.mock.calls[1]?.[0]?.tools).toBeUndefined()
+
+    // The degraded state is remembered for this model+provider pair.
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
+      queueMicrotask(async () => {
+        await options.onEvent({ finishReason: 'stop', type: 'finish' })
+      })
+      return createMockStreamResult()
+    })
+
+    await store.stream('model-a', provider, [{ content: 'hello again', role: 'user' }] as Message[], {
+      tools: [customTool],
+    })
+
+    expect(streamTextMock.mock.calls[2]?.[0]?.tools).toBeUndefined()
+  })
+
+  // A provider that already resolved a step accepted the request, tools
+  // included, so a tool-shaped error afterwards is a provider contradiction
+  // rather than a capability signal: tools stay enabled and the call finishes
+  // with what it produced.
+  it('keeps tools enabled when a tool-related error arrives after a step resolved', async () => {
+    const store = useLLM()
+    const customTool = { name: 'custom-tool' } as any
+
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
+      queueMicrotask(async () => {
+        await options.onEvent({ error: new Error('llama3 does not support tools'), type: 'error' })
+      })
+      return {
+        messages: Promise.resolve([]),
+        steps: Promise.resolve([{ finishReason: 'stop', toolCalls: [], usage: {} }]),
+        totalUsage: Promise.resolve({}),
+        usage: Promise.resolve({}),
+      }
+    })
+
+    await expect(store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
+      tools: [customTool],
+    })).resolves.toBeUndefined()
+
+    expect(streamTextMock.mock.calls).toHaveLength(1)
+    expect(streamTextMock.mock.calls[0]?.[0]?.tools).toContain(customTool)
 
     streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
       queueMicrotask(async () => {
@@ -222,9 +282,26 @@ describe('isToolRelatedError', () => {
       tools: [customTool],
     })
 
-    const secondCallTools = streamTextMock.mock.calls[1]?.[0]?.tools
-    expect(Array.isArray(secondCallTools)).toBe(true)
-    expect(secondCallTools?.map(toolNameFrom)).toContain('runtime_play_chess_match')
+    expect(streamTextMock.mock.calls[1]?.[0]?.tools).toContain(customTool)
+  })
+
+  it('propagates provider failures that are not tool-capability errors', async () => {
+    const store = useLLM()
+    const customTool = { name: 'custom-tool' } as any
+
+    streamTextMock.mockImplementationOnce((options: { onEvent: (event: unknown) => Promise<void>, tools?: unknown[] }) => {
+      queueMicrotask(async () => {
+        await options.onEvent({ error: new Error('socket hang up'), type: 'error' })
+      })
+      return createMockStreamResult()
+    })
+
+    await expect(store.stream('model-a', provider, [{ content: 'hello', role: 'user' }] as Message[], {
+      tools: [customTool],
+    })).rejects.toThrow('socket hang up')
+
+    // No degrade retry happened, and tools stay enabled for the next attempt.
+    expect(streamTextMock.mock.calls).toHaveLength(1)
   })
 
   it('merges runtime-registered tools from the llm-tools store into the builtin tool resolver', async () => {

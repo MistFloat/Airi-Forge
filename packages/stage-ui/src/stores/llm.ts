@@ -2,7 +2,7 @@ import type { StreamOptions } from '@proj-airi/core-agent'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 import type { Message } from '@xsai/shared-chat'
 
-import { streamFrom as coreStreamFrom, isContentArrayRelatedError, isToolRelatedError, modelKey } from '@proj-airi/core-agent'
+import { streamFrom as coreStreamFrom, isContentArrayRelatedError, modelKey } from '@proj-airi/core-agent'
 import { listModels } from '@xsai/model'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
@@ -37,10 +37,10 @@ export const useLLM = defineStore('llm', () => {
       await runStream()
     }
     catch (err) {
-      if (isToolRelatedError(err)) {
-        console.warn(`[llm] Auto-disabling tools for "${key}" due to tool-related error`)
-        toolsCompatibility.value.set(key, false)
-      }
+      // Tool-capability failures are handled by the stream runtime, which can
+      // retry the same provider call without tools, so nothing here swallows an
+      // error: whatever reaches this catch is a failure the caller must see.
+      //
       // NOTICE:
       // Auto-degrade content-part arrays to plain strings on the next attempt
       // when the provider returned the Rust/serde-style "expected a string"
