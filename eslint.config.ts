@@ -24,7 +24,6 @@ export default defineConfig({
 
     '**/drizzle/**',
     '**/.astro/**',
-    'docs/superpowers/**',
     '.agents/**',
     '.github/**',
     'CLAUDE.md', // Skip the symbolic link

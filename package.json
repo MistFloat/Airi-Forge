@@ -83,7 +83,6 @@
     "plugins/**",
     "services/**",
     "examples/**",
-    "docs/**",
     "engines/**",
     "apps/**"
   ],
