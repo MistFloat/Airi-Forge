@@ -1,7 +1,7 @@
 # Airi Forge
 
 A desktop AI agent assistant forked from
-[AIRI](https://github.com/moeru-ai/airi) and rebuilt as a personal resume
+[AIRI](https://github.com/moeru-ai/airi) and rebuilt as a new
 project. It runs as an Electron app, talks in text or voice, drives a Live2D /
 avatar stage, remembers across sessions, and can call MCP tools.
 
