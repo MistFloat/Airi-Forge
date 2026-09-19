@@ -5,13 +5,12 @@ import { StorageSerializers, useLocalStorage, useTimeoutFn, whenever } from '@vu
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
-import { client } from '../composables/api'
 import { useBreakpoints } from '../composables/use-breakpoints'
 import { triggerSignIn } from '../libs/auth'
 import { refreshAccessToken } from '../libs/auth-oidc'
 
 /**
- * Auth store — holds identity state and credits.
+ * Auth store — holds identity state.
  *
  * This store has no dependency on `stores/providers`, which allows
  * `providers` to safely depend on it without creating a circular import.
@@ -38,10 +37,7 @@ export const useAuthStore = defineStore('auth', () => {
   const oidcClientId = useLocalStorage<null | string>('auth/v1/oidc-client-id', null)
   const tokenExpiry = useLocalStorage<null | number>('auth/v1/oidc-token-expiry', null)
 
-  const credits = useLocalStorage<number>('user/v1/flux', 0)
-
-  // Cross-app "user must log in" flag. Setting this to true triggers an
-  // immediate OIDC redirect on web (mobile + desktop). Electron skips this
+  // Cross-app "user must log in" flag. Setting this to true triggers an  // immediate OIDC redirect on web (mobile + desktop). Electron skips this
   // path because controls-island-auth-button listens for IPC and handles
   // sign-in in the main process.
   const needsLogin = ref(false)
@@ -233,30 +229,13 @@ export const useAuthStore = defineStore('auth', () => {
     idToken.value = null
   }
 
-  const updateCredits = async () => {
-    if (!isAuthenticated.value)
-      return
-    const res = await client.api.v1.flux.$get()
-    if (res.ok) {
-      const data = await res.json()
-      credits.value = data.flux
-    }
-  }
-
-  watch(isAuthenticated, async (val) => {
-    if (val) {
-      updateCredits()
-
+  watch(isAuthenticated, (val) => {
+    if (val)
       needsLogin.value = false
-    }
-    else {
-      credits.value = 0
-    }
   }, { immediate: true })
 
   return {
     clearAllAuthState,
-    credits,
     idToken,
     isAuthenticated,
     needsLogin,
@@ -273,7 +252,6 @@ export const useAuthStore = defineStore('auth', () => {
     session,
     token,
     tokenExpiry,
-    updateCredits,
     user,
     userId,
   }

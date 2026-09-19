@@ -19,7 +19,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const authStore = useAuthStore()
-const { isAuthenticated, user, needsLogin, credits } = storeToRefs(authStore)
+const { isAuthenticated, needsLogin, user } = storeToRefs(authStore)
 const context = useElectronEventaContext()
 
 const startSigningIn = useElectronEventaInvoke(electronAuthStartLogin)
@@ -129,25 +129,6 @@ watch(isAuthenticated, (val) => {
         >
           {{ userName }}
         </span>
-
-        <!-- Flux balance: horizontal pill -->
-        <div
-          :class="[
-            'flex items-center gap-1',
-            'rounded-md px-1.5 py-0.5',
-            'bg-primary-500/12 dark:bg-primary-400/12',
-            'text-[10px] font-semibold',
-            'text-primary-600 dark:text-primary-400',
-          ]"
-        >
-          <div
-            :class="[
-              'i-solar:battery-charge-bold-duotone',
-              'size-3 shrink-0',
-            ]"
-          />
-          <span class="whitespace-nowrap leading-tight">{{ credits }} Flux</span>
-        </div>
       </div>
     </button>
   </div>

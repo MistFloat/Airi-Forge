@@ -1,11 +1,11 @@
-import type { InferenceServiceProvider, InferenceServiceProviders, InferenceServiceProvidersModel } from '../models/inference-service-providers'
-import type { InferenceServiceProvidersRemoteClient, InferenceServiceProvidersService, PatchConfigParams } from '../services/inference-service-providers'
+import type { InferenceServiceProvider, InferenceServiceProvidersModel } from '../models/inference-service-providers'
+import type { InferenceServiceProvidersService } from '../services/inference-service-providers'
 
 import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import { providerOpenAICompatible } from '../libs/providers/providers/openai-compatible'
-import { createProviderCatalogListQueryOptions, createProviderCatalogStoreController } from './provider-catalog'
+import { createProviderCatalogStoreController } from './provider-catalog'
 
 const localProvider = {
   config: {},
@@ -16,64 +16,20 @@ const localProvider = {
   validationBypassed: false,
 } satisfies InferenceServiceProvider
 
-const remoteProvider = {
-  config: {},
-  definitionId: providerOpenAICompatible.id,
-  id: 'real-id',
-  name: 'OpenAI Compatible',
-  validated: false,
-  validationBypassed: false,
-} satisfies InferenceServiceProvider
-
-function createMutation<TVars, TData>(mutation: (vars: TVars) => Promise<TData>) {
-  return {
-    error: ref<Error | null>(null),
-    async mutateAsync(vars: TVars) {
-      try {
-        return await mutation(vars)
-      }
-      catch (error) {
-        this.error.value = error as Error
-        throw error
-      }
-    },
-  }
-}
-
 function setupController() {
-  const model: InferenceServiceProvidersModel = {
+  const model: Pick<InferenceServiceProvidersModel, 'list' | 'remove' | 'upsert'> = {
     list: vi.fn(async () => ({})),
     remove: vi.fn(async () => {}),
-    saveAll: vi.fn(async () => {}),
     upsert: vi.fn(async () => {}),
   }
-  const service: InferenceServiceProvidersService = {
+  const service: Pick<InferenceServiceProvidersService, 'buildLocal' | 'getDefinition' | 'listDefinitions'> = {
     buildLocal: vi.fn(() => localProvider),
-    createRemote: vi.fn(async () => remoteProvider),
-    deleteRemote: vi.fn(async () => {}),
-    fetchRemote: vi.fn(async () => ({})),
     getDefinition: vi.fn(() => providerOpenAICompatible),
     listDefinitions: vi.fn(() => [providerOpenAICompatible]),
-    patchConfigRemote: vi.fn(async () => ({ ...remoteProvider, id: 'provider-1', validated: true })),
-  }
-  const providersQuery = {
-    error: ref<Error | null>(null),
-    isLoading: ref(false),
-    refetch: vi.fn(async () => ({
-      data: {
-        'remote-id': { ...remoteProvider, id: 'remote-id' },
-      },
-    })),
   }
   const controller = createProviderCatalogStoreController({
-    addProviderMutation: createMutation<InferenceServiceProvider, InferenceServiceProvider>(provider => service.createRemote({} as InferenceServiceProvidersRemoteClient, provider)),
-    commitProviderConfigMutation: createMutation<{ config: Record<string, unknown>, options: PatchConfigParams, providerId: string }, InferenceServiceProvider>(
-      vars => service.patchConfigRemote({} as InferenceServiceProvidersRemoteClient, vars.providerId, vars.config, vars.options),
-    ),
     configs: ref<Record<string, InferenceServiceProvider>>({}),
     model,
-    providersQuery,
-    removeProviderMutation: createMutation<string, void>(id => service.deleteRemote({} as InferenceServiceProvidersRemoteClient, id)),
     service,
   })
 
@@ -85,72 +41,66 @@ function setupController() {
  * describe('store provider-catalog controller', () => {})
  */
 describe('store provider-catalog controller', () => {
-  /**
-   * @example
-   * await controller.fetchList()
-   */
-  it('fetchList reads local configs first and then applies remote configs', async () => {
+  it('fetchList loads the locally persisted configs', async () => {
     const { controller, model } = setupController()
-    vi.mocked(model.list).mockResolvedValueOnce({ 'local-id': localProvider })
+    vi.mocked(model.list).mockResolvedValueOnce({ 'local-id': { ...localProvider, id: 'local-id' } })
 
-    await controller.fetchList()
-
-    expect(controller.configs.value['remote-id']).toBeDefined()
-    expect(controller.configs.value['local-id']).toBeUndefined()
+    await expect(controller.fetchList()).resolves.toEqual({ 'local-id': { ...localProvider, id: 'local-id' } })
+    expect(controller.configs.value['local-id']).toBeDefined()
   })
 
-  /**
-   * @example
-   * await controller.addProvider(providerOpenAICompatible.id)
-   */
-  it('keeps local add state and exposes mutation errors when remote add fails', async () => {
-    const { controller, service } = setupController()
-    const error = new Error('remote add failed')
-    vi.mocked(service.createRemote).mockRejectedValueOnce(error)
-
-    await expect(controller.addProvider(providerOpenAICompatible.id)).resolves.toEqual(localProvider)
-
-    expect(controller.configs.value[localProvider.id]).toEqual(localProvider)
-    expect(controller.mutationError.value).toBe(error)
-  })
-
-  /**
-   * @example
-   * await controller.commitProviderConfig('provider-1', {}, options)
-   */
-  it('supports remove and config commit through mutation controllers', async () => {
+  it('adds a provider locally and persists it', async () => {
     const { controller, model, service } = setupController()
+
+    await expect(controller.addProvider(providerOpenAICompatible.id, { apiKey: 'sk-test' })).resolves.toEqual(localProvider)
+
+    expect(service.buildLocal).toHaveBeenCalledWith(providerOpenAICompatible.id, { apiKey: 'sk-test' })
+    expect(controller.configs.value[localProvider.id]).toEqual(localProvider)
+    expect(model.upsert).toHaveBeenCalledWith(localProvider)
+  })
+
+  it('commits a config change locally and persists it', async () => {
+    const { controller, model } = setupController()
     controller.configs.value[localProvider.id] = localProvider
 
-    await controller.commitProviderConfig(localProvider.id, { apiKey: 'sk-test' }, { validated: true, validationBypassed: false })
+    const committed = await controller.commitProviderConfig(
+      localProvider.id,
+      { apiKey: 'sk-test' },
+      { validated: true, validationBypassed: false },
+    )
+
+    expect(committed).toEqual({
+      ...localProvider,
+      config: { apiKey: 'sk-test' },
+      validated: true,
+    })
+    expect(controller.configs.value[localProvider.id]).toEqual(committed)
+    expect(model.upsert).toHaveBeenCalledWith(committed)
+  })
+
+  it('ignores a config commit for a provider it does not hold', async () => {
+    const { controller, model } = setupController()
+
+    await expect(controller.commitProviderConfig('missing-provider', {}, { validated: false, validationBypassed: false }))
+      .resolves
+      .toBeUndefined()
+    expect(model.upsert).not.toHaveBeenCalled()
+  })
+
+  it('removes a provider locally and persists the removal', async () => {
+    const { controller, model } = setupController()
+    controller.configs.value[localProvider.id] = localProvider
+
     await controller.removeProvider(localProvider.id)
 
-    expect(service.patchConfigRemote).toHaveBeenCalled()
-    expect(service.deleteRemote).toHaveBeenCalled()
+    expect(controller.configs.value[localProvider.id]).toBeUndefined()
     expect(model.remove).toHaveBeenCalledWith(localProvider.id)
   })
 
-  /**
-   * @example
-   * await options.query({ signal })
-   */
-  it('passes Pinia Colada query abort signal to provider service and model', async () => {
-    const service = {
-      fetchRemote: vi.fn(async () => ({}) as Promise<InferenceServiceProviders>),
-    }
-    const model = {
-      saveAll: vi.fn(async () => {}),
-    }
-    const controller = new AbortController()
-    const options = createProviderCatalogListQueryOptions({
-      client: {} as InferenceServiceProvidersRemoteClient,
-      model: model as Pick<InferenceServiceProvidersModel, 'saveAll'>,
-      service: service as Pick<InferenceServiceProvidersService, 'fetchRemote'>,
-    })
+  it('exposes the built-in definitions', () => {
+    const { controller } = setupController()
 
-    await options.query({ signal: controller.signal })
-
-    expect(service.fetchRemote).toHaveBeenCalledWith({}, { abortSignal: controller.signal })
-    expect(model.saveAll).toHaveBeenCalledWith({}, { abortSignal: controller.signal })
+    expect(controller.defs.value.map(definition => definition.id)).toEqual([providerOpenAICompatible.id])
+    expect(controller.getDefinedProvider(providerOpenAICompatible.id)).toBe(providerOpenAICompatible)
   })
 })

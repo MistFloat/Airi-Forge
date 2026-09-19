@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { providerOpenAICompatible } from '../libs/providers/providers/openai-compatible'
 import { inferenceServiceProvidersService } from './inference-service-providers'
@@ -33,85 +33,13 @@ describe('services inference-service-providers', () => {
 
   /**
    * @example
-   * await inferenceServiceProvidersService.fetchRemote(client)
+   * inferenceServiceProvidersService.getDefinition('openai-compatible')
    */
-  it('fetches remote providers and indexes them by id', async () => {
-    const client = {
-      api: {
-        v1: {
-          providers: {
-            '$get': vi.fn(async () => ({
-              json: async () => [{
-                config: { baseUrl: 'https://example.com/v1/' },
-                definitionId: providerOpenAICompatible.id,
-                id: 'provider-1',
-                name: 'OpenAI Compatible',
-                validated: true,
-                validationBypassed: false,
-              }],
-              ok: true,
-            })),
-            '$post': vi.fn(async () => ({
-              json: async () => ({
-                config: {},
-                definitionId: providerOpenAICompatible.id,
-                id: 'provider-1',
-                name: 'OpenAI Compatible',
-                validated: false,
-                validationBypassed: false,
-              }),
-              ok: true,
-            })),
-            ':id': {
-              $delete: vi.fn(async () => ({ ok: true })),
-              $patch: vi.fn(async () => ({
-                json: async () => ({
-                  config: {},
-                  definitionId: providerOpenAICompatible.id,
-                  id: 'provider-1',
-                  name: 'OpenAI Compatible',
-                  validated: false,
-                  validationBypassed: false,
-                }),
-                ok: true,
-              })),
-            },
-          },
-        },
-      },
-    }
-
-    await expect(inferenceServiceProvidersService.fetchRemote(client)).resolves.toEqual({
-      'provider-1': expect.objectContaining({
-        config: { baseUrl: 'https://example.com/v1/' },
-        id: 'provider-1',
-        validated: true,
-      }),
-    })
-  })
-
-  /**
-   * @example
-   * await expect(inferenceServiceProvidersService.fetchRemote(client, { abortSignal })).rejects.toThrow()
-   */
-  it('throws before remote work when aborted', async () => {
-    const controller = new AbortController()
-    controller.abort()
-    const client = {
-      api: {
-        v1: {
-          providers: {
-            '$get': vi.fn(),
-            '$post': vi.fn(),
-            ':id': {
-              $delete: vi.fn(),
-              $patch: vi.fn(),
-            },
-          },
-        },
-      },
-    }
-
-    await expect(inferenceServiceProvidersService.fetchRemote(client, { abortSignal: controller.signal })).rejects.toThrow()
+  it('resolves one definition and lists every definition', () => {
+    expect(inferenceServiceProvidersService.getDefinition(providerOpenAICompatible.id)?.id)
+      .toBe(providerOpenAICompatible.id)
+    expect(inferenceServiceProvidersService.getDefinition('missing-definition')).toBeUndefined()
+    expect(inferenceServiceProvidersService.listDefinitions().map(definition => definition.id))
+      .toContain(providerOpenAICompatible.id)
   })
 })
