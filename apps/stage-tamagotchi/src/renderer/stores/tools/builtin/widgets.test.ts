@@ -228,24 +228,19 @@ describe('widgets tool helpers', () => {
       expect(stageWidgetsTool).toSatisfyStrictToolSchema()
       expect(windowSize).toBeDefined()
       expect(windowSize?.additionalProperties).toBe(false)
-      expect(Object.keys(windowSize?.properties ?? {})).toEqual([
-        'width',
+      // Key order is not part of the provider contract; the emitted order
+      // follows the zod declaration order, so compare the keys as a set.
+      expect(Object.keys(windowSizeProperties).sort()).toEqual([
         'height',
-        'minWidth',
-        'minHeight',
-        'maxWidth',
         'maxHeight',
+        'maxWidth',
+        'minHeight',
+        'minWidth',
+        'width',
       ])
       expect(schema.required).toContain('windowSize')
-      expect(windowSize?.required).toEqual([
-        'width',
-        'height',
-        'minWidth',
-        'minHeight',
-        'maxWidth',
-        'maxHeight',
-      ])
-      expect(windowSize?.required).toEqual(Object.keys(windowSizeProperties))
+      // The strict-validator invariant: every property key must be required.
+      expect([...(windowSize?.required ?? [])].sort()).toEqual(Object.keys(windowSizeProperties).sort())
       expect((windowSizeProperties.minWidth as JsonSchema).type).toEqual(['number', 'null'])
       expect((windowSizeProperties.minHeight as JsonSchema).type).toEqual(['number', 'null'])
       expect((windowSizeProperties.maxWidth as JsonSchema).type).toEqual(['number', 'null'])

@@ -1,6 +1,5 @@
 import type { Span, SpanContext, SpanStatusCode } from '@opentelemetry/api'
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base'
-import type { TimedEvent } from '@opentelemetry/sdk-trace-base/build/esm/TimedEvent'
 
 import { context, trace } from '@opentelemetry/api'
 import { hrTimeToNanoseconds } from '@opentelemetry/core'
@@ -8,6 +7,13 @@ import { BasicTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-tra
 import { shallowRef } from 'vue'
 
 export type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
+
+// NOTICE:
+// `TimedEvent` is not re-exported from the package root and the deep
+// `build/esm/TimedEvent` path stopped resolving, which broke the typecheck.
+// Deriving the event shape from the public `ReadableSpan` type keeps the
+// annotation accurate without depending on internal build layout.
+type TimedEvent = ReadableSpan['events'][number]
 
 const TRACER_NAME = 'ai.moeru.airi.io-tracer'
 const BROADCAST_CHANNEL = 'io-tracer-channel' // TODO: Use simple BroadcastChannel for now

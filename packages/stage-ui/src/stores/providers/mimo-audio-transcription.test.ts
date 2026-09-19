@@ -58,7 +58,7 @@ describe('miMo audio transcription provider', () => {
     formData.set('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }), 'sample.wav')
     formData.set('model', 'mimo-v2-omni')
 
-    const response = await request.fetch?.('https://unused.invalid/audio/transcriptions', {
+    const response = await request.fetch?.(new URL('https://unused.invalid/audio/transcriptions'), {
       body: formData,
       method: 'POST',
     })
@@ -95,7 +95,7 @@ describe('miMo audio transcription provider', () => {
     // payload is a valid RIFF/WAVE file. Exact MIME matching rejected those
     // recordings before MiMo received them. The provider now inspects the
     // container signature when the declared type is absent or non-standard.
-    const fetchMock = vi.fn(async () => Response.json({
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({
       choices: [{ message: { content: 'Detected WAV.' } }],
     }))
     vi.stubGlobal('fetch', fetchMock)
@@ -120,7 +120,7 @@ describe('miMo audio transcription provider', () => {
     const formData = new FormData()
     formData.set('file', new Blob([wavHeader]), 'recording.wav')
 
-    await request.fetch?.('https://unused.invalid/audio/transcriptions', {
+    await request.fetch?.(new URL('https://unused.invalid/audio/transcriptions'), {
       body: formData,
       method: 'POST',
     })

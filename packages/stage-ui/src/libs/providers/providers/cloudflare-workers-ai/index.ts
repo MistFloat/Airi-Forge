@@ -3,17 +3,27 @@ import { z } from 'zod'
 
 import { defineProvider } from '../registry'
 
-export const providerCloudflareWorkersAI = defineProvider({
+// Hoisted so the provider config type is inferable and shared with the
+// localized schema below; the inline form left every callback `config` as
+// `unknown` under the current zod generics.
+const cloudflareWorkersAIConfigSchema = z.object({
+  accountId: z.string(),
+  apiKey: z.string(),
+})
+
+type CloudflareWorkersAIConfig = z.input<typeof cloudflareWorkersAIConfigSchema>
+
+export const providerCloudflareWorkersAI = defineProvider<CloudflareWorkersAIConfig>({
   createProvider(config) {
     return createWorkersAI(config.apiKey, config.accountId)
   },
-  createProviderConfig: ({ t }) => z.object({
-    accountId: z.string().meta({
+  createProviderConfig: ({ t }) => cloudflareWorkersAIConfigSchema.extend({
+    accountId: cloudflareWorkersAIConfigSchema.shape.accountId.meta({
       descriptionLocalized: t('settings.pages.providers.provider.cloudflare-workers-ai.fields.field.account-id.description'),
       labelLocalized: t('settings.pages.providers.provider.cloudflare-workers-ai.fields.field.account-id.label'),
       placeholderLocalized: t('settings.pages.providers.provider.cloudflare-workers-ai.fields.field.account-id.placeholder'),
     }),
-    apiKey: z.string().meta({
+    apiKey: cloudflareWorkersAIConfigSchema.shape.apiKey.meta({
       descriptionLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.description'),
       labelLocalized: t('settings.pages.providers.catalog.edit.config.common.fields.field.api-key.label'),
       placeholderLocalized: t('settings.pages.providers.provider.cloudflare-workers-ai.fields.field.api-key.placeholder'),

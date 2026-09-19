@@ -48,6 +48,7 @@ describe('stage-ui exports contract', () => {
       './stores/settings',
       './stores/settings/analytics',
       './tools/mcp',
+      './tools/memory-mcp',
       './types',
       './types/*',
       './utils',

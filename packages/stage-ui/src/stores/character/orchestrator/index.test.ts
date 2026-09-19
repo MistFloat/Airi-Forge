@@ -160,7 +160,7 @@ describe('store character-orchestrator', () => {
       }
 
       await options?.onStreamEvent?.({ text: 'Ahhh, got hit by zombie!', type: 'text-delta' } satisfies StreamEvent)
-      await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' } satisfies StreamEvent)
     })
 
     const mockOnSparkNotifyReactionStreamEvent = vi.fn()
@@ -206,7 +206,7 @@ describe('store character-orchestrator', () => {
     mockedStore(useLLM).stream = mockStream
     mockedStore(useLLM).stream.mockImplementation(async (_model: string, _provider: unknown, _messages: unknown, options: any) => {
       await options?.onStreamEvent?.({ text: 'I choose d5 to pressure the center.', type: 'text-delta' } satisfies StreamEvent)
-      await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' } satisfies StreamEvent)
     })
 
     const onDelta = vi.fn()
@@ -257,7 +257,7 @@ describe('store character-orchestrator', () => {
         }],
       } satisfies z.infer<typeof sparkNotifyCommandSchema>)
       await options?.onStreamEvent?.({ text: 'This should be ignored.', type: 'text-delta' } satisfies StreamEvent)
-      await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' } satisfies StreamEvent)
     })
 
     const onDelta = vi.fn()
@@ -300,7 +300,7 @@ describe('store character-orchestrator', () => {
     mockedStore(useLLM).stream = mockStream
     mockedStore(useLLM).stream.mockImplementation(async (_model: string, _provider: unknown, _messages: unknown, options: any) => {
       await options?.onStreamEvent?.({ text: 'legacy-safe text', type: 'text-delta' } satisfies StreamEvent)
-      await options?.onStreamEvent?.({ type: 'finish' } satisfies StreamEvent)
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' } satisfies StreamEvent)
     })
 
     const store = useCharacterOrchestratorStore()

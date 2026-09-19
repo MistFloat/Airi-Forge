@@ -20,7 +20,7 @@ export function createStackAnimator(options: CreateAnimatorOptions): Animator {
         translateX: [40, 0],
         translateZ: 0,
         ...options,
-        delay: (_, i) => options.duration / elements.length * (i + 1),
+        delay: (_, i) => options.duration / elements.length * ((i ?? 0) + 1),
       })
 
     return () => {
