@@ -14,6 +14,8 @@ call MCP tools.
 - **Voice** — speech recognition and text-to-speech providers, Live2D / PSD avatar rendering
 - **Durable agent turns** — every turn is admitted, checkpointed and settled in the main process, so a crashed, reloaded or interrupted turn can be repaired and recovered instead of silently losing the reply
 - **Memory** — short-term recall plus a pgvector-backed long-term store with claim governance
+- **Recall** — the agent can search its durable conversation log by keyword (`built_in_conversationSearch`), including turns that were already compacted out of the prompt
+- **Skills** — instruction documents discovered from the app, the user data directory and the workspace; only their names and descriptions enter the prompt, bodies load on demand
 - **Tools** — MCP servers, built-in widget/weather/image tools, coding-agent integration
 - **Providers** — OpenAI-compatible endpoints, Anthropic, Google, Cloudflare Workers AI, OpenRouter and local runtimes
 

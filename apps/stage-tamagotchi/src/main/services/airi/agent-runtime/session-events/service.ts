@@ -5,6 +5,8 @@ import type {
   AgentToolExecutionClaimInput,
   AgentToolExecutionClaimResult,
   AgentToolExecutionSettlementInput,
+  ConversationSearchHit,
+  ConversationSearchQuery,
 } from '@proj-airi/core-agent'
 
 import type { AgentSessionEventCompaction } from './repository'
@@ -12,6 +14,7 @@ import type { AgentSessionEventCompaction } from './repository'
 import {
   AgentSessionEventLog,
   foldAgentToolExecutions,
+  searchConversationMessages,
 } from '@proj-airi/core-agent'
 
 /** Persistence boundary owned by the Electron main process event service. */
@@ -38,6 +41,8 @@ export interface AgentSessionEventService {
   list: (query: AgentSessionEventsQuery) => AgentSessionEvent[]
   /** Reads the bounded resident replay set for main-process recovery. */
   listAll: () => AgentSessionEvent[]
+  /** Searches durable conversation messages across every resident session. */
+  searchConversations: (query: ConversationSearchQuery) => ConversationSearchHit[]
   /** Durably commits the outcome of one previously claimed tool call. */
   settleToolExecution: (input: AgentToolExecutionSettlementInput) => Promise<void>
   /** Subscribes to newly committed in-process events. */
@@ -266,6 +271,7 @@ export function createAgentSessionEventService(options: AgentSessionEventService
     flush,
     list: query => log.list(query.sessionId, query.afterSequence),
     listAll: () => options.repository.load(),
+    searchConversations: query => searchConversationMessages(options.repository.load(), query),
     settleToolExecution,
     subscribe(listener) {
       listeners.add(listener)

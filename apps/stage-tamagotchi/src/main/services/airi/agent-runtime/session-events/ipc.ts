@@ -5,6 +5,7 @@ import type { AgentSessionEventService } from './service'
 import { defineInvokeHandler } from '@moeru/eventa'
 
 import {
+  electronAgentConversationSearch,
   electronAgentSessionEventAppend,
   electronAgentSessionEventsList,
   electronAgentSessionMessagesImport,
@@ -16,6 +17,7 @@ import {
   parseAgentSessionEventsQuery,
   parseAgentToolExecutionClaimInput,
   parseAgentToolExecutionSettlementInput,
+  parseConversationSearchQuery,
 } from './schemas'
 
 /**
@@ -35,6 +37,9 @@ export function registerAgentSessionEventHandlers<ContextExtension, EventOptions
       return event
     }),
     defineInvokeHandler(context, electronAgentSessionEventsList, input => service.list(parseAgentSessionEventsQuery(input))),
+    defineInvokeHandler(context, electronAgentConversationSearch, input => (
+      service.searchConversations(parseConversationSearchQuery(input))
+    )),
     defineInvokeHandler(context, electronAgentSessionMessagesImport, async (inputs) => {
       if (!Array.isArray(inputs))
         throw new Error('Agent message import expects an array')

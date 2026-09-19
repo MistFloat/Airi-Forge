@@ -80,6 +80,14 @@ export type {
   CategorizedSegment,
   ResponseCategory,
 } from './runtime/response-categoriser'
+export {
+  buildConversationSearchTerms,
+  searchConversationMessages,
+} from './session/conversation-search'
+export type {
+  ConversationSearchHit,
+  ConversationSearchQuery,
+} from './session/conversation-search'
 export { AgentSessionEventLog, normalizeAgentSessionJsonValue } from './session/events'
 export type {
   AgentSessionEvent,

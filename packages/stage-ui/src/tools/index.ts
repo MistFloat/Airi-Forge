@@ -1,4 +1,5 @@
 export * from './character'
+export * from './conversation-search'
 export * from './debug'
 export * from './mcp'
 export * from './skill'

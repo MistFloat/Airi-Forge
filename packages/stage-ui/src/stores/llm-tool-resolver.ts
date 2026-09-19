@@ -4,7 +4,7 @@ import type { Tool } from '@xsai/shared-chat'
 
 import { uniqBy } from 'es-toolkit'
 
-import { createSparkCommandTool, debug, mcp, skillTools } from '../tools'
+import { conversationSearchTools, createSparkCommandTool, debug, mcp, skillTools } from '../tools'
 import { useLlmToolsStore } from './llm-tools'
 import { useModsServerChannelStore } from './mods/api/channel-server'
 
@@ -28,6 +28,12 @@ export interface ResolveLlmToolsOptions {
    * @default mcp()
    */
   builtInTools?: ToolSource
+  /**
+   * Conversation search tool for recalling earlier messages.
+   *
+   * @default conversationSearchTools()
+   */
+  conversationSearchTools?: ToolSource
   /**
    * Request-scoped tools from {@link StreamOptions.tools}. These are ordered
    * before active runtime tools so runtime registrations can intentionally
@@ -69,12 +75,14 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
   const [
     builtInTools,
     skillToolSet,
+    conversationSearchToolSet,
     debugTools,
     sparkCommandTools,
     customTools,
   ] = await Promise.all([
     resolveToolSource(options.builtInTools ?? mcp),
     resolveToolSource(options.skillTools ?? skillTools),
+    resolveToolSource(options.conversationSearchTools ?? conversationSearchTools),
     resolveToolSource(options.debugTools ?? debug),
     resolveSparkCommandTools(options.sparkCommandTools),
     resolveCustomTools(options.customTools),
@@ -84,6 +92,7 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
     [
       ...builtInTools,
       ...skillToolSet,
+      ...conversationSearchToolSet,
       ...debugTools,
       ...sparkCommandTools,
       ...customTools,

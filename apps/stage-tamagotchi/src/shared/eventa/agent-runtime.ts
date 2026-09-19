@@ -14,9 +14,16 @@ import type {
   AgentTurnSettlementInput,
   AgentTurnStartInput,
   AgentTurnStatusQuery,
+  ConversationSearchHit,
+  ConversationSearchQuery,
 } from '@proj-airi/core-agent'
 
 import { defineEventa, defineInvokeEventa } from '@moeru/eventa'
+
+/** Searches durable conversation messages across sessions without the renderer holding the log. */
+export const electronAgentConversationSearch = defineInvokeEventa<ConversationSearchHit[], ConversationSearchQuery>(
+  'eventa:invoke:electron:agent-runtime:conversation:search',
+)
 
 /** Appends one renderer-produced fact to the main-process session event log. */
 export const electronAgentSessionEventAppend = defineInvokeEventa<AgentSessionEvent, AgentSessionEventInput>(

@@ -8,12 +8,14 @@ import { isToolRelatedError, useLLM } from './llm'
 import { useLlmToolsStore } from './llm-tools'
 
 const {
+  conversationSearchToolsMock,
   createSparkCommandToolMock,
   debugMock,
   mcpMock,
   skillToolsMock,
   streamTextMock,
 } = vi.hoisted(() => ({
+  conversationSearchToolsMock: vi.fn(async (): Promise<Tool[]> => []),
   createSparkCommandToolMock: vi.fn(async (): Promise<unknown> => [{
     description: '',
     execute: vi.fn(),
@@ -39,6 +41,7 @@ vi.mock('@xsai/shared-chat', () => ({
 }))
 
 vi.mock('../tools', () => ({
+  conversationSearchTools: conversationSearchToolsMock,
   createSparkCommandTool: createSparkCommandToolMock,
   debug: debugMock,
   mcp: mcpMock,

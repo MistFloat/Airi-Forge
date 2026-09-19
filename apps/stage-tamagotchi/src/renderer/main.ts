@@ -16,6 +16,7 @@ import { routes } from 'vue-router/auto-routes'
 
 import App from './App.vue'
 
+import { initializeAgentConversationSearchBridge } from './bridges/agent-conversation-search'
 import { initializeAgentSessionEventBridge } from './bridges/agent-session-events'
 import { initializeAgentSkillsBridge } from './bridges/agent-skills'
 import { initializeAgentToolExecutionBridge } from './bridges/agent-tool-executions'
@@ -49,6 +50,8 @@ const disposeAgentToolExecutionBridge = initializeAgentToolExecutionBridge()
 import.meta.hot?.dispose(disposeAgentToolExecutionBridge)
 const disposeAgentTurnRunnerBridge = initializeAgentTurnRunnerBridge()
 import.meta.hot?.dispose(disposeAgentTurnRunnerBridge)
+const disposeAgentConversationSearchBridge = initializeAgentConversationSearchBridge()
+import.meta.hot?.dispose(disposeAgentConversationSearchBridge)
 
 const pinia = createPinia()
 const disposeAutonomousToolsResolver = configureChatAutonomousToolsResolver(async () => (

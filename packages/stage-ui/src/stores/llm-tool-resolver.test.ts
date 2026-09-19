@@ -35,6 +35,7 @@ describe('resolveLlmTools', () => {
     const tools = await resolveLlmTools({
       activeTools: [runtimeTool],
       builtInTools: [builtInTool],
+      conversationSearchTools: [],
       debugTools: [],
       skillTools: [],
       sparkCommandTools: [],
@@ -52,6 +53,7 @@ describe('resolveLlmTools', () => {
     const tools = await resolveLlmTools({
       activeTools: [runtimeTool],
       builtInTools: [builtInTool],
+      conversationSearchTools: [],
       customTools: [customTool],
       debugTools: [],
       skillTools: [],

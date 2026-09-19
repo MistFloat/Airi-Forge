@@ -4,6 +4,7 @@ import type {
   AgentSessionEventsQuery,
   AgentToolExecutionClaimInput,
   AgentToolExecutionSettlementInput,
+  ConversationSearchQuery,
 } from '@proj-airi/core-agent'
 import type { Message } from '@xsai/shared-chat'
 
@@ -12,6 +13,8 @@ import {
   custom,
   integer,
   literal,
+  maxLength,
+  maxValue,
   minLength,
   minValue,
   number,
@@ -180,6 +183,19 @@ export const agentSessionEventsQuerySchema = object({
   sessionId: string(),
 })
 
+/**
+ * Validated conversation search request accepted from an Electron renderer.
+ *
+ * Terms and the result limit are bounded here so one renderer call cannot ask
+ * the main process to scan or return an unbounded result set.
+ */
+export const conversationSearchQuerySchema = object({
+  limit: optional(pipe(number(), integer(), minValue(1), maxValue(100))),
+  sessionId: optional(identifierSchema),
+  since: optional(timestampSchema),
+  terms: pipe(array(pipe(string(), minLength(1))), maxLength(8)),
+})
+
 const eventEnvelopeFields = {
   occurredAt: number(),
   sequence: pipe(number(), integer(), minValue(1)),
@@ -293,4 +309,9 @@ export function parseAgentToolExecutionClaimInput(input: unknown): AgentToolExec
 /** Parses an untrusted tool settlement command. */
 export function parseAgentToolExecutionSettlementInput(input: unknown): AgentToolExecutionSettlementInput {
   return parse(toolExecutionSettlementInputSchema, input)
+}
+
+/** Parses an untrusted conversation search request. */
+export function parseConversationSearchQuery(input: unknown): ConversationSearchQuery {
+  return parse(conversationSearchQuerySchema, input)
 }
