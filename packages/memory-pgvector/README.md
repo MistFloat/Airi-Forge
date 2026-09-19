@@ -26,6 +26,15 @@ Text evidence remains authoritative when an embedding model changes. `embedding_
 
 Activation requires 100% eligible coverage. The pointer switch is protected by a namespace advisory lock and one PostgreSQL transaction. Archiving a Fallback first clears the pointer, then archives the schema and cancels pending work. Foreign keys use `ON DELETE RESTRICT` so a referenced schema or provenance row cannot disappear.
 
+## Recall
+
+Recall is hybrid: each query term produces two ranking legs that are fused with Reciprocal Rank Fusion (`k = 60`):
+
+- a vector leg ordered by cosine similarity (`1 - (e.vector <=> $vector)`), and
+- a lexical leg ordered by `ts_rank` over `to_tsvector('simple', title || ' ' || value_text)` matched with `plainto_tsquery('simple', $term)`.
+
+Both legs share the `topKPerTerm` bound and are restricted to the namespace's active embedding schema, and every candidate keeps its cosine similarity so the existing threshold/filter pipeline is unchanged. The fused score only orders candidates. Pass `vectorOnly: true` to `recall` to restore pure vector-similarity ordering (default `false`).
+
 ## Desktop flow
 
 The Electron loopback gateway is the only browser-facing database boundary. Its management APIs expose:

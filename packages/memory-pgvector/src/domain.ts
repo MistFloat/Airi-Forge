@@ -99,10 +99,13 @@ export interface PgvectorRecallCandidate {
   /** Post-filter injection rank (1-based); present only when the memory was injected. */
   finalRank?: number
   injected: boolean
+  /** Full-text (`ts_rank`) rank within the term's lexical leg (1-based); missing when the memory was not in that term's lexical top-K. */
+  lexicalRank?: number
   memoryId: string
   similarity: number
   term: string
-  termRank: number
+  /** Vector-similarity rank within the term (1-based); missing when the memory was found only by the lexical leg. */
+  termRank?: number
 }
 
 export interface PgvectorRecalledMemory extends PgvectorMemoryView {
@@ -123,6 +126,13 @@ export interface PgvectorRecallOptions {
   }>
   /** Neighbors fetched per retrieval term (default 5); a wider window feeds ranking diagnostics without raising maxResults. */
   topKPerTerm?: number
+  /**
+   * Escape hatch that disables the lexical (full-text) leg and restores pure
+   * vector-similarity ordering. Hybrid vector + lexical reciprocal-rank fusion
+   * is the default.
+   * @default false
+   */
+  vectorOnly?: boolean
 }
 
 export interface PgvectorRecallResult {

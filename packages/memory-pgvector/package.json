@@ -22,7 +22,8 @@
     "./store": "./src/store.ts"
   },
   "scripts": {
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@guiiai/logg": "catalog:",

@@ -7,6 +7,7 @@ import postgres from 'postgres'
 
 import { validateConflictBatch } from './conflictBatch.ts'
 import { rankRecallCandidates } from './evaluation.ts'
+import { reciprocalRankFusion } from './fusion.ts'
 import { areValidityIntervalsDisjoint, embeddingJobKey, supportWeight } from './policy.ts'
 import { cardinalityFor, conflictSeverityFor, implicitPromotionFor, importancePolicyFor, normalizeFactIdentity, normalizeValueFor, PREDICATE_REGISTRY_VERSION, sensitivityFor } from './predicateRegistry.ts'
 import { migrateMemorySchema } from './schema.ts'
@@ -500,49 +501,80 @@ export function createPgvectorMemoryStore(connectionString: string) {
       if (terms.some(term => term.embedding.length !== expectedDimensions))
         throw new Error(`Recall embedding dimensions must match the active schema (${expectedDimensions})`)
 
-      const candidateRows: Array<{ row: RecallRow, term: string, termRank: number }> = []
+      const topK = bounded(options.topKPerTerm ?? 5, 1, 20)
+      const vectorCandidates: Array<{ row: RecallRow, term: string, termRank: number }> = []
+      const lexicalCandidates: Array<{ lexicalRank: number, row: RecallRow, term: string }> = []
+      // Each per-term query is one RRF input list; the lexical leg is skipped
+      // entirely when the vector-only escape hatch is enabled.
+      const rankedLists: string[][] = []
+
       for (const term of terms) {
         const vector = vectorLiteral(term.embedding)
-        const rows = await sql<RecallRow[]>`
-          SELECT m.id AS "memoryId", m.namespace, m.title, m.value_text AS content, m.kind,
-            m.tags, m.importance, m.confidence, m.status, '' AS "embeddingProvider", '' AS "embeddingModel",
-            ARRAY[]::TEXT[] AS "sourceMessageIds", m.supersedes_id AS "supersedesId",
-            'global' AS "instructionScope", 0 AS "instructionPriority", NULL AS "instructionRuleKey",
-            m.fact_key AS "factKey", m.predicate,
-            m.valid_from::TEXT AS "effectiveFrom", m.valid_until::TEXT AS "effectiveUntil",
-            m.created_by AS "createdBy", m.revision, m.created_at::TEXT AS "createdAt",
-            m.updated_at::TEXT AS "updatedAt", 1 - (e.vector <=> ${vector}::vector) AS similarity,
-            ${retrievalId} AS "retrievalId"
+        // Both legs share one projection so every candidate carries a real cosine
+        // similarity and the existing threshold/filter logic stays common. The
+        // fragment is nested into the two queries below via postgres.js.
+        const columns = sql`
+          m.id AS "memoryId", m.namespace, m.title, m.value_text AS content, m.kind,
+          m.tags, m.importance, m.confidence, m.status, '' AS "embeddingProvider", '' AS "embeddingModel",
+          ARRAY[]::TEXT[] AS "sourceMessageIds", m.supersedes_id AS "supersedesId",
+          'global' AS "instructionScope", 0 AS "instructionPriority", NULL AS "instructionRuleKey",
+          m.fact_key AS "factKey", m.predicate,
+          m.valid_from::TEXT AS "effectiveFrom", m.valid_until::TEXT AS "effectiveUntil",
+          m.created_by AS "createdBy", m.revision, m.created_at::TEXT AS "createdAt",
+          m.updated_at::TEXT AS "updatedAt", 1 - (e.vector <=> ${vector}::vector) AS similarity,
+          ${retrievalId} AS "retrievalId"
+        `
+        const vectorRows = await sql<RecallRow[]>`
+          SELECT ${columns}
           FROM canonical_memories m JOIN memory_embeddings e ON e.memory_id = m.id
           WHERE m.namespace = ${options.namespace} AND e.schema_id = ${schemaId} AND e.build_status = 'ready'
           ORDER BY 1 - (e.vector <=> ${vector}::vector) DESC, m.id
-          LIMIT ${bounded(options.topKPerTerm ?? 5, 1, 20)}
+          LIMIT ${topK}
         `
-        rows.forEach((row, index) => candidateRows.push({ row, term: term.text, termRank: index + 1 }))
+        vectorRows.forEach((row, index) => vectorCandidates.push({ row, term: term.text, termRank: index + 1 }))
+        rankedLists.push(vectorRows.map(row => row.memoryId))
+
+        if (!options.vectorOnly) {
+          const lexicalRows = await sql<RecallRow[]>`
+            SELECT ${columns}
+            FROM canonical_memories m JOIN memory_embeddings e ON e.memory_id = m.id
+            WHERE m.namespace = ${options.namespace} AND e.schema_id = ${schemaId} AND e.build_status = 'ready'
+              AND to_tsvector('simple', m.title || ' ' || m.value_text) @@ plainto_tsquery('simple', ${term.text})
+            ORDER BY ts_rank(to_tsvector('simple', m.title || ' ' || m.value_text), plainto_tsquery('simple', ${term.text})) DESC, m.id
+            LIMIT ${topK}
+          `
+          lexicalRows.forEach((row, index) => lexicalCandidates.push({ lexicalRank: index + 1, row, term: term.text }))
+          rankedLists.push(lexicalRows.map(row => row.memoryId))
+        }
       }
 
-      const merged = new Map<string, { row: RecallRow, sources: Array<{ term: string, termRank: number }> }>()
-      for (const candidate of candidateRows) {
+      const fusedScores = reciprocalRankFusion(rankedLists)
+
+      // Keep the highest-similarity row for each memory. Both legs read the same
+      // embedding row so similarities agree, but this stays safe if that changes.
+      const merged = new Map<string, RecallRow>()
+      for (const candidate of [...vectorCandidates, ...lexicalCandidates]) {
         const existing = merged.get(candidate.row.memoryId)
-        if (!existing || candidate.row.similarity > existing.row.similarity) {
-          merged.set(candidate.row.memoryId, {
-            row: candidate.row,
-            sources: existing
-              ? [...existing.sources, { term: candidate.term, termRank: candidate.termRank }]
-              : [{ term: candidate.term, termRank: candidate.termRank }],
-          })
-        }
-        else {
-          existing.sources.push({ term: candidate.term, termRank: candidate.termRank })
-        }
+        if (!existing || candidate.row.similarity > existing.similarity)
+          merged.set(candidate.row.memoryId, candidate.row)
       }
 
       const now = Date.now()
       const seenSingleFactKeys = new Set<string>()
       const selected: RecallRow[] = []
       const filterReasons = new Map<string, PgvectorRecallCandidate['filterReason']>()
-      for (const item of [...merged.values()].sort((left, right) => right.row.similarity - left.row.similarity || left.row.memoryId.localeCompare(right.row.memoryId))) {
-        const row = item.row
+      const ordered = [...merged.values()].sort((left, right) => {
+        // Hybrid mode ranks by fused RRF score; the vector-only escape hatch keeps
+        // the original pure-similarity ordering. Similarity and id remain the
+        // deterministic tie-breakers in both modes.
+        if (!options.vectorOnly) {
+          const fusedDelta = (fusedScores.get(right.memoryId) ?? 0) - (fusedScores.get(left.memoryId) ?? 0)
+          if (fusedDelta !== 0)
+            return fusedDelta
+        }
+        return right.similarity - left.similarity || left.memoryId.localeCompare(right.memoryId)
+      })
+      for (const row of ordered) {
         let reason: PgvectorRecallCandidate['filterReason']
         if (row.status !== 'active')
           reason = 'status'
@@ -566,24 +598,47 @@ export function createPgvectorMemoryStore(connectionString: string) {
       }
 
       const selectedIds = new Set(selected.map(row => row.memoryId))
-      // PRD v2 §7 keeps the pure-similarity baseline in the trace so a future
-      // utility/importance re-rank can be compared against it (issue #8).
+      // PRD v2 §7 keeps the pure-similarity baseline in the trace so hybrid
+      // fusion can be compared against the vector-only ordering it replaced
+      // (issue #8). `finalRank` is the injection slot under the fused order.
       const rankings = rankRecallCandidates(
-        [...merged.values()].map(item => ({ memoryId: item.row.memoryId, similarity: item.row.similarity })),
+        [...merged.values()].map(item => ({ memoryId: item.memoryId, similarity: item.similarity })),
         selected.map(row => row.memoryId),
       )
-      const traceCandidates: PgvectorRecallCandidate[] = candidateRows.map((candidate) => {
-        const ranking = rankings.get(candidate.row.memoryId)
-        return {
-          baselineRank: ranking?.baselineRank,
-          filterReason: filterReasons.get(candidate.row.memoryId),
-          finalRank: ranking?.finalRank,
-          injected: selectedIds.has(candidate.row.memoryId),
-          memoryId: candidate.row.memoryId,
-          similarity: candidate.row.similarity,
-          term: candidate.term,
-          termRank: candidate.termRank,
+      const traceEntries = new Map<string, PgvectorRecallCandidate>()
+      const addTraceEntry = (row: RecallRow, term: string, termRank: number | undefined, lexicalRank: number | undefined) => {
+        const key = `${term}\u001F${row.memoryId}`
+        const entry = traceEntries.get(key) ?? {
+          injected: selectedIds.has(row.memoryId),
+          memoryId: row.memoryId,
+          similarity: row.similarity,
+          term,
         }
+        if (termRank !== undefined)
+          entry.termRank = termRank
+        if (lexicalRank !== undefined)
+          entry.lexicalRank = lexicalRank
+        traceEntries.set(key, entry)
+      }
+      for (const candidate of vectorCandidates)
+        addTraceEntry(candidate.row, candidate.term, candidate.termRank, undefined)
+      for (const candidate of lexicalCandidates)
+        addTraceEntry(candidate.row, candidate.term, undefined, candidate.lexicalRank)
+      const traceCandidates: PgvectorRecallCandidate[] = [...traceEntries.values()].map((entry) => {
+        const ranking = rankings.get(entry.memoryId)
+        return {
+          ...entry,
+          baselineRank: ranking?.baselineRank,
+          filterReason: filterReasons.get(entry.memoryId),
+          finalRank: ranking?.finalRank,
+        }
+      }).sort((left, right) => {
+        if (!options.vectorOnly) {
+          const fusedDelta = (fusedScores.get(right.memoryId) ?? 0) - (fusedScores.get(left.memoryId) ?? 0)
+          if (fusedDelta !== 0)
+            return fusedDelta
+        }
+        return right.similarity - left.similarity || left.term.localeCompare(right.term) || left.memoryId.localeCompare(right.memoryId)
       })
       const trace = {
         candidates: traceCandidates,

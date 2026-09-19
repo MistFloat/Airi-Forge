@@ -4,6 +4,54 @@ import { createPgvectorMemoryStore } from './store'
 
 const connectionString = process.env.AIRI_MEMORY_TEST_URL
 
+interface HybridFixture {
+  distractorId: string
+  lexicalId: string
+  vectorId: string
+}
+
+/**
+ * Seeds one shared active embedding schema with three 3-d memories:
+ *
+ * - `vectorId`: cosine 1.0 to the query, text without the query keyword.
+ * - `distractorId`: cosine ~0.995 to the query, text without the query keyword.
+ * - `lexicalId`: cosine 0.0 to the query (orthogonal), text containing the keyword.
+ *
+ * With `topKPerTerm = 2` the two near-identical memories fill the vector leg, so
+ * `lexicalId` can only surface through the full-text leg.
+ */
+async function seedHybridFixtures(store: ReturnType<typeof createPgvectorMemoryStore>, namespace: string): Promise<HybridFixture> {
+  const fixture: HybridFixture = {
+    distractorId: `hybrid-distractor-${Date.now()}`,
+    lexicalId: `hybrid-lexical-${Date.now()}`,
+    vectorId: `hybrid-vector-${Date.now()}`,
+  }
+  const memories = [
+    { content: 'The user enjoys hiking in the mountains.', embedding: [1, 0, 0], id: fixture.vectorId, title: 'Hiking hobby' },
+    { content: 'The user owns a mountain bike.', embedding: [1, 0.1, 0], id: fixture.distractorId, title: 'Mountain bike' },
+    { content: 'The user uses a cobalt notebook for journaling.', embedding: [0, 1, 0], id: fixture.lexicalId, title: 'Cobalt notebook' },
+  ]
+  for (const memory of memories) {
+    await store.upsert({
+      confidence: 1,
+      content: memory.content,
+      createdBy: 'agent',
+      embedding: memory.embedding,
+      embeddingModel: 'test-3d',
+      embeddingProvider: 'integration',
+      importance: 0.8,
+      kind: 'fact',
+      memoryId: memory.id,
+      namespace,
+      sourceMessageIds: [],
+      status: 'active',
+      tags: [],
+      title: memory.title,
+    })
+  }
+  return fixture
+}
+
 describe.runIf(connectionString)('pgvector knowledge memory integration', () => {
   it('creates, lists, recalls, and deletes a structured memory', async () => {
     const store = createPgvectorMemoryStore(connectionString!)
@@ -448,6 +496,66 @@ describe.runIf(connectionString)('pgvector knowledge memory integration', () => 
     finally {
       for (const memoryId of memoryIds)
         await store.remove(namespace, memoryId)
+    }
+  })
+
+  it('recalls a lexical keyword match whose embedding is orthogonal to the query', async () => {
+    const store = createPgvectorMemoryStore(connectionString!)
+    const namespace = `integration:hybrid-lexical:${Date.now()}`
+    const fixture = await seedHybridFixtures(store, namespace)
+    try {
+      const recalled = await store.recall({
+        maxResults: 5,
+        namespace,
+        originalText: 'cobalt',
+        similarityThreshold: 0,
+        terms: [{ embedding: [1, 0, 0], text: 'cobalt' }],
+        topKPerTerm: 2,
+      })
+      expect(recalled.memories.map(memory => memory.memoryId)).toContain(fixture.lexicalId)
+      // The vector leg (topK 2) is filled by the two near-identical memories, so
+      // the orthogonal keyword match never appears there; only the lexical leg
+      // ranks it. It therefore carries lexicalRank 1 and no termRank.
+      const lexicalCandidate = recalled.trace.candidates.find(candidate => candidate.memoryId === fixture.lexicalId)
+      expect(lexicalCandidate?.lexicalRank).toBe(1)
+      expect(lexicalCandidate?.termRank).toBeUndefined()
+      expect(lexicalCandidate?.similarity).toBeCloseTo(0)
+    }
+    finally {
+      await store.remove(namespace, fixture.lexicalId)
+      await store.remove(namespace, fixture.vectorId)
+      await store.remove(namespace, fixture.distractorId)
+    }
+  })
+
+  it('keeps a pure vector match ahead of a lexical match with non-overlapping text', async () => {
+    const store = createPgvectorMemoryStore(connectionString!)
+    const namespace = `integration:hybrid-order:${Date.now()}`
+    const fixture = await seedHybridFixtures(store, namespace)
+    try {
+      const recalled = await store.recall({
+        maxResults: 5,
+        namespace,
+        originalText: 'cobalt',
+        similarityThreshold: 0,
+        terms: [{ embedding: [1, 0, 0], text: 'cobalt' }],
+        topKPerTerm: 2,
+      })
+      // The cosine-1.0 memory never matches the query text, so it can only win
+      // through the vector leg. The lexical match still ranks 2nd because its
+      // orthogonal embedding gives it no similarity tie-break edge.
+      expect(recalled.memories[0]?.memoryId).toBe(fixture.vectorId)
+      const vectorIndex = recalled.memories.findIndex(memory => memory.memoryId === fixture.vectorId)
+      const lexicalIndex = recalled.memories.findIndex(memory => memory.memoryId === fixture.lexicalId)
+      expect(vectorIndex).toBeLessThan(lexicalIndex)
+      const vectorCandidate = recalled.trace.candidates.find(candidate => candidate.memoryId === fixture.vectorId)
+      expect(vectorCandidate?.termRank).toBe(1)
+      expect(vectorCandidate?.lexicalRank).toBeUndefined()
+    }
+    finally {
+      await store.remove(namespace, fixture.lexicalId)
+      await store.remove(namespace, fixture.vectorId)
+      await store.remove(namespace, fixture.distractorId)
     }
   })
 })
