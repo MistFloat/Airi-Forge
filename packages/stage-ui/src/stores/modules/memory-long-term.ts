@@ -122,7 +122,7 @@ export const useMemoryLongTermStore = defineStore('memory-long-term', () => {
   const configurator = useConfiguratorByModsChannelServer()
   const providersStore = useProvidersStore()
   const enabled = useLocalStorageManualReset<boolean>('settings/memory-long-term/enabled', false)
-  const connectionString = useLocalStorageManualReset<string>('settings/memory-long-term/connection-string', 'postgresql://airi:pazzw0rd123@localhost:5432/airi_memory')
+  const connectionString = useLocalStorageManualReset<string>('settings/memory-long-term/connection-string', 'postgresql://airi:change-me@localhost:5432/airi_memory')
   const embeddingSource = useLocalStorageManualReset<LongTermMemoryEmbeddingSource>('settings/memory-long-term/embedding-source', 'airi-provider')
   const embeddingProvider = useLocalStorageManualReset<string>('settings/memory-long-term/embedding-provider', '')
   const embeddingModel = useLocalStorageManualReset<string>('settings/memory-long-term/embedding-model', '')

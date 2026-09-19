@@ -48,7 +48,7 @@ type MemoryLongTermStore = ReturnType<typeof UseMemoryLongTermStore>
 function configureJina(store: MemoryLongTermStore) {
   // Pinia setup stores auto-unwrap refs on the instance, so assign values directly.
   store.enabled = true
-  store.connectionString = 'postgresql://airi:pazzw0rd123@localhost:5432/airi_memory'
+  store.connectionString = 'postgresql://airi:test@localhost:5432/airi_memory'
   store.memoryNamespace = 'default'
   store.instructionTokenBudget = 1200
   store.embeddingSource = 'jina-api'
