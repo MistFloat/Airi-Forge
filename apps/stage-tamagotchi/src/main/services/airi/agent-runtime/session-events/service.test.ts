@@ -83,7 +83,7 @@ describe('agent session event service', () => {
       type: 'turn.started',
     })
     const second = service.append({
-      payload: { source: 'self', turnId: 'turn-b' },
+      payload: { source: 'voice', turnId: 'turn-b' },
       sessionId: 'session-b',
       type: 'turn.started',
     })

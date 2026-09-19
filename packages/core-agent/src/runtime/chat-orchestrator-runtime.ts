@@ -154,20 +154,20 @@ export interface ChatOrchestratorRuntimeDeps {
     failureStage: 'llm_response'
     model: string
     provider: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
   }) => void
   /** Called for attempts made before the conversation has its first assistant response. */
   onChatActivationStarted?: (event: ChatRoundCorrelation & {
     model: string
     provider: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
   }) => void
   /** Called when the conversation reaches its first successful assistant response. */
   onChatActivationSucceeded?: (event: ChatRoundCorrelation & {
     durationMs: number
     model: string
     provider: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
   }) => void
   /** Called for context/prompt lifecycle observability. */
   onLifecycle?: (record: ChatOrchestratorLifecycleRecord) => void
@@ -194,12 +194,12 @@ export interface ChatOrchestratorRuntimeDeps {
     failureStage: 'llm_response'
     model: string
     provider: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
   }) => void
   /** Called when a user message send begins. */
   onMessageSendStarted?: (event: ChatRoundCorrelation & {
     model: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
   }) => void
   /** Called with the final provider prompt projection. */
   onPromptProjection?: (payload: ChatOrchestratorPromptProjection) => void
@@ -217,7 +217,7 @@ export interface ChatOrchestratorRuntimeDeps {
     provider: string
     roundId: string
     sessionId: string
-    source: 'self' | 'text' | 'voice'
+    source: 'text' | 'voice'
     turnIndex: number
   }) => void
   /** Called after user turn persistence, before provider prompt composition. */
@@ -263,14 +263,11 @@ export interface ChatOrchestratorSendOptions {
   model: string
   /** Provider-specific request options, including headers and output-token limits. */
   providerConfig?: Record<string, unknown>
-  /** Earlier interrupted self turn explicitly continued by this send. */
-  resumesTurnId?: string
   /**
    * Send origin classification. Defaults to `voice` when `input` is present,
-   * otherwise `text`. `self` marks an internal turn that is not a direct user
-   * message.
+   * otherwise `text`.
    */
-  source?: 'self' | 'text' | 'voice'
+  source?: 'text' | 'voice'
   /** Tool definitions passed through to the LLM stream port. */
   tools?: StreamOptions['tools']
 }
@@ -407,10 +404,8 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       const { context: _context, createdAt, id: _id, ...withoutContext } = msg
       const rawMessage = unwrapMessage(withoutContext)
 
-      if (rawMessage.role === 'user') {
-        const { source: _source, ...providerMessage } = rawMessage
-        return prependTextToContent(providerMessage, `${formatTimePrefix(createdAt ?? nowTs)}`)
-      }
+      if (rawMessage.role === 'user')
+        return prependTextToContent(rawMessage, `${formatTimePrefix(createdAt ?? nowTs)}`)
 
       if (rawMessage.role === 'assistant') {
         const { categorization: _categorization, interrupted: _interrupted, slices: _slices, tool_results: _toolResults, ...rest } = rawMessage as ChatAssistantMessage
@@ -466,7 +461,6 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         createdAt: sendingCreatedAt,
         id: createId(),
         role: 'user',
-        ...(sendSource === 'self' ? { source: 'self' as const } : {}),
       },
     }
     deps.onLifecycle?.({
@@ -634,13 +628,11 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       createdAt: sendingCreatedAt,
       id: roundId,
       role: 'user' as const,
-      ...(sendSource === 'self' ? { source: 'self' as const } : {}),
     }
 
     try {
       turnControlStarted = await deps.turnControl?.start({
         assistantMessageId: buildingMessage.id ?? roundId,
-        ...(options.resumesTurnId ? { resumesTurnId: options.resumesTurnId } : {}),
         sessionId,
         source: sendSource,
         turnId: roundId,
@@ -668,7 +660,6 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         await sessionEvents.append(sessionId, 'turn.admitted', {
           assistantMessageId: buildingMessage.id ?? roundId,
           ownerId: 'local-runtime',
-          ...(options.resumesTurnId ? { resumesTurnId: options.resumesTurnId } : {}),
           sessionId,
           source: sendSource,
           turnId: roundId,
@@ -701,12 +692,10 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
       const persistedSessionMessages = deps.session.getSessionMessages(sessionId)
       const sessionMessagesForSend = persistedSessionMessages
-      if (sendSource !== 'self') {
-        deps.onUserTurnReady?.({
-          messageText: sendingMessage,
-          sessionMessages: sessionMessagesForSend,
-        })
-      }
+      deps.onUserTurnReady?.({
+        messageText: sendingMessage,
+        sessionMessages: sessionMessagesForSend,
+      })
 
       const categorizer = createStreamingCategorizer(deps.getActiveProvider())
       let streamPosition = 0

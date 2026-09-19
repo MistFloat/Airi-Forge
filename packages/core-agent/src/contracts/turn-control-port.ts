@@ -139,14 +139,12 @@ export interface AgentTurnSettlementInput {
 export type AgentTurnSettlementStatus = 'cancelled' | 'completed' | 'failed'
 
 /** Origin of a main-process-owned Agent turn. */
-export type AgentTurnSource = 'self' | 'text' | 'voice'
+export type AgentTurnSource = 'text' | 'voice'
 
 /** Input that reserves a turn before model execution starts. */
 export interface AgentTurnStartInput {
   /** Assistant placeholder whose recoverable text will be checkpointed. */
   assistantMessageId: string
-  /** Earlier interrupted self turn explicitly continued by this new execution. */
-  resumesTurnId?: string
   /** Session that owns this turn. */
   sessionId: string
   /** Input path that initiated the turn. */

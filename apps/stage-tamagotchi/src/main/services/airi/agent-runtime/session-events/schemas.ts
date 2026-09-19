@@ -106,16 +106,15 @@ const turnSettledPayloadSchema = object({
 })
 
 const turnStartedPayloadSchema = object({
-  source: union([literal('self'), literal('text'), literal('voice')]),
+  source: union([literal('text'), literal('voice')]),
   turnId: string(),
 })
 
 const turnAdmittedPayloadSchema = object({
   assistantMessageId: identifierSchema,
   ownerId: identifierSchema,
-  resumesTurnId: optional(identifierSchema),
   sessionId: identifierSchema,
-  source: union([literal('self'), literal('text'), literal('voice')]),
+  source: union([literal('text'), literal('voice')]),
   turnId: identifierSchema,
   userMessage: authoredChatMessageSchema,
   userMessageId: identifierSchema,

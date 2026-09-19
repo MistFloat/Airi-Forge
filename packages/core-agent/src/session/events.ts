@@ -255,7 +255,7 @@ export interface SessionTurnSettledPayload {
 /** Payload recorded when the runtime accepts ownership of a turn. */
 export interface SessionTurnStartedPayload {
   /** Origin of the input that opened the turn. */
-  source: 'self' | 'text' | 'voice'
+  source: 'text' | 'voice'
   /** Stable turn correlation key, shared with the persisted user message. */
   turnId: string
 }

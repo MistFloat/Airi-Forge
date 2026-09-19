@@ -18,7 +18,7 @@ export interface ChatAssistantMessage extends AssistantMessage {
 
 export type ChatHistoryItem = (ChatMessage | ErrorMessage) & { context?: ContextMessage } & { createdAt?: number, id?: string }
 
-export type ChatMessage = ChatAssistantMessage | ChatUserMessage | SystemMessage | ToolMessage
+export type ChatMessage = ChatAssistantMessage | SystemMessage | ToolMessage | UserMessage
 
 export type ChatSlices = ChatSlicesText | ChatSlicesToolCall | ChatSlicesToolCallResult
 
@@ -55,12 +55,6 @@ export interface ChatStreamEventContext {
   contexts: Record<string, ContextMessage[]>
   input?: WebSocketEventInputs
   message: ChatHistoryItem
-}
-
-/** User-role message carrying its provenance for attribution. */
-export interface ChatUserMessage extends UserMessage {
-  /** Present for internal turns; omitted for user-authored messages. */
-  source?: 'self'
 }
 
 export interface ContextMessage extends ContextUpdate<Record<string, unknown>, unknown> {

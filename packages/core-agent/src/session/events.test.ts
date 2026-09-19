@@ -49,7 +49,7 @@ describe('agentSessionEventLog', () => {
       turnId: 'turn-a',
     })
     log.append('session-b', 'turn.started', {
-      source: 'self',
+      source: 'voice',
       turnId: 'turn-b',
     })
     log.append('session-a', 'message.appended', {
@@ -167,7 +167,7 @@ describe('agentSessionEventLog', () => {
     const latest = log.append('session-a', 'memory.projected', { throughSequence: 2 })
 
     log.replaceSession('session-a', [latest])
-    const appended = log.append('session-a', 'turn.started', { source: 'self', turnId: 'turn-b' })
+    const appended = log.append('session-a', 'turn.started', { source: 'voice', turnId: 'turn-b' })
 
     expect(log.list('session-a').map(event => event.sequence)).toEqual([3, 4])
     expect(appended.sequence).toBe(4)

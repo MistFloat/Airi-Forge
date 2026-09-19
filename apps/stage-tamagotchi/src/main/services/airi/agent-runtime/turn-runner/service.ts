@@ -420,7 +420,6 @@ function isActive(record: AgentTurnRecord): boolean {
 function isSameAdmission(record: AgentTurnRecord, input: AgentTurnStartInput, ownerId: string): boolean {
   return record.assistantMessageId === input.assistantMessageId
     && record.ownerId === ownerId
-    && record.resumesTurnId === input.resumesTurnId
     && record.sessionId === input.sessionId
     && record.source === input.source
     && record.turnId === input.turnId

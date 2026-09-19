@@ -28,7 +28,7 @@ import { authoredChatMessageSchema } from '../schemas'
 
 const identifierSchema = pipe(string(), minLength(1))
 const timestampSchema = pipe(number(), integer(), minValue(0))
-const sourceSchema = union([literal('self'), literal('text'), literal('voice')])
+const sourceSchema = union([literal('text'), literal('voice')])
 const settlementStatusSchema = union([literal('cancelled'), literal('completed'), literal('failed')])
 const turnStatusSchema = union([
   settlementStatusSchema,
@@ -42,7 +42,6 @@ const interruptionReasonSchema = union([literal('host-restarted'), literal('rend
 /** Validated turn admission accepted from an Electron renderer. */
 export const agentTurnStartInputSchema = object({
   assistantMessageId: identifierSchema,
-  resumesTurnId: optional(identifierSchema),
   sessionId: identifierSchema,
   source: sourceSchema,
   turnId: identifierSchema,

@@ -28,7 +28,7 @@ export type FeedbackSeverity = 'blocker' | 'major' | 'minor' | 'suggestion'
 export type FeedbackSource = 'app' | 'discord' | 'email' | 'github' | 'other' | 'qq'
 export type FeedbackUserType = 'developer_user' | 'new_user' | 'overseas_user' | 'paid_user' | 'role_chat_user' | 'unknown'
 export type FluxBalanceBucket = '1_100' | '101_1000' | '1001_10000' | '10000_plus' | 'unknown' | 'zero'
-export type MessageInputMode = 'self' | 'text' | 'voice'
+export type MessageInputMode = 'text' | 'voice'
 /**
  * Full stage vocabulary of the cross-surface `oauth_callback_failed` event.
  * The web/PKCE stages fire from `pages/auth/callback.vue`; the electron
