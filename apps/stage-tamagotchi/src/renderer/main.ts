@@ -17,6 +17,7 @@ import { routes } from 'vue-router/auto-routes'
 import App from './App.vue'
 
 import { initializeAgentSessionEventBridge } from './bridges/agent-session-events'
+import { initializeAgentSkillsBridge } from './bridges/agent-skills'
 import { initializeAgentToolExecutionBridge } from './bridges/agent-tool-executions'
 import { initializeAgentTurnRunnerBridge } from './bridges/agent-turn-runner'
 import { i18n } from './modules/i18n'
@@ -71,3 +72,7 @@ createApp(App)
   .use(i18n)
   .use(Tres)
   .mount('#app')
+
+// Skill listing reaches the chat store, so it starts after Pinia is installed.
+const disposeAgentSkillsBridge = initializeAgentSkillsBridge()
+import.meta.hot?.dispose(disposeAgentSkillsBridge)

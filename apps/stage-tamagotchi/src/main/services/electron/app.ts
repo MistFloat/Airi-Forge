@@ -40,16 +40,6 @@ export function createAppService(params: { context: ReturnType<typeof createCont
     path: providerMaxTokensConfigPath,
   }))
 
-  function findMonorepoRoot(start: string): string {
-    let current = start
-    while (current !== dirname(current)) {
-      if (existsSync(resolve(current, 'pnpm-workspace.yaml')))
-        return current
-      current = dirname(current)
-    }
-    return start
-  }
-
   const instructionFilePath = resolve(findMonorepoRoot(process.cwd()), 'instruction.md')
   function readInstructionFile(): ElectronInstructionFilePayload {
     return {
@@ -75,4 +65,21 @@ export function createAppService(params: { context: ReturnType<typeof createCont
   startWatchingInstructionFile()
 
   defineInvokeHandler(params.context, electronInstructionFileGet, () => readInstructionFile())
+}
+
+/**
+ * Walks up from `start` to the first directory holding a `pnpm-workspace.yaml`.
+ *
+ * Development checkouts keep user-editable files (the stage instruction, skills)
+ * at the monorepo root, while the packaged app runs from inside its own bundle.
+ * Falling back to `start` keeps callers working when nothing matches.
+ */
+export function findMonorepoRoot(start: string): string {
+  let current = start
+  while (current !== dirname(current)) {
+    if (existsSync(resolve(current, 'pnpm-workspace.yaml')))
+      return current
+    current = dirname(current)
+  }
+  return start
 }

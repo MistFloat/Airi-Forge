@@ -4,7 +4,7 @@ import type {
   GameletIframeResponsePayload,
 } from '@proj-airi/plugin-sdk-tamagotchi/gamelet'
 import type { ServerOptions } from '@proj-airi/server-runtime/server'
-import type { ProviderMaxTokensConfig } from '@proj-airi/stage-shared'
+import type { ProviderMaxTokensConfig, SkillReadInput, SkillReadResult, SkillSnapshot } from '@proj-airi/stage-shared'
 import type {
   ShortcutAccelerator,
   ShortcutBinding,
@@ -546,6 +546,10 @@ export interface ElectronInstructionFilePayload {
 }
 export const electronInstructionFileGet = defineInvokeEventa<ElectronInstructionFilePayload>('eventa:invoke:electron:instruction-file:get')
 export const electronInstructionFileChanged = defineEventa<ElectronInstructionFilePayload>('eventa:event:electron:instruction-file:changed')
+
+export const electronSkillsList = defineInvokeEventa<SkillSnapshot>('eventa:invoke:electron:skills:list')
+export const electronSkillsRead = defineInvokeEventa<SkillReadResult, SkillReadInput>('eventa:invoke:electron:skills:read')
+export const electronSkillsChanged = defineEventa<SkillSnapshot>('eventa:event:electron:skills:changed')
 
 export { electron } from '@proj-airi/electron-eventa'
 export * from '@proj-airi/electron-eventa/electron-updater'

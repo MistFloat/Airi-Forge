@@ -48,6 +48,32 @@ Other useful root scripts:
 - Provider credentials, models and voice settings are configured in the app's
   settings pages and stored in the app's user-data directory.
 
+## Skills
+
+A skill is an instruction document the agent loads on demand. Each skill is a
+directory with a `SKILL.md` file:
+
+```text
+my-skill/
+  SKILL.md      # YAML frontmatter (name, description) plus the instructions
+  references/   # optional documents the agent can read when it needs detail
+```
+
+Skills are discovered from three roots, lowest precedence first. A skill id
+(directory name) found in a later root replaces the same id from an earlier one:
+
+1. **bundled** — `resources/skills` shipped inside the app
+2. **user** — `skills` inside the app's user-data directory
+3. **workspace** — `.airi/skills` at the repository root of a development checkout
+
+Only each skill's name and description reach the system prompt; the agent reads
+the body, or one of its reference documents, with the built-in
+`built_in_skillRead` tool. Unused skills therefore cost no context.
+
+The prompt budget adapts long sessions to the model window: older tool results
+are truncated first, and only if that is not enough are the oldest turns folded
+into a single summary message. Newest turns and the system prompt always stay.
+
 ## Repository layout
 
 - `apps/stage-tamagotchi` — the Electron desktop app (main process, preload and renderer)

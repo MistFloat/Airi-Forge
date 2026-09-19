@@ -11,6 +11,7 @@ const {
   createSparkCommandToolMock,
   debugMock,
   mcpMock,
+  skillToolsMock,
   streamTextMock,
 } = vi.hoisted(() => ({
   createSparkCommandToolMock: vi.fn(async (): Promise<unknown> => [{
@@ -21,6 +22,7 @@ const {
   }]),
   debugMock: vi.fn(async (): Promise<Tool[]> => []),
   mcpMock: vi.fn(async (): Promise<Tool[]> => []),
+  skillToolsMock: vi.fn(async (): Promise<Tool[]> => []),
   streamTextMock: vi.fn(),
 }))
 
@@ -40,6 +42,7 @@ vi.mock('../tools', () => ({
   createSparkCommandTool: createSparkCommandToolMock,
   debug: debugMock,
   mcp: mcpMock,
+  skillTools: skillToolsMock,
 }))
 
 const provider = {
@@ -77,6 +80,7 @@ describe('isToolRelatedError', () => {
     mcpMock.mockClear()
     debugMock.mockClear()
     createSparkCommandToolMock.mockClear()
+    skillToolsMock.mockClear()
     setActivePinia(createPinia())
   })
 

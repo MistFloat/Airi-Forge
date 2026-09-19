@@ -36,6 +36,7 @@ describe('resolveLlmTools', () => {
       activeTools: [runtimeTool],
       builtInTools: [builtInTool],
       debugTools: [],
+      skillTools: [],
       sparkCommandTools: [],
     })
 
@@ -53,6 +54,7 @@ describe('resolveLlmTools', () => {
       builtInTools: [builtInTool],
       customTools: [customTool],
       debugTools: [],
+      skillTools: [],
       sparkCommandTools: [],
     })
 
