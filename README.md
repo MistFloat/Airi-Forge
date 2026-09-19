@@ -1,9 +1,16 @@
 # Airi Forge
 
-A desktop AI agent assistant forked from
-[AIRI](https://github.com/moeru-ai/airi) and rebuilt as a new
-project. It runs as an Electron app, talks in text or voice, drives a Live2D /
-avatar stage, remembers across sessions, and can call MCP tools.
+A customized fork of the open-source [AIRI](https://github.com/moeru-ai/airi)
+desktop AI agent. It runs as an Electron app with a Vue renderer, talks in text
+or voice, drives a Live2D / avatar stage, remembers across sessions, and can
+call MCP tools.
+
+This fork adds:
+
+- a **pgvector-backed long-term memory** layer with claim governance
+- a **pluggable embedding provider** wired into the memory pipeline
+- **resilient session-log loading** that skips retired event types from older
+  builds instead of failing startup
 
 > This repository is a fork of AIRI. Upstream AIRI and this fork are both MIT
 > licensed, and the upstream history is preserved in this repository's git log.
