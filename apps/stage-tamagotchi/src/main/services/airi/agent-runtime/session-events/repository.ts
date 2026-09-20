@@ -16,10 +16,19 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { createGzip, gunzipSync } from 'node:zlib'
 
+import { eventTurnId } from '@proj-airi/core-agent'
 import { app } from 'electron'
 
 import { createConfig } from '../../../../libs/electron/persistence'
 import { agentSessionEventStateSchema, isKnownAgentSessionEventType, parseAgentSessionEvents } from './schemas'
+
+/**
+ * Turn origin written by the self-prompt loop that `c5eacfba4` removed.
+ *
+ * `194d21245` then deleted the origin from the durable contract, so no current
+ * producer writes it and no current schema can express it.
+ */
+const RETIRED_TURN_SOURCE = 'self'
 
 /** One semantic-consumer boundary that permits older hot events to become cold. */
 export interface AgentSessionEventCompaction {
@@ -65,6 +74,19 @@ interface EventSegment extends ActiveSegment {
   path: string
   sessionId: string
 }
+
+/**
+ * One record read out of a persisted JSONL file.
+ *
+ * `retired-turn` marks an admission that only the removed self-prompt loop
+ * could write. Such a record is recognized from its raw JSON because the
+ * durable contract has no vocabulary for its origin, which keeps the retired
+ * value out of every typed boundary downstream.
+ */
+type ParsedEventRecord
+  = | { event: AgentSessionEvent, kind: 'event' }
+    | { kind: 'retired-turn', turnId: string }
+    | { kind: 'retired-type' }
 
 interface PendingSegmentWrite {
   data: string
@@ -328,7 +350,7 @@ function loadArchivedReplayAdmissions(
     // left a replay transition without its causal admission in the hot log.
     const buffer = gunzipSync(readFileSync(path))
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
+    const events = parseEventRecords(rawLines)
     const archiveSessionId = validateSegmentEvents(name, encodedSession, events)
     if (archiveSessionId !== undefined && archiveSessionId !== sessionId)
       throw new Error(`Agent event archive ${name} does not match session ${sessionId}`)
@@ -361,7 +383,7 @@ function loadCheckpointFiles(rootDirectory: string, checkpointEvents: Map<string
       throw new Error(`Invalid Agent event checkpoint name: ${checkpoint.name}`)
     const buffer = readFileSync(join(rootDirectory, checkpoint.name))
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
+    const events = parseEventRecords(rawLines)
     const sessionId = validateSegmentEvents(checkpoint.name, encodedSession, events)
     if (sessionId)
       checkpointEvents.set(sessionId, deduplicateEvents(events))
@@ -388,7 +410,7 @@ function loadRepositoryState(
     const path = join(rootDirectory, file.name)
     const buffer = readCompleteSegment(path)
     const rawLines = buffer.toString('utf8').split('\n').filter(Boolean)
-    const events = rawLines.flatMap(line => parseEventLine(line) ?? [])
+    const events = parseEventRecords(rawLines)
     const sessionId = validateSegmentEvents(file.name, file.encodedSession, events)
     if (!sessionId)
       continue
@@ -470,24 +492,77 @@ function parseCheckpointName(name: string): string | undefined {
 }
 
 /**
- * Parses one JSONL event record, dropping events from subsystems that later
- * refactors removed from the durable contract.
+ * Parses one persisted JSONL record.
  *
- * Files written by older builds may retain retired event types (for example
- * `task.changed` from the autonomy runtime removed by the de-experimentalized
- * fork). Those orphans have no consumers and never appear in replay dependency
- * keys, so dropping them keeps the surviving monotonic sequence safe for
- * replay and compaction. Records of known types that fail payload validation
- * are still fatal.
+ * The retired turn origin is matched from raw JSON before validation because
+ * the durable contract deliberately cannot express it.
  */
-function parseEventLine(rawLine: string): AgentSessionEvent | undefined {
+function parseEventRecord(rawLine: string): ParsedEventRecord {
   const value: unknown = JSON.parse(rawLine)
+  if (isRecord(value)) {
+    const turnId = retiredTurnId(value)
+    if (turnId !== undefined)
+      return { kind: 'retired-turn', turnId }
+  }
+
   const type = isRecord(value) ? value.type : undefined
   if (!isKnownAgentSessionEventType(type)) {
     console.warn(`Dropped an Agent session event of retired type ${JSON.stringify(type)}`)
-    return undefined
+    return { kind: 'retired-type' }
   }
-  return parseAgentSessionEvents([value])[0]
+  const [event] = parseAgentSessionEvents([value])
+  return { event, kind: 'event' }
+}
+
+/**
+ * Parses every record of one persisted JSONL file.
+ *
+ * Files written by older builds may retain records that later refactors
+ * removed from the durable contract. Two retirements are applied here.
+ *
+ * Retired event types (for example `task.changed` from the autonomy runtime
+ * removed by the de-experimentalized fork) have no consumers and never appear
+ * in replay dependency keys, so dropping the record itself keeps the surviving
+ * monotonic sequence safe for replay and compaction.
+ *
+ * Retired turn origins are a chain rather than a record: the self-prompt loop
+ * removed by `c5eacfba4` wrote `turn.admitted` and `turn.started` with
+ * `source: 'self'`, and `turn.checkpointed`, `turn.closed`, `turn.interrupted`
+ * and tool settlements all resolve against that admission in the replay
+ * dependency checks and in turn-runner projection. `194d21245` removed the
+ * origin from the contract, so validating such an admission threw a ValiError
+ * that aborted repository bootstrap and prevented the desktop app from
+ * starting. Retiring only the admission would strand its dependents, so the
+ * whole turn is retired by turn id.
+ *
+ * Authored `message.appended` records are the exception: they are the visible
+ * conversation the renderer reconciles from this log, they participate in no
+ * turn dependency, and the fork already presents their user-role messages as
+ * ordinary user messages. They survive so no conversation history is lost with
+ * the subsystem that opened its turn.
+ *
+ * Records of surviving types that fail payload validation remain fatal, so
+ * genuine corruption is still reported instead of being silently discarded.
+ */
+function parseEventRecords(rawLines: readonly string[]): AgentSessionEvent[] {
+  const records = rawLines.map(parseEventRecord)
+  const retiredTurnIds = new Set(
+    records.flatMap(record => record.kind === 'retired-turn' ? [record.turnId] : []),
+  )
+  const events: AgentSessionEvent[] = []
+  for (const record of records) {
+    if (record.kind !== 'event')
+      continue
+    const turnId = eventTurnId(record.event)
+    if (record.event.type !== 'message.appended' && turnId !== undefined && retiredTurnIds.has(turnId))
+      continue
+    events.push(record.event)
+  }
+
+  if (retiredTurnIds.size > 0)
+    console.warn(`Retired ${retiredTurnIds.size} Agent turns admitted by the removed self-prompt loop`)
+
+  return events
 }
 
 function parseSegmentName(name: string): undefined | { encodedSession: string, index: number } {
@@ -628,6 +703,23 @@ function retainReplayDependencies(
   if (unresolved.size > 0)
     throw new Error(`Agent hot replay still has ${unresolved.size} invalid causal dependencies`)
   return nextCheckpoint
+}
+
+/**
+ * Returns the turn id of an admission whose origin no current producer writes.
+ *
+ * Only otherwise well-formed records are recognized, so a corrupt admission
+ * still reaches payload validation and stays fatal. `turn.started` is included
+ * because the retired origin is invalid for every current payload schema that
+ * carries it.
+ */
+function retiredTurnId(value: Record<string, unknown>): string | undefined {
+  if (value.type !== 'turn.admitted' && value.type !== 'turn.started')
+    return undefined
+  const payload = value.payload
+  if (!isRecord(payload) || payload.source !== RETIRED_TURN_SOURCE)
+    return undefined
+  return typeof payload.turnId === 'string' ? payload.turnId : undefined
 }
 
 function segmentPath(rootDirectory: string, sessionId: string, index: number): string {

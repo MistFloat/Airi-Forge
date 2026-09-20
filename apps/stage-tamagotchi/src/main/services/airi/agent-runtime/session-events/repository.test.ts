@@ -10,6 +10,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentSessionEventRepository } from './repository'
 
+/**
+ * Authored message of a retired self-prompt turn.
+ *
+ * The self-prompt loop is gone, but its messages are already part of the
+ * session's visible history, so only the turn chain around them is retired.
+ */
+const selfPromptMessage = {
+  occurredAt: 101,
+  payload: {
+    message: { content: 'review the failing test', id: 'user-self', role: 'user' },
+    messageId: 'user-self',
+    role: 'user',
+    status: 'complete',
+    turnId: 'turn-self',
+  },
+  sequence: 3,
+  sessionId: 'session-a',
+  type: 'message.appended',
+} as const
+
 const temporaryDirectories: string[] = []
 
 afterEach(() => {
@@ -221,6 +241,67 @@ describe('agent session event repository', () => {
     expect(repository.load()).toEqual([first, third, fourth])
   })
 
+  it('retires the turn chain of a persisted self-prompt admission', async () => {
+    // ROOT CAUSE:
+    //
+    // The self-prompt loop removed by c5eacfba4 wrote `turn.admitted` with
+    // `source: 'self'`. 194d21245 then removed that origin from the durable
+    // contract, so loading a log that still contains such an admission threw a
+    // ValiError during repository bootstrap and the desktop app could not start.
+    //
+    // Retiring only the admission is not enough: `turn.checkpointed`,
+    // `turn.closed` and tool settlements resolve against their admission in the
+    // replay dependency checks and in turn-runner projection, so every record
+    // that carries the retired turn id has to be retired with it. Authored
+    // `message.appended` records survive because they are the visible
+    // conversation history and take part in no turn dependency.
+    const rootDirectory = createTemporaryDirectory()
+    const before = event({ occurredAt: 90, sequence: 1, sessionId: 'session-a', turnId: 'turn-a' })
+    const selfPrompts = selfTurnRecords(2)
+    const after = event({ occurredAt: 200, sequence: 8, sessionId: 'session-a', turnId: 'turn-c' })
+    const encodedSessionId = Buffer.from(before.sessionId, 'utf8').toString('base64url')
+    writeFileSync(
+      join(rootDirectory, `${encodedSessionId}--00000001.jsonl`),
+      [...[before], ...selfPrompts, after].map(record => `${JSON.stringify(record)}\n`).join(''),
+    )
+
+    const repository = createAgentSessionEventRepository({
+      legacyStore: { get: () => ({ sessions: {} }), setup: vi.fn() },
+      rootDirectory,
+    })
+
+    expect(repository.load()).toEqual([before, selfPromptMessage, after])
+    const appended = event({ occurredAt: 210, sequence: 9, sessionId: 'session-a', turnId: 'turn-d' })
+    repository.append(appended)
+    await repository.flush()
+    expect(repository.load()).toEqual([before, selfPromptMessage, after, appended])
+  })
+
+  it('retires a persisted turn.started carrying the removed self origin', async () => {
+    const rootDirectory = createTemporaryDirectory()
+    const before = event({ occurredAt: 90, sequence: 1, sessionId: 'session-a', turnId: 'turn-a' })
+    const retiredStart = {
+      occurredAt: 100,
+      payload: { source: 'self', turnId: 'turn-self' },
+      sequence: 2,
+      sessionId: 'session-a',
+      type: 'turn.started',
+    }
+    const after = event({ occurredAt: 110, sequence: 3, sessionId: 'session-a', turnId: 'turn-c' })
+    const encodedSessionId = Buffer.from(before.sessionId, 'utf8').toString('base64url')
+    writeFileSync(
+      join(rootDirectory, `${encodedSessionId}--00000001.jsonl`),
+      [before, retiredStart, after].map(record => `${JSON.stringify(record)}\n`).join(''),
+    )
+
+    const repository = createAgentSessionEventRepository({
+      legacyStore: { get: () => ({ sessions: {} }), setup: vi.fn() },
+      rootDirectory,
+    })
+
+    expect(repository.load()).toEqual([before, after])
+  })
+
   it('drops orphaned events from a compacted checkpoint before rewriting it', async () => {
     const rootDirectory = createTemporaryDirectory()
     const first = event({ occurredAt: 90, sequence: 1, sessionId: 'session-a', turnId: 'turn-a' })
@@ -276,6 +357,71 @@ function event(input: {
     sessionId: input.sessionId,
     type: 'turn.started',
   }
+}
+
+/**
+ * Turn records exactly as the removed self-prompt loop persisted them.
+ *
+ * `source: 'self'` is no longer expressible by the durable contract, which is
+ * why these are untyped literals rather than `AgentSessionEvent` values.
+ */
+function selfTurnRecords(firstSequence: number): unknown[] {
+  const turnId = 'turn-self'
+  return [
+    {
+      occurredAt: 100,
+      payload: {
+        assistantMessageId: 'assistant-self',
+        ownerId: 'renderer-a',
+        sessionId: 'session-a',
+        source: 'self',
+        turnId,
+        userMessage: { content: 'review the failing test', id: 'user-self', role: 'user' },
+        userMessageId: 'user-self',
+        userText: 'review the failing test',
+      },
+      sequence: firstSequence,
+      sessionId: 'session-a',
+      type: 'turn.admitted',
+    },
+    selfPromptMessage,
+    {
+      occurredAt: 102,
+      payload: {
+        checkpoint: {
+          assistantMessageId: 'assistant-self',
+          assistantText: 'partial',
+          revision: 1,
+          sessionId: 'session-a',
+          turnId,
+        },
+      },
+      sequence: firstSequence + 2,
+      sessionId: 'session-a',
+      type: 'turn.checkpointed',
+    },
+    {
+      occurredAt: 103,
+      payload: { reason: 'host-restarted', turnId },
+      sequence: firstSequence + 3,
+      sessionId: 'session-a',
+      type: 'turn.interrupted',
+    },
+    {
+      occurredAt: 104,
+      payload: { callId: 'call-self', input: { path: 'notes.txt' }, toolName: 'read-file', turnId },
+      sequence: firstSequence + 4,
+      sessionId: 'session-a',
+      type: 'tool.call-started',
+    },
+    {
+      occurredAt: 105,
+      payload: { callId: 'call-self', durationMs: 10, output: { ok: true }, status: 'completed', toolName: 'read-file', turnId },
+      sequence: firstSequence + 5,
+      sessionId: 'session-a',
+      type: 'tool.call-settled',
+    },
+  ]
 }
 
 function toolCallSettled(sequence: number): AgentSessionEvent {

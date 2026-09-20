@@ -353,6 +353,37 @@ export class AgentSessionEventLog implements AgentSessionEventPort {
 }
 
 /**
+ * Reads the turn that one event belongs to, when the fact belongs to a turn.
+ *
+ * Turn ownership is part of the durable contract rather than a payload detail:
+ * replay dependency checks, hot-retention policy, and persisted-log retirement
+ * all group events by the turn they describe. Every turn-scoped event carries
+ * `turnId` directly except `turn.checkpointed`, which nests it in the
+ * checkpoint that replaced the previous visible prefix.
+ */
+export function eventTurnId(event: AgentSessionEvent): string | undefined {
+  switch (event.type) {
+    case 'message.appended':
+    case 'prompt.composed':
+    case 'tool.call-reconciled':
+    case 'tool.call-settled':
+    case 'tool.call-started':
+    case 'turn.admitted':
+    case 'turn.cancellation-requested':
+    case 'turn.closed':
+    case 'turn.interrupted':
+    case 'turn.recovery-acknowledged':
+    case 'turn.settled':
+    case 'turn.started':
+      return event.payload.turnId
+    case 'turn.checkpointed':
+      return event.payload.checkpoint.turnId
+    default:
+      return undefined
+  }
+}
+
+/**
  * Normalizes an arbitrary tool value into durable session JSON.
  *
  * Before:

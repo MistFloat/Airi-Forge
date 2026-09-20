@@ -13,6 +13,7 @@ import type { AgentSessionEventCompaction } from './repository'
 
 import {
   AgentSessionEventLog,
+  eventTurnId,
   foldAgentToolExecutions,
   searchConversationMessages,
 } from '@proj-airi/core-agent'
@@ -338,28 +339,6 @@ function applyToolExecutionEvent(executions: Map<string, ToolExecutionState>, ev
 function assertSameToolExecution(current: ToolExecutionState, input: AgentToolExecutionClaimInput) {
   if (current.toolName !== input.toolName || JSON.stringify(current.input) !== JSON.stringify(input.input))
     throw new Error(`Tool call ${input.callId} changed identity across retries`)
-}
-
-function eventTurnId(event: AgentSessionEvent): string | undefined {
-  switch (event.type) {
-    case 'message.appended':
-    case 'prompt.composed':
-    case 'tool.call-reconciled':
-    case 'tool.call-settled':
-    case 'tool.call-started':
-    case 'turn.admitted':
-    case 'turn.cancellation-requested':
-    case 'turn.closed':
-    case 'turn.interrupted':
-    case 'turn.recovery-acknowledged':
-    case 'turn.settled':
-    case 'turn.started':
-      return event.payload.turnId
-    case 'turn.checkpointed':
-      return event.payload.checkpoint.turnId
-    default:
-      return undefined
-  }
 }
 
 function isSameToolSettlement(current: ToolExecutionState, input: AgentToolExecutionSettlementInput): boolean {

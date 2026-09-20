@@ -88,7 +88,7 @@ export type {
   ConversationSearchHit,
   ConversationSearchQuery,
 } from './session/conversation-search'
-export { AgentSessionEventLog, normalizeAgentSessionJsonValue } from './session/events'
+export { AgentSessionEventLog, eventTurnId, normalizeAgentSessionJsonValue } from './session/events'
 export type {
   AgentSessionEvent,
   AgentSessionEventEnvelope,
