@@ -263,6 +263,61 @@ describe('createChatOrchestratorRuntime', () => {
 
   // ROOT CAUSE:
   //
+  // `checkpointAssistant` persisted one durable checkpoint per stream delta, and
+  // every checkpoint carries the whole visible prefix plus the whole reasoning
+  // stream. A real session therefore wrote 5,795 checkpoints and ~460 MB of
+  // superseded snapshots in under six minutes, which exhausted the main-process
+  // heap and killed the app (V8 "young object promotion failed").
+  //
+  // We fixed this by writing the trailing edge at most once per
+  // CHECKPOINT_MIN_INTERVAL_MS, while the terminal barrier still flushes the
+  // newest snapshot immediately. Intermediate deltas are superseded by contract:
+  // `AgentTurnControlPort.checkpoint` REPLACES the previous checkpoint.
+  it('throttles durable checkpoints instead of writing one per stream delta', async () => {
+    const harness = createHarness()
+    const deltaCount = 40
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      for (let index = 0; index < deltaCount; index++)
+        await options?.onStreamEvent?.({ text: `chunk-${index};`, type: 'text-delta' })
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
+    })
+
+    await harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })
+
+    // One write opens the interval, the terminal barrier writes the newest
+    // prefix, and the deltas in between never become durable snapshots.
+    expect(harness.checkpointTurn).toHaveBeenCalledTimes(2)
+    expect(harness.checkpointTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      assistantText: Array.from({ length: deltaCount }, (_value, index) => `chunk-${index};`).join(''),
+    }))
+  })
+
+  it('caps the reasoning prefix a checkpoint carries', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ text: 'r'.repeat(20_000), type: 'reasoning-delta' })
+      await options?.onStreamEvent?.({ text: 'answer', type: 'text-delta' })
+      await options?.onStreamEvent?.({ finishReason: 'stop', type: 'finish' })
+    })
+
+    await harness.runtime.ingest('hello', {
+      chatProvider: provider,
+      model: 'gpt-test',
+    })
+
+    // The visible prefix is what a recovered message needs, so it stays intact
+    // while the optional reasoning prefix is cut to the documented limit.
+    expect(harness.checkpointTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      assistantText: 'answer',
+      reasoningText: 'r'.repeat(8000),
+    }))
+  })
+
+  // ROOT CAUSE:
+  //
   // Provider configuration reached the orchestrator but only custom headers
   // were projected into StreamOptions, so every model silently used the global
   // maxTokens fallback regardless of the value saved in provider settings.

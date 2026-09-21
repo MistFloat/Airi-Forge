@@ -24,6 +24,29 @@ import { categorizeResponse, createStreamingCategorizer } from './response-categ
 const STREAMING_UI_FLUSH_CHUNK_SIZE = 24
 
 /**
+ * Shortest interval between two durable recovery checkpoints of one turn.
+ *
+ * A checkpoint REPLACES the previous one (`AgentTurnControlPort.checkpoint`), so
+ * persisting one per stream delta wrote superseded copies of the same prefix.
+ * Measured on a real session: two turns produced 5,795 checkpoints and ~460 MB
+ * of dead snapshots in under six minutes, which exhausted the main-process heap
+ * and killed the app. Writing the trailing edge instead costs one write per
+ * interval, and a crash still recovers an almost-current prefix.
+ */
+const CHECKPOINT_MIN_INTERVAL_MS = 1000
+
+/**
+ * Longest reasoning prefix carried by a recovery checkpoint.
+ *
+ * `reasoningText` is optional recovery context (`AgentTurnCheckpointInput`); the
+ * visible prefix is what a recovered message needs. An untruncated reasoning
+ * stream is what turned one checkpoint into a 165 KB record: on the session
+ * above, the reasoning text was 159,000 of those characters. Keeping the head
+ * matches the field's own contract, which calls it a prefix.
+ */
+const CHECKPOINT_REASONING_LIMIT = 8000
+
+/**
  * Lifecycle record emitted around prompt composition.
  */
 export interface ChatOrchestratorLifecycleRecord {
@@ -524,8 +547,17 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     let turnControlStarted = false
     let turnControlSettled = false
     let checkpointDrain: Promise<void> | undefined
+    let checkpointCooldownTimer: ReturnType<typeof setTimeout> | undefined
     let pendingCheckpoint: AgentTurnCheckpointInput | undefined
 
+    /**
+     * Snapshots the newest recoverable prefix and writes it at most once per interval.
+     *
+     * The throttle needs no clock: a write arms one timer, and the timer writes
+     * whatever accumulated in the meantime. Nothing is lost by waiting, because
+     * `pendingCheckpoint` always holds the newest snapshot and the terminal
+     * barrier flushes it.
+     */
     function checkpointAssistant() {
       if (!turnControlStarted || !deps.turnControl)
         return
@@ -534,42 +566,69 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       pendingCheckpoint = {
         assistantMessageId: buildingMessage.id ?? roundId,
         assistantText: typeof buildingMessage.content === 'string' ? buildingMessage.content : '',
-        ...(reasoningText ? { reasoningText } : {}),
+        ...(reasoningText ? { reasoningText: reasoningText.slice(0, CHECKPOINT_REASONING_LIMIT) } : {}),
         sessionId,
         turnId: roundId,
       }
-      if (checkpointDrain)
+      // A running write or cooldown already owns the next one.
+      if (checkpointDrain || checkpointCooldownTimer)
         return
 
+      writeCheckpoint()
+    }
+
+    /** Persists the pending snapshot immediately, bypassing the streaming throttle. */
+    function writeCheckpoint() {
+      if (checkpointCooldownTimer) {
+        clearTimeout(checkpointCooldownTimer)
+        checkpointCooldownTimer = undefined
+      }
+      const checkpoint = pendingCheckpoint
+      if (!checkpoint || !deps.turnControl)
+        return
+
+      pendingCheckpoint = undefined
       checkpointDrain = (async () => {
-        while (pendingCheckpoint) {
-          // Only the latest visible prefix matters while an earlier IPC write
-          // is running. Replacing intermediate snapshots keeps long streams
-          // from building an unbounded post-response checkpoint backlog.
-          const checkpoint = pendingCheckpoint
-          pendingCheckpoint = undefined
-          try {
-            await deps.turnControl?.checkpoint(checkpoint)
-          }
-          catch (error) {
-            // Streaming remains usable when a platform checkpoint temporarily
-            // fails; the final settlement gets another durability opportunity.
-            console.error('Failed to checkpoint active Agent turn:', error)
-          }
+        try {
+          await deps.turnControl?.checkpoint(checkpoint)
+        }
+        catch (error) {
+          // Streaming remains usable when a platform checkpoint temporarily
+          // fails; the final settlement gets another durability opportunity.
+          console.error('Failed to checkpoint active Agent turn:', error)
         }
       })().finally(() => {
         checkpointDrain = undefined
-        if (pendingCheckpoint)
-          checkpointAssistant()
+        // Trailing edge: the newest prefix is written once this write's interval
+        // has passed, so a long stream costs one write per interval instead of
+        // one per delta. A cancel path that leaves the timer pending writes
+        // nothing, because there is no snapshot to send.
+        checkpointCooldownTimer = setTimeout(() => {
+          checkpointCooldownTimer = undefined
+          if (pendingCheckpoint)
+            checkpointAssistant()
+        }, CHECKPOINT_MIN_INTERVAL_MS)
       })
     }
 
     async function waitForCheckpointDrain() {
+      // The terminal barrier must not wait for the throttle: an in-flight write is
+      // awaited, whatever it left pending is flushed right after it, and the
+      // cooldown it armed is dropped so no timer outlives the turn.
       for (;;) {
-        const drain = checkpointDrain
-        if (!drain)
-          return
-        await drain
+        if (checkpointDrain) {
+          await checkpointDrain
+          continue
+        }
+        if (pendingCheckpoint) {
+          writeCheckpoint()
+          continue
+        }
+        if (checkpointCooldownTimer) {
+          clearTimeout(checkpointCooldownTimer)
+          checkpointCooldownTimer = undefined
+        }
+        return
       }
     }
 
